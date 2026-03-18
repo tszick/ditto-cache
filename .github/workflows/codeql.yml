@@ -1,0 +1,51 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly scan minden vasárnap 03:00 UTC – elkapja a dependency-frissítésből
+    # érkező új finding-eket is, nem csak a saját kódváltozásokat.
+    - cron: "0 3 * * 0"
+
+jobs:
+  analyze:
+    name: Analyze (Rust)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write   # SARIF feltöltése
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Rust toolchain – ugyanaz mint amit a fejlesztők használnak
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # CodeQL adatbázis építés előtt a linker + cmake kell az aws-lc-sys-hez
+      - name: Install system dependencies
+        run: sudo apt-get install -y cmake clang
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: rust
+          # security-and-quality: minden security + minőségi query
+          # security-extended: csak security (szűkebb, kevesebb false-positive)
+          queries: security-and-quality
+
+      # CodeQL a Cargo build log alapján építi az adatbázist
+      - name: Build
+        run: cargo build --release
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:rust"
+          # Az eredmény megjelenik: Security > Code scanning alerts
+          # SARIF fájl letölthető az Actions artifacts közül is
+          upload: true
