@@ -1,0 +1,11 @@
+# dittoctl configuration
+# Copy to: %APPDATA%\ditto\kvctl.toml  (Windows)
+#           ~/.config/ditto/kvctl.toml  (Linux / macOS)
+
+[mgmt]
+# Base URL of the ditto-mgmt service.
+url        = "http://localhost:7781"
+timeout_ms = 3000
+
+[output]
+format = "binary"   # binary | json

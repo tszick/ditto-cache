@@ -1,0 +1,38 @@
+[node]
+id                 = "node-1"
+bind_addr          = "0.0.0.0"    # client ports (7777, 7778): "0.0.0.0" | "localhost" | "<ip>"
+cluster_bind_addr  = "site-local" # cluster ports (7779, 7780): "site-local" | "0.0.0.0" | "localhost" | "<ip>"
+client_port        = 7777
+http_port          = 7778
+cluster_port       = 7779
+gossip_port        = 7780
+active             = true
+
+[cluster]
+seeds     = ["node-2:7779", "node-3:7779"]
+max_nodes = 100
+
+[cache]
+max_memory_mb    = 512
+default_ttl_secs = 0        # 0 = no TTL
+eviction_policy  = "lfu"
+
+[replication]
+write_timeout_ms   = 500
+gossip_interval_ms = 200
+gossip_dead_ms     = 1000
+
+[backup]
+enabled     = false
+schedule    = "0 2 * * *"   # daily at 02:00 UTC  (cron: min hour dom month dow)
+path        = "./backups"
+format      = "binary"       # binary | json
+retain_days = 30
+
+[log]
+enabled     = false
+path        = "./logs"       # directory for rolling log files (created if absent)
+rotation    = "daily"        # hourly | daily | never
+retain_days = 30             # delete files older than N days (0 = keep forever)
+level       = "info"         # trace | debug | info | warn | error
+                             # overridden by RUST_LOG env var when set

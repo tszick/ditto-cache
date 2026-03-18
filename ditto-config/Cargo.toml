@@ -1,0 +1,8 @@
+[package]
+name    = "ditto-config"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+if-addrs = { workspace = true }
+anyhow   = { workspace = true }

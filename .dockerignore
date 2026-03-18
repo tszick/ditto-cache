@@ -1,0 +1,8 @@
+# Exclude compiled artifacts – they are Windows binaries and would confuse
+# the Linux Cargo build inside Docker.
+target/
+
+# Editor / OS noise
+.git/
+.gitignore
+*.log

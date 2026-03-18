@@ -1,0 +1,51 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
+.env
+.env.local
+*.env
+
+# Runtime logs
+*.log
+
+# Docker runtime volumes
+docker/data/
+
+# Generated TLS certificates (private keys must not be committed)
+docker/certs/
+
+# NOTE: Cargo.lock is intentionally NOT ignored.
+# This is a binary workspace — lock file should be committed for reproducible builds.
+
+# HAR fájlok (tartalmazhatnak tokeneket, cookie-kat!)
+k6/har/
+k6/scripts/har-converted.js
+
+# Grafana és Prometheus adatok
+docker/load/grafana_data/
+docker/load/prometheus_data/
+
+# Env fájlok
+docker/load/.env
+docker/load/.env.local
+
+# Client dist
+ditto-nodejs-client/dist/
+ditto-nodejs-client/node_modules/
+ditto-java-client/build/
+ditto-java-client/.gradle/
+
