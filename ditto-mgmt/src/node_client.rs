@@ -71,6 +71,38 @@ async fn read_framed<S: AsyncRead + AsyncWrite + Unpin>(
 // Address resolution
 // ---------------------------------------------------------------------------
 
+/// Validate a user-supplied `target` string before any DNS lookup is performed.
+///
+/// Allowed forms:
+/// * `"local"` / `"all"` — magic aliases
+/// * Node labels: ASCII alphanumeric, hyphen, underscore, dot  (e.g. `"node-1"`)
+/// * Optional explicit port suffix: `"node-1:7779"` or `"1.2.3.4:7779"`
+///
+/// Anything that does not match is rejected to prevent Server-Side Request
+/// Forgery (SSRF) via DNS rebinding or internal-hostname enumeration
+/// (CodeQL rust/request-forgery #3 / #4).
+pub fn is_valid_target(target: &str) -> bool {
+    if matches!(target, "local" | "all") {
+        return true;
+    }
+    // Split off an optional ":port" suffix.
+    let (host, port_opt) = match target.rsplit_once(':') {
+        Some((h, p)) => (h, Some(p)),
+        None         => (target, None),
+    };
+    // Port, if present, must be a valid u16.
+    if let Some(p) = port_opt {
+        if p.parse::<u16>().is_err() {
+            return false;
+        }
+    }
+    // Host must be non-empty and contain only safe characters.
+    !host.is_empty()
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
 /// Resolve a target string to cluster-port SocketAddrs.
 ///
 /// | Target        | Resolution                                                  |
@@ -79,7 +111,17 @@ async fn read_framed<S: AsyncRead + AsyncWrite + Unpin>(
 /// | `"all"`       | All seeds (use [`all_cluster_addrs`] for gossip-extended list) |
 /// | `"node-1"` etc. | Async DNS: `lookup_host("node-1:<cluster_port>")` → IPv4   |
 /// | `"1.2.3.4:7779"` | Direct `SocketAddr` parse                               |
+///
+/// Returns an empty `Vec` (caller treats it as BAD_REQUEST) if the target
+/// string does not pass [`is_valid_target`].
 pub async fn resolve_target(target: &str, cluster_port: u16, seeds: &[String]) -> Vec<SocketAddr> {
+    // Reject targets that do not match the expected format before performing
+    // any DNS lookup (SSRF guard – CodeQL rust/request-forgery #3 / #4).
+    if !is_valid_target(target) {
+        eprintln!("Warning: rejecting invalid target '{}'", target);
+        return vec![];
+    }
+
     match target {
         "local" => {
             // Inside Docker, 127.0.0.1 is the mgmt container's own loopback — not a dittod
