@@ -186,7 +186,12 @@ impl KvStore {
                             u32::from_le_bytes(header.try_into().unwrap()) as u64;
                         if declared_size > decomp_limit {
                             tracing::warn!(
-                                key = key,
+                                // Use Debug format (?key) so the tracing subscriber
+                                // receives an already-escaped representation; this
+                                // prevents a user-controlled key that contains newlines
+                                // or other control characters from injecting extra lines
+                                // into the log stream (CodeQL rust/log-injection).
+                                key = ?key,
                                 declared_decompressed_bytes = declared_size,
                                 decomp_limit,
                                 "Refusing LZ4 decompression: declared output size \
@@ -201,11 +206,13 @@ impl KvStore {
                             entry.compressed = false;
                         }
                         Err(e) => {
-                            // Use structured fields so that a user-controlled key value
-                            // cannot inject newlines or other control characters into the
-                            // log stream (log injection – CodeQL rust/log-injection).
+                            // Use Debug format (?key) so the tracing subscriber
+                            // receives an already-escaped representation; this
+                            // prevents a user-controlled key that contains newlines
+                            // or other control characters from injecting extra lines
+                            // into the log stream (CodeQL rust/log-injection).
                             tracing::error!(
-                                key = key,
+                                key = ?key,
                                 error = %e,
                                 "LZ4 decompression failed for key; returning raw bytes"
                             );
@@ -280,6 +287,21 @@ impl KvStore {
     /// Insert or update a key. Returns the new version.
     pub fn set(&self, key: String, value: Bytes, version: u64, ttl_secs: Option<u64>) -> u64 {
         let mut inner = self.inner.lock().unwrap();
+
+        // Secondary guard against unbounded allocation from user-provided values.
+        // The primary check (check_limits) lives in the caller, but enforcing the
+        // limit here ensures that no call path — including cluster replication —
+        // can cause compress_prepend_size() to allocate arbitrary amounts of memory.
+        // When max_value_bytes == 0 (unlimited), fall back to the hard cap so that
+        // a single write can never exhaust available memory regardless of config.
+        let alloc_limit = if inner.max_value_bytes > 0 {
+            inner.max_value_bytes
+        } else {
+            MAX_DECOMPRESSED_FALLBACK_BYTES
+        };
+        if value.len() as u64 > alloc_limit {
+            return version;
+        }
 
         // Remove old size if key exists.
         if let Some(old) = inner.data.get(&key) {
