@@ -1,7 +1,7 @@
 use crate::{
     config::Config,
     replication::{ActiveSet, WriteLog},
-    store::{kv_store::LimitError, KvStore},
+    store::{kv_store::{LimitError, sanitize_for_log}, KvStore},
     network::cluster_server::send_cluster,
 };
 use bytes::Bytes;
@@ -290,7 +290,7 @@ impl NodeHandle {
                 // that bypasses the check_limits() guard that protects the client path.
                 if let Err(e) = self.store.check_limits(key, &v) {
                     tracing::warn!(
-                        key = key,
+                        key = sanitize_for_log(key).as_str(),
                         value_bytes = v.len(),
                         log_index,
                         error = ?e,
@@ -478,7 +478,7 @@ impl NodeHandle {
                                 // Use structured fields so that a user-controlled key
                                 // cannot inject newlines into the log stream.
                                 tracing::info!(
-                                    key = key,
+                                    key = sanitize_for_log(&key).as_str(),
                                     compressed = compress,
                                     "SetKeyProperty updated"
                                 );
@@ -518,7 +518,7 @@ impl NodeHandle {
                 // Use structured fields so that a user-controlled pattern value
                 // cannot inject newlines or control characters into the log stream.
                 tracing::info!(
-                    pattern = pattern,
+                    pattern = sanitize_for_log(&pattern).as_str(),
                     ttl_secs = ?ttl_secs,
                     updated,
                     "SetKeysTtl updated"

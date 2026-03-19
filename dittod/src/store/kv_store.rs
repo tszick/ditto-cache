@@ -15,7 +15,7 @@ const MAX_TTL_SECS: u64 = 30 * 24 * 60 * 60;
 /// before including it in log output, to prevent log injection attacks
 /// (CWE-117 / CodeQL rust/log-injection).
 /// Using `String::replace` as recommended by the CodeQL query documentation.
-fn sanitize_for_log(s: &str) -> String {
+pub(crate) fn sanitize_for_log(s: &str) -> String {
     s.replace(|c: char| c.is_control(), "?")
 }
 
