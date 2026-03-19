@@ -114,7 +114,7 @@ where
             let alloc_len = len.min(MAX_RPC_RESPONSE_BYTES);
             let mut payload = vec![0u8; alloc_len];
             stream.read_exact(&mut payload).await?;
-            Ok(Some(decode(&payload, max_message_size as u64)?))
+            Ok(Some(decode(&payload, MAX_RPC_RESPONSE_BYTES as u64)?))
         }
         _ => Ok(None),
     }
