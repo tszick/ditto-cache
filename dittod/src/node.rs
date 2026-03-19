@@ -284,7 +284,23 @@ impl NodeHandle {
         log_index: u64,
     ) -> u64 {
         match value {
-            Some(v) => self.store.set(key.to_string(), v, log_index, ttl_secs),
+            Some(v) => {
+                // Enforce size/key-count limits on the cluster replication path as well.
+                // A compromised primary could otherwise send an arbitrarily large value
+                // that bypasses the check_limits() guard that protects the client path.
+                if let Err(e) = self.store.check_limits(key, &v) {
+                    tracing::warn!(
+                        key = key,
+                        value_bytes = v.len(),
+                        log_index,
+                        error = ?e,
+                        "apply_locally: skipping entry that violates store limits \
+                         received via cluster replication"
+                    );
+                    return log_index;
+                }
+                self.store.set(key.to_string(), v, log_index, ttl_secs)
+            }
             None    => { self.store.delete(key); log_index }
         }
     }
@@ -499,9 +515,13 @@ impl NodeHandle {
 
             AdminRequest::SetKeysTtl { pattern, ttl_secs } => {
                 let updated = self.store.set_ttl_by_pattern(&pattern, ttl_secs);
+                // Use structured fields so that a user-controlled pattern value
+                // cannot inject newlines or control characters into the log stream.
                 tracing::info!(
-                    "SetKeysTtl pattern='{}' ttl={:?} → {} key(s) updated",
-                    pattern, ttl_secs, updated
+                    pattern = pattern,
+                    ttl_secs = ?ttl_secs,
+                    updated,
+                    "SetKeysTtl updated"
                 );
                 AdminResponse::TtlUpdated { updated }
             }

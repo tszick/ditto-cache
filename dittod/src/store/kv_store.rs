@@ -64,9 +64,21 @@ impl From<&Entry> for ExportEntry {
                 .as_millis() as u64
         });
         // Always export decompressed values for portability.
+        // Guard against decompression bombs: check the declared decompressed size
+        // stored in the LZ4 size-prepended header (first 4 bytes, little-endian u32)
+        // before allocating.  Use MAX_DECOMPRESSED_FALLBACK_BYTES as the hard cap
+        // because ExportEntry::from() has no access to the per-store limit.
         let raw_value = if e.compressed {
-            decompress_size_prepended(&e.value)
-                .unwrap_or_else(|_| e.value.to_vec())
+            let oversized = e.value.get(..4)
+                .map(|h| u32::from_le_bytes(h.try_into().unwrap()) as u64)
+                .map_or(false, |declared| declared > MAX_DECOMPRESSED_FALLBACK_BYTES);
+            if oversized {
+                // Return the compressed bytes as-is rather than risk a memory bomb.
+                e.value.to_vec()
+            } else {
+                decompress_size_prepended(&e.value)
+                    .unwrap_or_else(|_| e.value.to_vec())
+            }
         } else {
             e.value.to_vec()
         };
