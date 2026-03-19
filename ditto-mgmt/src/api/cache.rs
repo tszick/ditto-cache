@@ -26,6 +26,17 @@ use axum::{
 use ditto_protocol::{AdminRequest, AdminResponse};
 use serde::{Deserialize, Serialize};
 
+/// Validate that a cache key contains only an allowlisted set of characters.
+/// This prevents malformed or control characters from affecting proxied URLs.
+fn is_valid_cache_key(key: &str) -> bool {
+    if key.is_empty() {
+        return false;
+    }
+    key.chars().all(|c| {
+        c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':' | '/')
+    })
+}
+
 // ---------------------------------------------------------------------------
 // GET /api/cache/:target/stats
 // ---------------------------------------------------------------------------
@@ -184,6 +195,11 @@ pub async fn set_key(
     Path((target, key)): Path<(String, String)>,
     Json(body): Json<SetKeyBody>,
 ) -> impl IntoResponse {
+    if !is_valid_cache_key(&key) {
+        return (StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "invalid key" }))).into_response();
+    }
+
     let addrs = resolve_target(&target, state.cfg.connection.cluster_port, &state.cfg.connection.seeds).await;
     let addr = match addrs.first() {
         Some(a) => *a,
@@ -219,6 +235,11 @@ pub async fn delete_key(
     State(state): State<SharedState>,
     Path((target, key)): Path<(String, String)>,
 ) -> impl IntoResponse {
+    if !is_valid_cache_key(&key) {
+        return (StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "invalid key" }))).into_response();
+    }
+
     let addrs = resolve_target(&target, state.cfg.connection.cluster_port, &state.cfg.connection.seeds).await;
     let addr = match addrs.first() {
         Some(a) => *a,
