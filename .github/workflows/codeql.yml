@@ -31,7 +31,7 @@ jobs:
         run: sudo apt-get install -y cmake clang
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: rust
           # security-and-quality: minden security + minőségi query
@@ -43,7 +43,7 @@ jobs:
         run: cargo build --release
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
         with:
           category: "/language:rust"
           # Az eredmény megjelenik: Security > Code scanning alerts

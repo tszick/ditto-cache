@@ -56,7 +56,8 @@ where
         if len > max_message_size {
             anyhow::bail!("message length {} exceeds max {}", len, max_message_size);
         }
-        let mut payload = vec![0u8; len];
+        let alloc_len = len.min(max_message_size);
+        let mut payload = vec![0u8; alloc_len];
         stream.read_exact(&mut payload).await?;
 
         let msg: ClusterMessage = decode(&payload, max_message_size as u64)?;
@@ -106,11 +107,12 @@ where
     {
         Ok(Ok(_)) => {
             let len = u32::from_be_bytes(len_buf) as usize;
-            let max_message_size = 128 * 1024 * 1024;
-            if len > max_message_size {
-                anyhow::bail!("RPC response length {} exceeds max {}", len, max_message_size);
+            const MAX_RPC_RESPONSE_BYTES: usize = 128 * 1024 * 1024;
+            if len > MAX_RPC_RESPONSE_BYTES {
+                anyhow::bail!("RPC response length {} exceeds max {}", len, MAX_RPC_RESPONSE_BYTES);
             }
-            let mut payload = vec![0u8; len];
+            let alloc_len = len.min(MAX_RPC_RESPONSE_BYTES);
+            let mut payload = vec![0u8; alloc_len];
             stream.read_exact(&mut payload).await?;
             Ok(Some(decode(&payload, max_message_size as u64)?))
         }
