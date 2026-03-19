@@ -28,13 +28,32 @@ use serde::{Deserialize, Serialize};
 
 /// Validate that a cache key contains only an allowlisted set of characters.
 /// This prevents malformed or control characters from affecting proxied URLs.
+///
+/// The forward-slash (`/`) is intentionally excluded: allowing it would let a
+/// crafted key traverse path segments in the proxied URL (e.g. `../admin`).
+/// Keys that need a hierarchy separator should use `:` or `_` instead.
 fn is_valid_cache_key(key: &str) -> bool {
     if key.is_empty() {
         return false;
     }
     key.chars().all(|c| {
-        c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':' | '/')
+        c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':')
     })
+}
+
+/// Percent-encode a validated cache key for safe embedding in a URL path.
+/// Only the characters allowed by [`is_valid_cache_key`] need to be handled;
+/// colons are encoded so they cannot be misread as a port separator.
+fn encode_key_for_url(key: &str) -> String {
+    let mut out = String::with_capacity(key.len());
+    for b in key.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
+            | b'-' | b'_' | b'.' => out.push(b as char),
+            b => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -167,7 +186,7 @@ pub async fn get_key(
     };
 
     let http_addr = http_port_for(addr, state.cfg.connection.cluster_port);
-    let url = format!("{}://{}/key/{}", state.http_scheme(), http_addr, key);
+    let url = format!("{}://{}/key/{}", state.http_scheme(), http_addr, encode_key_for_url(&key));
 
     match node_http_request(state.http_client.get(&url), &state).send().await {
         Ok(resp) => {
@@ -215,7 +234,7 @@ pub async fn set_key(
     };
 
     let http_addr = http_port_for(addr, state.cfg.connection.cluster_port);
-    let mut url = format!("{}://{}/key/{}", state.http_scheme(), http_addr, key);
+    let mut url = format!("{}://{}/key/{}", state.http_scheme(), http_addr, encode_key_for_url(&key));
     if let Some(ttl) = body.ttl_secs {
         url.push_str(&format!("?ttl={}", ttl));
     }
@@ -255,7 +274,7 @@ pub async fn delete_key(
     };
 
     let http_addr = http_port_for(addr, state.cfg.connection.cluster_port);
-    let url = format!("{}://{}/key/{}", state.http_scheme(), http_addr, key);
+    let url = format!("{}://{}/key/{}", state.http_scheme(), http_addr, encode_key_for_url(&key));
 
     match node_http_request(state.http_client.delete(&url), &state).send().await {
         Ok(resp) if resp.status().is_success() =>

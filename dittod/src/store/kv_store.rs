@@ -237,6 +237,19 @@ impl KvStore {
                 e.compressed = true;
             }
             (false, true) => {
+                // Guard against decompression bombs before allocating.
+                let decomp_limit = if inner.max_value_bytes > 0 {
+                    inner.max_value_bytes
+                } else {
+                    MAX_DECOMPRESSED_FALLBACK_BYTES
+                };
+                if let Some(header) = current_value.get(..4) {
+                    let declared_size =
+                        u32::from_le_bytes(header.try_into().unwrap()) as u64;
+                    if declared_size > decomp_limit {
+                        return Err("decompressed size exceeds limit");
+                    }
+                }
                 let decompressed = decompress_size_prepended(&current_value)
                     .map_err(|_| "decompression failed")?;
                 let new_value = Bytes::from(decompressed);
