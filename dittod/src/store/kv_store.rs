@@ -8,6 +8,9 @@ use std::{
 };
 use lz4_flex::{compress_prepend_size, decompress_size_prepended};
 
+/// Maximum allowed TTL for any entry, in seconds (e.g. 30 days).
+const MAX_TTL_SECS: u64 = 30 * 24 * 60 * 60;
+
 #[derive(Debug, Clone)]
 pub struct Entry {
     /// Raw stored bytes (may be LZ4-compressed; see `compressed` flag).
@@ -220,6 +223,9 @@ impl KvStore {
             let old_sz = entry_size(&key, &old.value);
             inner.used_bytes = inner.used_bytes.saturating_sub(old_sz);
         }
+
+        // Clamp user-provided TTL to a reasonable maximum to avoid unbounded lifetimes.
+        let ttl_secs = ttl_secs.map(|t| t.min(MAX_TTL_SECS));
 
         let expires_at = ttl_secs
             .map(Duration::from_secs)
