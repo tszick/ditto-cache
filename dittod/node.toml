@@ -13,9 +13,13 @@ seeds     = ["node-2:7779", "node-3:7779"]
 max_nodes = 100
 
 [cache]
-max_memory_mb    = 512
-default_ttl_secs = 0        # 0 = no TTL
-eviction_policy  = "lfu"
+max_memory_mb          = 512
+default_ttl_secs       = 0          # 0 = no TTL
+eviction_policy        = "lfu"
+value_size_limit_bytes = 104857600  # 100 MiB; 0 = unlimited (not recommended –
+                                    # disables per-value size cap; decompression
+                                    # is still capped at 512 MiB as a safety net)
+max_keys               = 100000     # 0 = unlimited
 
 [replication]
 write_timeout_ms   = 500

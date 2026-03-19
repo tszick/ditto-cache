@@ -11,6 +11,12 @@ use lz4_flex::{compress_prepend_size, decompress_size_prepended};
 /// Maximum allowed TTL for any entry, in seconds (e.g. 30 days).
 const MAX_TTL_SECS: u64 = 30 * 24 * 60 * 60;
 
+/// Hard upper bound on how many bytes an LZ4-compressed entry may expand to
+/// during a `get()` decompression.  Applied even when `max_value_bytes` is
+/// set to 0 ("unlimited") so that a decompression-bomb payload cannot exhaust
+/// server memory regardless of operator configuration.
+const MAX_DECOMPRESSED_FALLBACK_BYTES: u64 = 512 * 1024 * 1024; // 512 MiB
+
 #[derive(Debug, Clone)]
 pub struct Entry {
     /// Raw stored bytes (may be LZ4-compressed; see `compressed` flag).
@@ -151,23 +157,30 @@ impl KvStore {
                 if entry.compressed {
                     // Guard against decompression bombs: the LZ4 "size-prepended" format
                     // stores the original (decompressed) length as a little-endian u32 in
-                    // the first 4 bytes.  Check this value against max_value_bytes *before*
-                    // allocating so that a crafted payload cannot exhaust server memory.
-                    let max = inner.max_value_bytes;
-                    if max > 0 {
-                        if let Some(header) = entry.value.get(..4) {
-                            let declared_size =
-                                u32::from_le_bytes(header.try_into().unwrap()) as u64;
-                            if declared_size > max {
-                                tracing::warn!(
-                                    key = key,
-                                    declared_decompressed_bytes = declared_size,
-                                    max_value_bytes = max,
-                                    "Refusing LZ4 decompression: declared output size \
-                                     exceeds max_value_bytes; returning compressed bytes"
-                                );
-                                return Some(entry);
-                            }
+                    // the first 4 bytes.  Check this value *before* allocating so that a
+                    // crafted payload cannot exhaust server memory.
+                    //
+                    // Use max_value_bytes when it is configured (> 0); otherwise fall back
+                    // to MAX_DECOMPRESSED_FALLBACK_BYTES so that the protection remains
+                    // active even when the operator sets value_size_limit_bytes = 0
+                    // ("unlimited").
+                    let decomp_limit = if inner.max_value_bytes > 0 {
+                        inner.max_value_bytes
+                    } else {
+                        MAX_DECOMPRESSED_FALLBACK_BYTES
+                    };
+                    if let Some(header) = entry.value.get(..4) {
+                        let declared_size =
+                            u32::from_le_bytes(header.try_into().unwrap()) as u64;
+                        if declared_size > decomp_limit {
+                            tracing::warn!(
+                                key = key,
+                                declared_decompressed_bytes = declared_size,
+                                decomp_limit,
+                                "Refusing LZ4 decompression: declared output size \
+                                 exceeds limit; returning compressed bytes"
+                            );
+                            return Some(entry);
                         }
                     }
                     match decompress_size_prepended(&entry.value) {
@@ -224,6 +237,19 @@ impl KvStore {
                 e.compressed = true;
             }
             (false, true) => {
+                // Guard against decompression bombs before allocating.
+                let decomp_limit = if inner.max_value_bytes > 0 {
+                    inner.max_value_bytes
+                } else {
+                    MAX_DECOMPRESSED_FALLBACK_BYTES
+                };
+                if let Some(header) = current_value.get(..4) {
+                    let declared_size =
+                        u32::from_le_bytes(header.try_into().unwrap()) as u64;
+                    if declared_size > decomp_limit {
+                        return Err("decompressed size exceeds limit");
+                    }
+                }
                 let decompressed = decompress_size_prepended(&current_value)
                     .map_err(|_| "decompression failed")?;
                 let new_value = Bytes::from(decompressed);

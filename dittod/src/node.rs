@@ -459,9 +459,12 @@ impl NodeHandle {
                         let compress = value.trim().eq_ignore_ascii_case("true");
                         match self.store.set_key_compressed(&key, compress) {
                             Ok(()) => {
+                                // Use structured fields so that a user-controlled key
+                                // cannot inject newlines into the log stream.
                                 tracing::info!(
-                                    "SetKeyProperty compressed={} for key '{}'",
-                                    compress, key
+                                    key = key,
+                                    compressed = compress,
+                                    "SetKeyProperty updated"
                                 );
                                 AdminResponse::KeyPropertyUpdated
                             }
