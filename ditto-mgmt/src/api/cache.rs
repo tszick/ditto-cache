@@ -152,6 +152,14 @@ pub async fn get_key(
     State(state): State<SharedState>,
     Path((target, key)): Path<(String, String)>,
 ) -> impl IntoResponse {
+    // Validate the key before it is embedded in the proxied URL.  set_key and
+    // delete_key already perform this check; apply it here for consistency and
+    // to prevent path-traversal / URL-injection (CodeQL rust/request-forgery #2).
+    if !is_valid_cache_key(&key) {
+        return (StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "invalid key" }))).into_response();
+    }
+
     let addrs = resolve_target(&target, state.cfg.connection.cluster_port, &state.cfg.connection.seeds).await;
     let addr = match addrs.first() {
         Some(a) => *a,

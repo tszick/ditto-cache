@@ -149,15 +149,40 @@ impl KvStore {
                 inner.hit_count += 1;
                 // Transparently decompress before returning.
                 if entry.compressed {
+                    // Guard against decompression bombs: the LZ4 "size-prepended" format
+                    // stores the original (decompressed) length as a little-endian u32 in
+                    // the first 4 bytes.  Check this value against max_value_bytes *before*
+                    // allocating so that a crafted payload cannot exhaust server memory.
+                    let max = inner.max_value_bytes;
+                    if max > 0 {
+                        if let Some(header) = entry.value.get(..4) {
+                            let declared_size =
+                                u32::from_le_bytes(header.try_into().unwrap()) as u64;
+                            if declared_size > max {
+                                tracing::warn!(
+                                    key = key,
+                                    declared_decompressed_bytes = declared_size,
+                                    max_value_bytes = max,
+                                    "Refusing LZ4 decompression: declared output size \
+                                     exceeds max_value_bytes; returning compressed bytes"
+                                );
+                                return Some(entry);
+                            }
+                        }
+                    }
                     match decompress_size_prepended(&entry.value) {
                         Ok(decompressed) => {
                             entry.value      = Bytes::from(decompressed);
                             entry.compressed = false;
                         }
                         Err(e) => {
+                            // Use structured fields so that a user-controlled key value
+                            // cannot inject newlines or other control characters into the
+                            // log stream (log injection – CodeQL rust/log-injection).
                             tracing::error!(
-                                "LZ4 decompression failed for key '{}': {}; returning raw bytes",
-                                key, e
+                                key = key,
+                                error = %e,
+                                "LZ4 decompression failed for key; returning raw bytes"
                             );
                         }
                     }
