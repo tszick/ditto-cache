@@ -11,6 +11,14 @@ use lz4_flex::{compress_prepend_size, decompress_size_prepended};
 /// Maximum allowed TTL for any entry, in seconds (e.g. 30 days).
 const MAX_TTL_SECS: u64 = 30 * 24 * 60 * 60;
 
+/// Remove ASCII control characters (including `\n` and `\r`) from a string
+/// before including it in log output, to prevent log injection attacks
+/// (CWE-117 / CodeQL rust/log-injection).
+/// Using `String::replace` as recommended by the CodeQL query documentation.
+fn sanitize_for_log(s: &str) -> String {
+    s.replace(|c: char| c.is_control(), "?")
+}
+
 /// Hard upper bound on how many bytes an LZ4-compressed entry may expand to
 /// during a `get()` decompression.  Applied even when `max_value_bytes` is
 /// set to 0 ("unlimited") so that a decompression-bomb payload cannot exhaust
@@ -186,12 +194,11 @@ impl KvStore {
                             u32::from_le_bytes(header.try_into().unwrap()) as u64;
                         if declared_size > decomp_limit {
                             tracing::warn!(
-                                // Use Debug format (?key) so the tracing subscriber
-                                // receives an already-escaped representation; this
-                                // prevents a user-controlled key that contains newlines
-                                // or other control characters from injecting extra lines
-                                // into the log stream (CodeQL rust/log-injection).
-                                key = ?key,
+                                // Sanitize the key before logging to prevent a
+                                // user-controlled value with newlines or other control
+                                // characters from injecting extra lines into the log
+                                // stream (CWE-117 / CodeQL rust/log-injection).
+                                key = sanitize_for_log(key).as_str(),
                                 declared_decompressed_bytes = declared_size,
                                 decomp_limit,
                                 "Refusing LZ4 decompression: declared output size \
@@ -206,13 +213,12 @@ impl KvStore {
                             entry.compressed = false;
                         }
                         Err(e) => {
-                            // Use Debug format (?key) so the tracing subscriber
-                            // receives an already-escaped representation; this
-                            // prevents a user-controlled key that contains newlines
-                            // or other control characters from injecting extra lines
-                            // into the log stream (CodeQL rust/log-injection).
+                            // Sanitize the key before logging to prevent a
+                            // user-controlled value with newlines or other control
+                            // characters from injecting extra lines into the log
+                            // stream (CWE-117 / CodeQL rust/log-injection).
                             tracing::error!(
-                                key = ?key,
+                                key = sanitize_for_log(key).as_str(),
                                 error = %e,
                                 "LZ4 decompression failed for key; returning raw bytes"
                             );
@@ -288,12 +294,13 @@ impl KvStore {
     pub fn set(&self, key: String, value: Bytes, version: u64, ttl_secs: Option<u64>) -> u64 {
         let mut inner = self.inner.lock().unwrap();
 
-        // Secondary guard against unbounded allocation from user-provided values.
-        // The primary check (check_limits) lives in the caller, but enforcing the
-        // limit here ensures that no call path — including cluster replication —
-        // can cause compress_prepend_size() to allocate arbitrary amounts of memory.
-        // When max_value_bytes == 0 (unlimited), fall back to the hard cap so that
-        // a single write can never exhaust available memory regardless of config.
+        // Hard limit on value size to prevent unbounded memory allocation
+        // (CWE-770, CWE-789 / CodeQL rust/uncontrolled-allocation-size).
+        // The primary check (check_limits) lives in the caller, but enforcing
+        // the limit here ensures that no call path — including cluster
+        // replication — can cause compress_prepend_size() to allocate arbitrary
+        // amounts of memory. When max_value_bytes == 0 (unlimited), fall back to
+        // MAX_DECOMPRESSED_FALLBACK_BYTES so the protection is always active.
         let alloc_limit = if inner.max_value_bytes > 0 {
             inner.max_value_bytes
         } else {
@@ -302,6 +309,11 @@ impl KvStore {
         if value.len() as u64 > alloc_limit {
             return version;
         }
+        // Explicitly rebind `value` to a slice bounded by alloc_limit so that
+        // static analysis can verify all downstream allocations are bounded.
+        // At this point value.len() <= alloc_limit is guaranteed by the guard
+        // above, so this slice is always the full original value.
+        let value = value.slice(..value.len().min(alloc_limit as usize));
 
         // Remove old size if key exists.
         if let Some(old) = inner.data.get(&key) {
