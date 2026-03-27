@@ -255,7 +255,10 @@ pub struct NodeStats {
 
 /// Encode any serialisable message to length-prefixed bytes (4-byte BE length).
 pub fn encode<T: Serialize>(msg: &T) -> anyhow::Result<Vec<u8>> {
-    let payload = bincode::serialize(msg)?;
+    use bincode::Options;
+    let payload = bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .serialize(msg)?;
     let mut out = Vec::with_capacity(4 + payload.len());
     out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     out.extend_from_slice(&payload);

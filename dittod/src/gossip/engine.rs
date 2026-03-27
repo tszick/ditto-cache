@@ -80,7 +80,10 @@ impl GossipEngine {
             // NOTE: use raw bincode (no length prefix) for UDP.
             // The ditto_protocol::encode() helper prepends a 4-byte TCP framing
             // header that decode() does NOT strip – it would silently corrupt UDP.
-            if let Ok(bytes) = bincode::serialize(&msg) {
+            // Use fixint encoding explicitly so sender and receiver agree on wire format.
+            use bincode::Options;
+            let codec = bincode::DefaultOptions::new().with_fixint_encoding();
+            if let Ok(bytes) = codec.serialize(&msg) {
                 // Send to already-discovered peers.
                 for peer in &known_peers {
                     let _ = self.socket.send_to(&bytes, peer).await;
@@ -106,8 +109,10 @@ impl GossipEngine {
                 Ok((len, src)) => {
                     let slice = &buf[..len];
                     // Raw bincode – no length prefix (unlike TCP frames).
+                    // Must use fixint encoding to match the sender.
                     use bincode::Options;
                     let options = bincode::DefaultOptions::new()
+                        .with_fixint_encoding()
                         .with_limit(65535)
                         .allow_trailing_bytes();
                     match options.deserialize::<GossipMessage>(slice) {
