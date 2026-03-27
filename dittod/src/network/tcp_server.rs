@@ -1,11 +1,12 @@
 use crate::node::NodeHandle;
-use ditto_protocol::{ClientRequest, encode, decode};
-use std::sync::Arc;
+use ditto_protocol::{ClientRequest, ClientResponse, encode, decode};
+use std::{collections::HashSet, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
+    sync::broadcast,
 };
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// Start the client-facing TCP server (port 7777).
 pub async fn start(bind: String, node: Arc<NodeHandle>) -> anyhow::Result<()> {
@@ -30,47 +31,101 @@ async fn handle_client(mut stream: TcpStream, node: Arc<NodeHandle>) -> anyhow::
     };
     let mut authenticated = expected_token.is_none();
 
+    // DITTO-02: subscribe to the node-wide watch broadcast channel.
+    let mut watch_rx = node.watch_tx.subscribe();
+    // Keys this connection is watching.
+    let mut watched_keys: HashSet<String> = HashSet::new();
+
     loop {
-        // Read 4-byte length prefix.
-        let mut len_buf = [0u8; 4];
-        if stream.read_exact(&mut len_buf).await.is_err() {
-            break; // connection closed
-        }
-        let len = u32::from_be_bytes(len_buf) as usize;
-        if len > max_message_size {
-            anyhow::bail!("message length {} exceeds max {}", len, max_message_size);
-        }
+        tokio::select! {
+            // ── Incoming client request ──────────────────────────────────────
+            read_result = read_frame(&mut stream, max_message_size) => {
+                let payload = match read_result {
+                    Ok(Some(p)) => p,
+                    Ok(None)    => break, // connection closed cleanly
+                    Err(e)      => return Err(e),
+                };
 
-        let mut payload = vec![0u8; len];
-        stream.read_exact(&mut payload).await?;
+                let request: ClientRequest = decode(&payload, max_message_size as u64)?;
 
-        let request: ClientRequest = decode(&payload, max_message_size as u64)?;
-
-        if !authenticated {
-            match request {
-                ClientRequest::Auth { token } if Some(&token) == expected_token.as_ref() => {
-                    authenticated = true;
-                    let response = ditto_protocol::ClientResponse::AuthOk;
-                    let bytes = encode(&response)?;
-                    stream.write_all(&bytes).await?;
-                    continue;
+                if !authenticated {
+                    match request {
+                        ClientRequest::Auth { token } if Some(&token) == expected_token.as_ref() => {
+                            authenticated = true;
+                            let bytes = encode(&ClientResponse::AuthOk)?;
+                            stream.write_all(&bytes).await?;
+                            continue;
+                        }
+                        _ => {
+                            let response = ClientResponse::Error {
+                                code: ditto_protocol::ErrorCode::AuthFailed,
+                                message: "Invalid or missing auth token".into(),
+                            };
+                            let bytes = encode(&response)?;
+                            stream.write_all(&bytes).await?;
+                            anyhow::bail!("Client auth failed");
+                        }
+                    }
                 }
-                _ => {
-                    let response = ditto_protocol::ClientResponse::Error {
-                        code: ditto_protocol::ErrorCode::AuthFailed,
-                        message: "Invalid or missing auth token".into(),
-                    };
-                    let bytes = encode(&response)?;
-                    stream.write_all(&bytes).await?;
-                    anyhow::bail!("Client auth failed");
+
+                // DITTO-02: Watch / Unwatch are handled at the connection level
+                // (they mutate per-connection state, not node-wide state).
+                match request {
+                    ClientRequest::Watch { key } => {
+                        watched_keys.insert(key);
+                        let bytes = encode(&ClientResponse::Watching)?;
+                        stream.write_all(&bytes).await?;
+                    }
+                    ClientRequest::Unwatch { key } => {
+                        watched_keys.remove(&key);
+                        let bytes = encode(&ClientResponse::Unwatched)?;
+                        stream.write_all(&bytes).await?;
+                    }
+                    other => {
+                        let response = node.handle_client(other).await;
+                        let bytes = encode(&response)?;
+                        stream.write_all(&bytes).await?;
+                    }
+                }
+            }
+
+            // ── DITTO-02: outbound watch event push ──────────────────────────
+            event = watch_rx.recv() => {
+                match event {
+                    Ok((key, value, version)) => {
+                        if watched_keys.contains(&key) {
+                            let response = ClientResponse::WatchEvent { key, value, version };
+                            let bytes = encode(&response)?;
+                            stream.write_all(&bytes).await?;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        // Subscriber was slow; some events were dropped.
+                        // For cache invalidation this is acceptable — next poll will refresh.
+                        warn!("Watch subscriber lagged, missed {} events", n);
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
         }
-
-        let response = node.handle_client(request).await;
-
-        let bytes = encode(&response)?;
-        stream.write_all(&bytes).await?;
     }
     Ok(())
+}
+
+/// Read one length-prefixed frame from the stream.
+/// Returns `Ok(None)` on clean EOF, `Ok(Some(payload))` on success, `Err` on I/O errors.
+async fn read_frame(stream: &mut TcpStream, max_size: usize) -> anyhow::Result<Option<Vec<u8>>> {
+    let mut len_buf = [0u8; 4];
+    match stream.read_exact(&mut len_buf).await {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(e.into()),
+    }
+    let len = u32::from_be_bytes(len_buf) as usize;
+    if len > max_size {
+        anyhow::bail!("message length {} exceeds max {}", len, max_size);
+    }
+    let mut payload = vec![0u8; len];
+    stream.read_exact(&mut payload).await?;
+    Ok(Some(payload))
 }

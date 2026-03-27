@@ -50,6 +50,9 @@ pub enum ClientRequest {
     Delete { key: String },
     Ping,
     Auth   { token: String },
+    // DITTO-02: pub/sub watch API (variants 5, 6)
+    Watch   { key: String },
+    Unwatch { key: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +64,13 @@ pub enum ClientResponse {
     Pong,
     AuthOk,
     Error    { code: ErrorCode, message: String },
+    // DITTO-02: pub/sub watch API (variants 7, 8, 9)
+    /// Acknowledge to a Watch request.
+    Watching,
+    /// Acknowledge to an Unwatch request.
+    Unwatched,
+    /// Server-push: a watched key was committed (value = None means the key was deleted).
+    WatchEvent { key: String, value: Option<Bytes>, version: u64 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

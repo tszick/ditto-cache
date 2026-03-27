@@ -17,10 +17,14 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{broadcast, Mutex as AsyncMutex};
 use tokio_rustls::TlsConnector;
 use tracing::{info, warn};
 use uuid::Uuid;
+
+/// DITTO-02: watch event payload broadcast to all TCP connections.
+/// `value = None` means the key was deleted.
+pub type WatchEventPayload = (String, Option<Bytes>, u64);
 
 /// Shared state handle passed to every server task.
 pub struct NodeHandle {
@@ -38,6 +42,9 @@ pub struct NodeHandle {
     pub active:       AtomicBool,
     /// TLS connector for outbound cluster connections; None when TLS is disabled.
     pub tls_connector: Option<TlsConnector>,
+    /// DITTO-02: broadcast channel for watch events.
+    /// Each TCP connection subscribes and filters by its watched keys.
+    pub watch_tx: broadcast::Sender<WatchEventPayload>,
 }
 
 impl NodeHandle {
@@ -68,6 +75,8 @@ impl NodeHandle {
             config.cluster.max_nodes,
         );
 
+        let (watch_tx, _) = broadcast::channel(256);
+
         Arc::new(Self {
             id,
             active:        AtomicBool::new(config.node.active),
@@ -78,6 +87,7 @@ impl NodeHandle {
             active_set:    Arc::new(AsyncMutex::new(active_set)),
             started_at:    Instant::now(),
             tls_connector,
+            watch_tx,
         })
     }
 
@@ -134,6 +144,15 @@ impl NodeHandle {
 
             ClientRequest::Delete { key } => {
                 self.coordinate_write(key, None, None).await
+            }
+
+            // Watch/Unwatch are handled at the TCP connection level (tcp_server.rs)
+            // and should never reach handle_client. Guard against misuse.
+            ClientRequest::Watch { .. } | ClientRequest::Unwatch { .. } => {
+                ClientResponse::Error {
+                    code:    ErrorCode::InternalError,
+                    message: "Watch/Unwatch must be handled at the connection level".into(),
+                }
             }
         }
     }
@@ -283,7 +302,7 @@ impl NodeHandle {
         ttl_secs: Option<u64>,
         log_index: u64,
     ) -> u64 {
-        match value {
+        let version = match value {
             Some(v) => {
                 // Enforce size/key-count limits on the cluster replication path as well.
                 // A compromised primary could otherwise send an arbitrarily large value
@@ -299,10 +318,20 @@ impl NodeHandle {
                     );
                     return log_index;
                 }
-                self.store.set(key.to_string(), v, log_index, ttl_secs)
+                let stored_value = v.clone();
+                let ver = self.store.set(key.to_string(), v, log_index, ttl_secs);
+                // DITTO-02: notify watchers (fire-and-forget; ignore if no receivers).
+                let _ = self.watch_tx.send((key.to_string(), Some(stored_value), ver));
+                ver
             }
-            None    => { self.store.delete(key); log_index }
-        }
+            None => {
+                self.store.delete(key);
+                // DITTO-02: notify watchers that the key was deleted (value = None).
+                let _ = self.watch_tx.send((key.to_string(), None, log_index));
+                log_index
+            }
+        };
+        version
     }
 
     async fn broadcast_and_wait(
