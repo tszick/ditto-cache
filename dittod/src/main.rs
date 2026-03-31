@@ -85,6 +85,20 @@ async fn main() -> Result<()> {
         config.node.cluster_bind_addr = v;
     }
 
+    // Strict security mode: cluster/admin traffic must use mTLS.
+    if !config.tls.enabled {
+        anyhow::bail!(
+            "Strict security: [tls].enabled must be true. Refusing to start cluster/admin port without mTLS."
+        );
+    }
+
+    // Strict security mode: REST API must be protected.
+    if config.http_auth.password_hash.is_none() {
+        anyhow::bail!(
+            "Strict security: [http_auth].password_hash must be configured. Refusing to start unauthenticated HTTP API."
+        );
+    }
+
     // Logging — initialised after config so the file appender path / rotation
     // can be read from LogConfig.  _appender_guard must stay alive until main()
     // returns or the async writer thread is shut down prematurely.

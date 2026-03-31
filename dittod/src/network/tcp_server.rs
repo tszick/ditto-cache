@@ -1,12 +1,14 @@
 use crate::node::NodeHandle;
 use ditto_protocol::{ClientRequest, ClientResponse, encode, decode};
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::broadcast,
 };
 use tracing::{debug, error, info, warn};
+
+const FRAME_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Start the client-facing TCP server (port 7777).
 pub async fn start(bind: String, node: Arc<NodeHandle>) -> anyhow::Result<()> {
@@ -116,16 +118,20 @@ async fn handle_client(mut stream: TcpStream, node: Arc<NodeHandle>) -> anyhow::
 /// Returns `Ok(None)` on clean EOF, `Ok(Some(payload))` on success, `Err` on I/O errors.
 async fn read_frame(stream: &mut TcpStream, max_size: usize) -> anyhow::Result<Option<Vec<u8>>> {
     let mut len_buf = [0u8; 4];
-    match stream.read_exact(&mut len_buf).await {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(e.into()),
+    match tokio::time::timeout(FRAME_READ_TIMEOUT, stream.read_exact(&mut len_buf)).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Ok(Err(e)) => return Err(e.into()),
+        Err(_) => anyhow::bail!("timed out waiting for frame header"),
     }
     let len = u32::from_be_bytes(len_buf) as usize;
     if len > max_size {
         anyhow::bail!("message length {} exceeds max {}", len, max_size);
     }
     let mut payload = vec![0u8; len];
-    stream.read_exact(&mut payload).await?;
-    Ok(Some(payload))
+    match tokio::time::timeout(FRAME_READ_TIMEOUT, stream.read_exact(&mut payload)).await {
+        Ok(Ok(_)) => Ok(Some(payload)),
+        Ok(Err(e)) => Err(e.into()),
+        Err(_) => anyhow::bail!("timed out waiting for frame payload"),
+    }
 }

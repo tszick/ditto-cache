@@ -62,6 +62,27 @@ async fn main() -> Result<()> {
         cfg.server.bind = v;
     }
 
+    // Strict security mode: management-to-node admin RPC must use mTLS.
+    if !cfg.tls.enabled {
+        anyhow::bail!(
+            "Strict security: [tls].enabled must be true in ditto-mgmt. Refusing unsecured admin RPC to nodes."
+        );
+    }
+
+    // Strict security mode: management API must require authentication.
+    if cfg.admin.password_hash.is_none() {
+        anyhow::bail!(
+            "Strict security: [admin].password_hash must be configured. Refusing unauthenticated management API."
+        );
+    }
+
+    // Strict security mode: management API must be served over HTTPS.
+    if cfg.server.tls_cert.is_none() || cfg.server.tls_key.is_none() {
+        anyhow::bail!(
+            "Strict security: [server].tls_cert and [server].tls_key must be configured. Refusing plain HTTP management API."
+        );
+    }
+
     let tls = tls::build_connector(&cfg.tls)?;
 
     // Build the reqwest client for proxying to dittod's HTTP port (7778).
@@ -73,6 +94,9 @@ async fn main() -> Result<()> {
             match tls::load_reqwest_ca_cert(&cfg.tls.ca_cert) {
                 Ok(cert) => { builder = builder.add_root_certificate(cert); }
                 Err(e)   => eprintln!("warning: could not load CA cert for reqwest: {}", e),
+            }
+            if cfg.connection.insecure_http_hostnames {
+                builder = builder.danger_accept_invalid_hostnames(true);
             }
         }
         builder.build()?

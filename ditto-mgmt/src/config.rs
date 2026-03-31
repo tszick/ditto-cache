@@ -47,6 +47,11 @@ pub struct ConnectionConfig {
     pub cluster_port: u16,
     /// RPC timeout in milliseconds.
     pub timeout_ms:   u64,
+    /// Disable TLS hostname verification for node HTTP proxying.
+    /// Development-only escape hatch for environments where node certificates
+    /// are valid but accessed by dynamic IP addresses.
+    #[serde(default)]
+    pub insecure_http_hostnames: bool,
 }
 
 /// TLS configuration for mTLS connections to node cluster ports.
@@ -106,6 +111,7 @@ impl Default for MgmtConfig {
                 seeds:        vec!["127.0.0.1:7779".into()],
                 cluster_port: 7779,
                 timeout_ms:   3000,
+                insecure_http_hostnames: false,
             },
             tls:              TlsConfig::default(),
             admin:            AdminConfig::default(),

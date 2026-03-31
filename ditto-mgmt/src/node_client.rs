@@ -12,6 +12,7 @@ use tokio_rustls::TlsConnector;
 /// for the OS-level TCP connect timeout (~20–75 s).  2 s is well below the 3-second
 /// `reqwest` HTTP client timeout used elsewhere and keeps the UI responsive.
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
+const RPC_READ_TIMEOUT: Duration = Duration::from_secs(2);
 
 // ---------------------------------------------------------------------------
 // Admin RPC (cluster port 7779)
@@ -56,14 +57,18 @@ async fn read_framed<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
 ) -> Result<ClusterMessage> {
     let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf).await?;
+    tokio::time::timeout(RPC_READ_TIMEOUT, stream.read_exact(&mut len_buf))
+        .await
+        .context("timeout reading RPC frame header")??;
     let len = u32::from_be_bytes(len_buf) as usize;
     let max_message_size = 128 * 1024 * 1024;
     if len > max_message_size {
         anyhow::bail!("RPC response length {} exceeds max {}", len, max_message_size);
     }
     let mut payload = vec![0u8; len];
-    stream.read_exact(&mut payload).await?;
+    tokio::time::timeout(RPC_READ_TIMEOUT, stream.read_exact(&mut payload))
+        .await
+        .context("timeout reading RPC frame payload")??;
     decode(&payload, max_message_size as u64).context("decoding cluster message")
 }
 

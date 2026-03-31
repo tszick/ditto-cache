@@ -93,7 +93,7 @@ pub async fn cache_stats(
             _ => {}
         }
     }
-    Json(results)
+    Json(results).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -121,7 +121,7 @@ pub async fn flush_cache(
             Err(e) => results.push(serde_json::json!({ "addr": addr.to_string(), "ok": false, "error": e.to_string() })),
         }
     }
-    Json(results)
+    Json(results).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -314,6 +314,11 @@ pub async fn set_compressed(
     Path((target, key)): Path<(String, String)>,
     Json(body): Json<SetCompressedBody>,
 ) -> impl IntoResponse {
+    if !is_valid_cache_key(&key) {
+        return (StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "invalid key" }))).into_response();
+    }
+
     let addrs = if target == "all" {
         state.cluster_addrs().await
     } else {
@@ -341,7 +346,7 @@ pub async fn set_compressed(
                 results.push(CompressedResult { addr: addr.to_string(), ok: false, error: Some("unexpected response".into()) }),
         }
     }
-    Json(results)
+    Json(results).into_response()
 }
 
 // ---------------------------------------------------------------------------

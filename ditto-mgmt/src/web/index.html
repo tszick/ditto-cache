@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
   <meta charset="UTF-8">
@@ -46,7 +46,7 @@
       <i class="bi bi-database-gear me-2 text-primary"></i>Ditto Cluster Management
     </span>
     <div class="ms-auto d-flex align-items-center gap-3">
-      <span class="text-secondary small" id="last-updated">—</span>
+      <span class="text-secondary small" id="last-updated">â€”</span>
       <span class="badge bg-secondary refresh-badge" id="auto-refresh-badge" onclick="toggleAutoRefresh()">
         <i class="bi bi-arrow-repeat me-1"></i>Auto-refresh ON
       </span>
@@ -80,7 +80,7 @@
         </thead>
         <tbody id="nodes-tbody">
           <tr><td colspan="8" class="text-center text-secondary py-5">
-            <div class="spinner-border spinner-border-sm me-2" role="status"></div>Loading…
+            <div class="spinner-border spinner-border-sm me-2" role="status"></div>Loadingâ€¦
           </td></tr>
         </tbody>
       </table>
@@ -90,7 +90,7 @@
   <!-- Details panel -->
   <div class="card border-secondary mt-3 details-panel d-none" id="details-panel">
     <div class="card-header d-flex justify-content-between align-items-center border-secondary" style="background:#161b22">
-      <span><i class="bi bi-info-circle me-2 text-primary"></i>Node Details: <strong id="details-title">—</strong></span>
+      <span><i class="bi bi-info-circle me-2 text-primary"></i>Node Details: <strong id="details-title">â€”</strong></span>
       <button class="btn-close btn-close-white btn-sm" onclick="closeDetails()"></button>
     </div>
     <div class="card-body">
@@ -171,7 +171,7 @@ function renderSummary(nodes) {
     <span class="badge" style="background:#2ea043"><i class="bi bi-check-circle me-1"></i>${active} active</span>
     ${inactive ? `<span class="badge" style="background:#d29922"><i class="bi bi-pause-circle me-1"></i>${inactive} inactive</span>` : ''}
     ${unreach  ? `<span class="badge bg-danger"><i class="bi bi-exclamation-triangle me-1"></i>${unreach} unreachable</span>` : ''}
-    ${primary  ? `<span class="badge" style="background:linear-gradient(135deg,#1f6feb,#388bfd)"><i class="bi bi-star-fill me-1"></i>Primary: ${primary.node_name || primary.addr}</span>` : ''}
+    ${primary  ? `<span class="badge" style="background:linear-gradient(135deg,#1f6feb,#388bfd)"><i class="bi bi-star-fill me-1"></i>Primary: ${escapeHtml(primary.node_name || primary.addr)}</span>` : ''}
   `;
 }
 
@@ -197,16 +197,16 @@ function renderTable(nodes) {
     } else if (n.status === 'Inactive') {
       statusHtml = `<span class="status-dot status-inactive"></span><span class="text-warning small">Inactive</span>`;
     } else {
-      statusHtml = `<span class="status-dot status-offline"></span><span class="text-secondary small">${n.status || '?'}</span>`;
+      statusHtml = `<span class="status-dot status-offline"></span><span class="text-secondary small">${escapeHtml(n.status || '?')}</span>`;
     }
 
     // Primary badge
     const primaryHtml = n.is_primary
       ? '<span class="badge badge-primary"><i class="bi bi-star-fill me-1"></i>PRIMARY</span>'
-      : '<span class="text-muted">—</span>';
+      : '<span class="text-muted">â€”</span>';
 
     // Memory bar
-    let memHtml = '<span class="text-muted">—</span>';
+    let memHtml = '<span class="text-muted">â€”</span>';
     if (n.memory_used_bytes != null && n.memory_max_bytes != null && n.memory_max_bytes > 0) {
       const pct = Math.round(n.memory_used_bytes * 100 / n.memory_max_bytes);
       const cls = pct >= 90 ? 'crit' : pct >= 70 ? 'warn' : '';
@@ -216,7 +216,7 @@ function renderTable(nodes) {
     }
 
     // Heartbeat
-    let hbHtml = '<span class="text-muted">—</span>';
+    let hbHtml = '<span class="text-muted">â€”</span>';
     if (n.heartbeat_ms != null) {
       const cls = n.heartbeat_ms < 10 ? 'heartbeat-good' : n.heartbeat_ms < 50 ? 'heartbeat-warn' : 'heartbeat-bad';
       hbHtml = `<span class="${cls} small fw-semibold">${n.heartbeat_ms}ms</span>`;
@@ -225,7 +225,7 @@ function renderTable(nodes) {
     // Uptime
     const uptimeHtml = n.uptime_secs != null
       ? `<span class="uptime-col small">${fmtUptime(n.uptime_secs)}</span>`
-      : '<span class="text-muted">—</span>';
+      : '<span class="text-muted">â€”</span>';
 
 
     // Actions
@@ -236,11 +236,11 @@ function renderTable(nodes) {
       const btnLabel   = isActive ? 'Deactivate' : 'Activate';
       actionsHtml = `
         <button class="btn ${btnVariant} action-btn me-1"
-          onclick="event.stopPropagation(); setActive('${n.node_name}', ${!isActive})">
+          onclick="event.stopPropagation(); setActive('${escapeForSingleQuote(n.node_name)}', ${!isActive})">
           ${btnLabel}
         </button>
         <button class="btn btn-outline-secondary action-btn"
-          onclick="event.stopPropagation(); triggerBackup('${n.node_name}')">
+          onclick="event.stopPropagation(); triggerBackup('${escapeForSingleQuote(n.node_name)}')">
           <i class="bi bi-archive me-1"></i>Backup
         </button>`;
     } else {
@@ -248,14 +248,14 @@ function renderTable(nodes) {
     }
 
     return `
-      <tr class="node-row ${isSelected ? 'selected' : ''}" onclick="selectNode('${n.addr}')">
+      <tr class="node-row ${isSelected ? 'selected' : ''}" onclick="selectNode('${escapeForSingleQuote(n.addr)}')">
         <td><div class="d-flex align-items-center">${statusHtml}</div></td>
         <td>
-          <div class="fw-semibold">${n.node_name || '—'}</div>
-          <div class="text-muted" style="font-size:.75rem">${n.addr}</div>
+          <div class="fw-semibold">${escapeHtml(n.node_name || '-')}</div>
+          <div class="text-muted" style="font-size:.75rem">${escapeHtml(n.addr)}</div>
         </td>
         <td>${primaryHtml}</td>
-        <td><span class="font-monospace small">${n.committed_index ?? '—'}</span></td>
+        <td><span class="font-monospace small">${n.committed_index ?? 'â€”'}</span></td>
         <td>${memHtml}</td>
         <td>${hbHtml}</td>
         <td>${uptimeHtml}</td>
@@ -289,7 +289,7 @@ function refreshDetails(addr) {
     ['Node ID',        node.node_id],
     ['Address',        node.addr],
     ['Status',         node.status],
-    ['Primary',        node.is_primary != null ? (node.is_primary ? 'Yes ★' : 'No') : null],
+    ['Primary',        node.is_primary != null ? (node.is_primary ? 'Yes â˜…' : 'No') : null],
     ['Committed Index',node.committed_index],
     ['Memory Used',    node.memory_used_bytes != null ? fmtBytes(node.memory_used_bytes) : null],
     ['Memory Max',     node.memory_max_bytes  != null ? fmtBytes(node.memory_max_bytes)  : null],
@@ -306,8 +306,8 @@ function refreshDetails(addr) {
     .filter(([, v]) => v != null)
     .map(([label, value]) => `
       <div class="detail-card">
-        <div class="detail-label">${label}</div>
-        <div class="detail-value">${value}</div>
+        <div class="detail-label">${escapeHtml(label)}</div>
+        <div class="detail-value">${escapeHtml(value)}</div>
       </div>`)
     .join('');
 }
@@ -356,8 +356,26 @@ async function triggerBackup(addr) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function escapeForSingleQuote(value) {
+  return String(value ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n')
+    .replace(/</g, '\\x3C');
+}
+
 function fmtBytes(b) {
-  if (b == null) return '—';
+  if (b == null) return 'â€”';
   if (b < 1024) return b + ' B';
   if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
   if (b < 1073741824) return (b / 1048576).toFixed(1) + ' MB';
@@ -365,7 +383,7 @@ function fmtBytes(b) {
 }
 
 function fmtUptime(secs) {
-  if (secs == null) return '—';
+  if (secs == null) return 'â€”';
   if (secs < 60)   return secs + 's';
   if (secs < 3600) return Math.floor(secs/60) + 'm ' + (secs%60) + 's';
   const h = Math.floor(secs/3600);
@@ -384,7 +402,7 @@ function showToast(type, message) {
   el.setAttribute('role', 'alert');
   el.innerHTML = `
     <div class="d-flex">
-      <div class="toast-body"><i class="bi bi-${icon} me-2"></i>${message}</div>
+      <div class="toast-body"><i class="bi bi-${icon} me-2"></i>${escapeHtml(message)}</div>
       <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
     </div>`;
   document.getElementById('toast-container').appendChild(el);
@@ -400,3 +418,4 @@ fetchNodes();
 </script>
 </body>
 </html>
+

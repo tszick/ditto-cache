@@ -1,12 +1,14 @@
 use crate::node::NodeHandle;
 use ditto_protocol::{ClusterMessage, encode, decode};
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tracing::{debug, error, info};
+
+const FRAME_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Start the cluster + admin TCP server (port 7779).
 /// Pass `Some(acceptor)` to require mTLS on every incoming connection.
@@ -49,8 +51,10 @@ where
 
     loop {
         let mut len_buf = [0u8; 4];
-        if stream.read_exact(&mut len_buf).await.is_err() {
-            break;
+        match tokio::time::timeout(FRAME_READ_TIMEOUT, stream.read_exact(&mut len_buf)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(_)) => break,
+            Err(_) => anyhow::bail!("timed out waiting for cluster frame header"),
         }
         let len = u32::from_be_bytes(len_buf) as usize;
         if len > max_message_size {
@@ -58,7 +62,11 @@ where
         }
         let alloc_len = len.min(max_message_size);
         let mut payload = vec![0u8; alloc_len];
-        stream.read_exact(&mut payload).await?;
+        match tokio::time::timeout(FRAME_READ_TIMEOUT, stream.read_exact(&mut payload)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => anyhow::bail!("timed out waiting for cluster frame payload"),
+        }
 
         let msg: ClusterMessage = decode(&payload, max_message_size as u64)?;
         if let Some(response) = Arc::clone(&node).handle_cluster(msg).await {
@@ -113,7 +121,11 @@ where
             }
             let alloc_len = len.min(MAX_RPC_RESPONSE_BYTES);
             let mut payload = vec![0u8; alloc_len];
-            stream.read_exact(&mut payload).await?;
+            match tokio::time::timeout(FRAME_READ_TIMEOUT, stream.read_exact(&mut payload)).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => return Err(e.into()),
+                Err(_) => anyhow::bail!("timed out waiting for RPC payload"),
+            }
             Ok(Some(decode(&payload, MAX_RPC_RESPONSE_BYTES as u64)?))
         }
         _ => Ok(None),
