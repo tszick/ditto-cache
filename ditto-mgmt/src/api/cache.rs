@@ -16,7 +16,7 @@
 //! | POST   | `/api/cache/:target/ttl`                  | Set TTL by key pattern | |
 
 use crate::api::SharedState;
-use crate::node_client::{admin_rpc, http_port_for, resolve_target};
+use crate::node_client::{admin_rpc, http_authority_for_target, resolve_target};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -179,14 +179,16 @@ pub async fn get_key(
                 Json(serde_json::json!({ "error": "invalid key" }))).into_response();
     }
 
-    let addrs = resolve_target(&target, state.cfg.connection.cluster_port, &state.cfg.connection.seeds).await;
-    let addr = match addrs.first() {
-        Some(a) => *a,
+    let authority = match http_authority_for_target(
+        &target,
+        state.cfg.connection.cluster_port,
+        &state.cfg.connection.seeds,
+    ) {
+        Some(a) => a,
         None => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "invalid target" }))).into_response(),
     };
 
-    let http_addr = http_port_for(addr, state.cfg.connection.cluster_port);
-    let url = format!("{}://{}/key/{}", state.http_scheme(), http_addr, encode_key_for_url(&key));
+    let url = format!("{}://{}/key/{}", state.http_scheme(), authority, encode_key_for_url(&key));
 
     match node_http_request(state.http_client.get(&url), &state).send().await {
         Ok(resp) => {
@@ -227,14 +229,16 @@ pub async fn set_key(
                 Json(serde_json::json!({ "error": "invalid key" }))).into_response();
     }
 
-    let addrs = resolve_target(&target, state.cfg.connection.cluster_port, &state.cfg.connection.seeds).await;
-    let addr = match addrs.first() {
-        Some(a) => *a,
+    let authority = match http_authority_for_target(
+        &target,
+        state.cfg.connection.cluster_port,
+        &state.cfg.connection.seeds,
+    ) {
+        Some(a) => a,
         None => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "invalid target" }))).into_response(),
     };
 
-    let http_addr = http_port_for(addr, state.cfg.connection.cluster_port);
-    let mut url = format!("{}://{}/key/{}", state.http_scheme(), http_addr, encode_key_for_url(&key));
+    let mut url = format!("{}://{}/key/{}", state.http_scheme(), authority, encode_key_for_url(&key));
     if let Some(ttl) = body.ttl_secs {
         url.push_str(&format!("?ttl={}", ttl));
     }
@@ -267,14 +271,16 @@ pub async fn delete_key(
                 Json(serde_json::json!({ "error": "invalid key" }))).into_response();
     }
 
-    let addrs = resolve_target(&target, state.cfg.connection.cluster_port, &state.cfg.connection.seeds).await;
-    let addr = match addrs.first() {
-        Some(a) => *a,
+    let authority = match http_authority_for_target(
+        &target,
+        state.cfg.connection.cluster_port,
+        &state.cfg.connection.seeds,
+    ) {
+        Some(a) => a,
         None => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "invalid target" }))).into_response(),
     };
 
-    let http_addr = http_port_for(addr, state.cfg.connection.cluster_port);
-    let url = format!("{}://{}/key/{}", state.http_scheme(), http_addr, encode_key_for_url(&key));
+    let url = format!("{}://{}/key/{}", state.http_scheme(), authority, encode_key_for_url(&key));
 
     match node_http_request(state.http_client.delete(&url), &state).send().await {
         Ok(resp) if resp.status().is_success() =>

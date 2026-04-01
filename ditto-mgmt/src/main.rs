@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
     let tls = tls::build_connector(&cfg.tls)?;
 
     // Build the reqwest client for proxying to dittod's HTTP port (7778).
-    // When TLS is enabled we add the CA cert so self-signed node certs are trusted.
+    // When TLS is enabled we add the CA cert so node certs are trusted.
     let http_client = {
         let mut builder = reqwest::Client::builder()
             .timeout(std::time::Duration::from_millis(cfg.connection.timeout_ms));
@@ -94,9 +94,6 @@ async fn main() -> Result<()> {
             match tls::load_reqwest_ca_cert(&cfg.tls.ca_cert) {
                 Ok(cert) => { builder = builder.add_root_certificate(cert); }
                 Err(e)   => eprintln!("warning: could not load CA cert for reqwest: {}", e),
-            }
-            if cfg.connection.insecure_http_hostnames {
-                builder = builder.danger_accept_invalid_hostnames(true);
             }
         }
         builder.build()?
