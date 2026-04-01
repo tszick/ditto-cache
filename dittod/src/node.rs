@@ -146,6 +146,14 @@ impl NodeHandle {
                 self.coordinate_write(key, None, None).await
             }
 
+            ClientRequest::DeleteByPattern { pattern } => {
+                self.delete_by_pattern(pattern).await
+            }
+
+            ClientRequest::SetTtlByPattern { pattern, ttl_secs } => {
+                self.set_ttl_by_pattern(pattern, ttl_secs).await
+            }
+
             // Watch/Unwatch are handled at the TCP connection level (tcp_server.rs)
             // and should never reach handle_client. Guard against misuse.
             ClientRequest::Watch { .. } | ClientRequest::Unwatch { .. } => {
@@ -155,6 +163,53 @@ impl NodeHandle {
                 }
             }
         }
+    }
+
+    async fn delete_by_pattern(&self, pattern: String) -> ClientResponse {
+        let keys = self.store.keys(Some(&pattern));
+        let mut deleted = 0usize;
+        for key in keys {
+            let resp = self.coordinate_write(key, None, None).await;
+            match resp {
+                ClientResponse::Deleted => deleted += 1,
+                ClientResponse::NotFound => {}
+                ClientResponse::Error { .. } => return resp,
+                _ => {
+                    return ClientResponse::Error {
+                        code: ErrorCode::InternalError,
+                        message: "Unexpected response while deleting by pattern".into(),
+                    };
+                }
+            }
+        }
+        ClientResponse::PatternDeleted { deleted }
+    }
+
+    async fn set_ttl_by_pattern(
+        &self,
+        pattern: String,
+        ttl_secs: Option<u64>,
+    ) -> ClientResponse {
+        let keys = self.store.keys(Some(&pattern));
+        let mut updated = 0usize;
+        for key in keys {
+            let Some(entry) = self.store.get(&key) else {
+                continue;
+            };
+            let resp = self.coordinate_write(key, Some(entry.value), ttl_secs).await;
+            match resp {
+                ClientResponse::Ok { .. } => updated += 1,
+                ClientResponse::NotFound => {}
+                ClientResponse::Error { .. } => return resp,
+                _ => {
+                    return ClientResponse::Error {
+                        code: ErrorCode::InternalError,
+                        message: "Unexpected response while updating ttl by pattern".into(),
+                    };
+                }
+            }
+        }
+        ClientResponse::PatternTtlUpdated { updated }
     }
 
     // -----------------------------------------------------------------------

@@ -53,6 +53,11 @@ pub enum ClientRequest {
     // DITTO-02: pub/sub watch API (variants 5, 6)
     Watch   { key: String },
     Unwatch { key: String },
+    /// Delete all keys matching a glob-style pattern (`*` wildcard).
+    DeleteByPattern { pattern: String },
+    /// Update TTL for all keys matching a glob-style pattern.
+    /// `ttl_secs = None` removes TTL for matched keys.
+    SetTtlByPattern { pattern: String, ttl_secs: Option<u64> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +76,10 @@ pub enum ClientResponse {
     Unwatched,
     /// Server-push: a watched key was committed (value = None means the key was deleted).
     WatchEvent { key: String, value: Option<Bytes>, version: u64 },
+    /// Number of keys deleted by a pattern-based delete operation.
+    PatternDeleted { deleted: usize },
+    /// Number of keys updated by a pattern-based TTL operation.
+    PatternTtlUpdated { updated: usize },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

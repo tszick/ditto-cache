@@ -6,7 +6,7 @@ use axum::{
     http::{Request, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json,
 };
 use bytes::Bytes;
@@ -48,6 +48,8 @@ fn build_app(node: Arc<NodeHandle>) -> Router {
         .route("/key/:key", get(handle_get)
             .put(handle_set)
             .delete(handle_delete))
+        .route("/keys/delete-by-pattern", post(handle_delete_by_pattern))
+        .route("/keys/ttl-by-pattern", post(handle_set_ttl_by_pattern))
         .route("/ping",  get(handle_ping))
         .route("/stats", get(handle_stats))
         .layer(middleware::from_fn_with_state(
@@ -185,6 +187,54 @@ async fn handle_delete(
     match node.handle_client(ClientRequest::Delete { key }).await {
         ClientResponse::Deleted           => StatusCode::NO_CONTENT.into_response(),
         ClientResponse::NotFound          => StatusCode::NOT_FOUND.into_response(),
+        ClientResponse::Error { code, message } => error_response(code, message),
+        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct DeleteByPatternBody {
+    pattern: String,
+}
+
+async fn handle_delete_by_pattern(
+    State(node): State<Arc<NodeHandle>>,
+    Json(body): Json<DeleteByPatternBody>,
+) -> Response {
+    match node
+        .handle_client(ClientRequest::DeleteByPattern {
+            pattern: body.pattern,
+        })
+        .await
+    {
+        ClientResponse::PatternDeleted { deleted } => {
+            Json(serde_json::json!({ "deleted": deleted })).into_response()
+        }
+        ClientResponse::Error { code, message } => error_response(code, message),
+        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct SetTtlByPatternBody {
+    pattern: String,
+    ttl_secs: Option<u64>,
+}
+
+async fn handle_set_ttl_by_pattern(
+    State(node): State<Arc<NodeHandle>>,
+    Json(body): Json<SetTtlByPatternBody>,
+) -> Response {
+    match node
+        .handle_client(ClientRequest::SetTtlByPattern {
+            pattern: body.pattern,
+            ttl_secs: body.ttl_secs,
+        })
+        .await
+    {
+        ClientResponse::PatternTtlUpdated { updated } => {
+            Json(serde_json::json!({ "updated": updated })).into_response()
+        }
         ClientResponse::Error { code, message } => error_response(code, message),
         _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
