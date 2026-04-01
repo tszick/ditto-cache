@@ -44,7 +44,7 @@ async fn handle_client(mut stream: TcpStream, node: Arc<NodeHandle>) -> anyhow::
             read_result = read_frame(
                 &mut stream,
                 max_message_size,
-                watched_keys.is_empty(),
+                expected_token.is_some() && !authenticated,
             ) => {
                 let payload = match read_result {
                     Ok(Some(p)) => p,
