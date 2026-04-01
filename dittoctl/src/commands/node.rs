@@ -178,6 +178,14 @@ pub async fn run(cmd: NodeCommand, cfg: &mut CtlConfig, client: &reqwest::Client
                 println!("  {:<22} {}ms", "heartbeat",     node["heartbeat_ms"].as_u64().unwrap_or(0));
                 println!("  {:<22} {}", "uptime",          fmt_uptime(node["uptime_secs"].as_u64().unwrap_or(0)));
                 println!("  {:<22} {} bytes", "backup-storage", node["backup_dir_bytes"].as_u64().unwrap_or(0));
+                println!("  {:<22} {}", "persistence",
+                    node["persistence_enabled"].as_bool().map(|v| v.to_string()).as_deref().unwrap_or("?"));
+                println!("  {:<22} {}", "persistence-backup",
+                    node["persistence_backup_enabled"].as_bool().map(|v| v.to_string()).as_deref().unwrap_or("?"));
+                println!("  {:<22} {}", "persistence-export",
+                    node["persistence_export_enabled"].as_bool().map(|v| v.to_string()).as_deref().unwrap_or("?"));
+                println!("  {:<22} {}", "persistence-import",
+                    node["persistence_import_enabled"].as_bool().map(|v| v.to_string()).as_deref().unwrap_or("?"));
             }
         }
     }

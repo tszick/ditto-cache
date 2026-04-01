@@ -256,6 +256,18 @@ pub struct NodeStats {
     /// Total bytes occupied by backup files in the configured backup directory.
     /// Computed at query time; 0 if the directory is empty or does not exist.
     pub backup_dir_bytes: u64,
+    /// Platform-level persistence gate (env/config controlled).
+    pub persistence_platform_allowed: bool,
+    /// Runtime persistence gate (admin controlled).
+    pub persistence_runtime_enabled: bool,
+    /// Effective global persistence gate (`platform && runtime`).
+    pub persistence_enabled: bool,
+    /// Effective backup gate (`platform && runtime && backup_allowed`).
+    pub persistence_backup_enabled: bool,
+    /// Effective export gate (`platform && runtime && export_allowed`).
+    pub persistence_export_enabled: bool,
+    /// Effective import gate (`platform && runtime && import_allowed`).
+    pub persistence_import_enabled: bool,
 }
 
 // ---------------------------------------------------------------------------

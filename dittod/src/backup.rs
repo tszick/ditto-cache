@@ -27,6 +27,17 @@ const NONCE_LEN: usize = 12;
 ///
 /// Returns the path of the written backup file.
 pub async fn run_backup(node: Arc<NodeHandle>, cfg: &BackupConfig) -> anyhow::Result<String> {
+    {
+        let guard = node.config.lock().unwrap();
+        let p = &guard.persistence;
+        let backup_enabled = p.platform_allowed && p.runtime_enabled && p.backup_allowed;
+        if !backup_enabled {
+            anyhow::bail!(
+                "backup is disabled by persistence policy (require platform + runtime + backup feature enablement)"
+            );
+        }
+    }
+
     // --- 1. Inactivate (save prior state so we can restore it) ---
     let was_active = node.active.load(Ordering::Relaxed);
     if was_active {
@@ -236,6 +247,16 @@ pub async fn run_scheduler(node: Arc<NodeHandle>, cfg: BackupConfig) {
 
         tracing::info!("Next scheduled backup at {} (in {:?})", next, delay);
         tokio::time::sleep(delay).await;
+
+        let backup_enabled = {
+            let guard = node.config.lock().unwrap();
+            let p = &guard.persistence;
+            p.platform_allowed && p.runtime_enabled && p.backup_allowed
+        };
+        if !backup_enabled {
+            tracing::info!("Scheduled backup skipped: persistence backup gate is disabled.");
+            continue;
+        }
 
         if let Err(e) = run_backup(node.clone(), &cfg).await {
             tracing::error!("Scheduled backup failed: {}", e);

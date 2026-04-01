@@ -22,6 +22,7 @@ No stale reads, ever.
 - **HTTPS** — optional server-side TLS on the dittod HTTP REST port (7778) and the management port (7781)
 - **HTTP Basic Auth** — optional username/password protection on the HTTP REST port (7778) and management port (7781); passwords stored as bcrypt hashes
 - **Backup encryption** — optional AES-256-GCM encryption for backup files; encrypted files use a dedicated key separate from the TLS certificates
+- **Persistence policy gates** - backup/export/import are disabled by default and require both platform env allow + runtime admin enable
 - **LFU eviction** — least-frequently-used entries evicted when the memory limit is reached
 - **TTL support** — per-key or global default TTL with a background sweep
 - **Transparent LZ4 compression** — large values compressed automatically; decompressed on read; per-key override via `dittoctl`
@@ -245,6 +246,16 @@ key     = "/etc/ditto/certs/node.key"
 | `DITTO_HTTP_AUTH_USER` | `http_auth.username` |
 | `DITTO_HTTP_AUTH_PASSWORD_HASH` | `http_auth.password_hash` |
 | `DITTO_BACKUP_ENCRYPTION_KEY` | `backup.encryption_key` (hex-encoded 32-byte AES-256-GCM key) |
+| `DITTO_PERSISTENCE_PLATFORM_ALLOWED` | global platform gate for persistence features |
+| `DITTO_PERSISTENCE_BACKUP_ALLOWED` | platform gate for backup |
+| `DITTO_PERSISTENCE_EXPORT_ALLOWED` | platform gate for export |
+| `DITTO_PERSISTENCE_IMPORT_ALLOWED` | platform gate for import |
+
+Persistence effective state:
+
+`persistence_enabled = PERSISTENCE_PLATFORM_ALLOWED && persistence_runtime_enabled`
+
+Default behavior is secure-by-default: all persistence platform gates are `false`, so backup/export/import are disabled until explicitly enabled.
 
 ### Management service — `~/.config/ditto/mgmt.toml`
 
@@ -303,6 +314,7 @@ dittoctl node status all
 dittoctl node describe local
 dittoctl node set active 127.0.0.1:7779 false    # maintenance mode
 dittoctl node set max-memory local 1024           # live, no restart
+dittoctl node set persistence-runtime-enabled local true  # requires platform allow
 
 # Cache operations
 dittoctl cache list stats all

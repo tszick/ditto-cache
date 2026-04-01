@@ -127,7 +127,15 @@ dittoctl node status all
 dittoctl node describe all
 dittoctl node get active local
 dittoctl node set active local false
+dittoctl node set persistence-runtime-enabled local true
 ```
+
+Persistence is only effective when both conditions are true:
+
+`enabled = PERSISTENCE_PLATFORM_ALLOWED && persistence_runtime_enabled`
+
+Platform gates are disabled by default, so backup/export/import stay blocked until explicitly enabled.
+`node status` includes the persistence fields (`persistence_platform_allowed`, `persistence_runtime_enabled`, `persistence_enabled`, plus per-feature flags).
 
 ### Cache operations through mgmt
 
@@ -155,6 +163,7 @@ dittoctl cache flush local
 ```
 
 `cache flush all` requires interactive confirmation.
+`node backup` is rejected when persistence backup is disabled by policy.
 
 ## Security checklist
 

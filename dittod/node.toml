@@ -33,6 +33,13 @@ path        = "./backups"
 format      = "binary"       # binary | json
 retain_days = 30
 
+[persistence]
+platform_allowed = false
+runtime_enabled  = false
+backup_allowed   = false
+export_allowed   = false
+import_allowed   = false
+
 [log]
 enabled     = false
 path        = "./logs"       # directory for rolling log files (created if absent)

@@ -17,6 +17,8 @@ pub struct Config {
     #[serde(default)]
     pub backup:      BackupConfig,
     #[serde(default)]
+    pub persistence: PersistenceConfig,
+    #[serde(default)]
     pub log:         LogConfig,
 }
 
@@ -172,6 +174,32 @@ impl Default for BackupConfig {
     }
 }
 
+/// Persistence policy gate:
+/// - platform_allowed: immutable platform switch (env/config level)
+/// - runtime_enabled: mutable runtime switch (admin SetProperty)
+/// - *feature*_allowed: platform-level feature gates
+///
+/// Effective feature status:
+/// `platform_allowed && runtime_enabled && <feature_allowed>`
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PersistenceConfig {
+    /// Master platform gate. Default false.
+    #[serde(default)]
+    pub platform_allowed: bool,
+    /// Runtime gate toggled by admin API/CLI. Default false.
+    #[serde(default)]
+    pub runtime_enabled:  bool,
+    /// Platform gate for backup operations.
+    #[serde(default)]
+    pub backup_allowed:   bool,
+    /// Platform gate for export operations.
+    #[serde(default)]
+    pub export_allowed:   bool,
+    /// Platform gate for import operations.
+    #[serde(default)]
+    pub import_allowed:   bool,
+}
+
 /// File logging configuration.
 ///
 /// When `enabled = true`, log records are written to rolling files in `path`
@@ -298,6 +326,7 @@ impl Default for Config {
             tls:         TlsConfig::default(),
             http_auth:   HttpAuthConfig::default(),
             backup:      BackupConfig::default(),
+            persistence: PersistenceConfig::default(),
             log:         LogConfig::default(),
         }
     }

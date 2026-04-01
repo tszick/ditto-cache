@@ -14,6 +14,10 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
+fn parse_bool_env(var: &str) -> Option<bool> {
+    std::env::var(var).ok().map(|v| v.trim().eq_ignore_ascii_case("true"))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Install the ring crypto provider for rustls (must happen before any TLS use).
@@ -77,6 +81,26 @@ async fn main() -> Result<()> {
     }
     if let Ok(v) = std::env::var("DITTO_BACKUP_ENCRYPTION_KEY") {
         config.backup.encryption_key = Some(v);
+    }
+    if let Some(v) = parse_bool_env("DITTO_PERSISTENCE_PLATFORM_ALLOWED")
+        .or_else(|| parse_bool_env("PERSISTENCE_PLATFORM_ALLOWED"))
+    {
+        config.persistence.platform_allowed = v;
+    }
+    if let Some(v) = parse_bool_env("DITTO_PERSISTENCE_BACKUP_ALLOWED")
+        .or_else(|| parse_bool_env("PERSISTENCE_BACKUP_ALLOWED"))
+    {
+        config.persistence.backup_allowed = v;
+    }
+    if let Some(v) = parse_bool_env("DITTO_PERSISTENCE_EXPORT_ALLOWED")
+        .or_else(|| parse_bool_env("PERSISTENCE_EXPORT_ALLOWED"))
+    {
+        config.persistence.export_allowed = v;
+    }
+    if let Some(v) = parse_bool_env("DITTO_PERSISTENCE_IMPORT_ALLOWED")
+        .or_else(|| parse_bool_env("PERSISTENCE_IMPORT_ALLOWED"))
+    {
+        config.persistence.import_allowed = v;
     }
     if let Ok(v) = std::env::var("DITTO_BIND_ADDR") {
         config.node.bind_addr = v;

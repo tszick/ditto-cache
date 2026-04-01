@@ -491,6 +491,23 @@ impl NodeHandle {
     // Admin handler
     // -----------------------------------------------------------------------
 
+    fn persistence_states(cfg: &Config) -> (bool, bool, bool, bool, bool, bool) {
+        let platform = cfg.persistence.platform_allowed;
+        let runtime = cfg.persistence.runtime_enabled;
+        let enabled = platform && runtime;
+        let backup_enabled = enabled && cfg.persistence.backup_allowed;
+        let export_enabled = enabled && cfg.persistence.export_allowed;
+        let import_enabled = enabled && cfg.persistence.import_allowed;
+        (
+            platform,
+            runtime,
+            enabled,
+            backup_enabled,
+            export_enabled,
+            import_enabled,
+        )
+    }
+
     // Build the full list of node properties as key-value pairs.
     async fn all_properties(&self) -> Vec<(String, String)> {
         let stats  = self.stats().await;
@@ -517,6 +534,15 @@ impl NodeHandle {
             ("compression-enabled".into(),  stats.compression_enabled.to_string()),
             ("compression-threshold".into(),format!("{}b", stats.compression_threshold_bytes)),
             ("version-check-interval".into(), format!("{}ms", cfg.replication.version_check_interval_ms)),
+            ("persistence-platform-allowed".into(), stats.persistence_platform_allowed.to_string()),
+            ("persistence-runtime-enabled".into(), stats.persistence_runtime_enabled.to_string()),
+            ("persistence-enabled".into(), stats.persistence_enabled.to_string()),
+            ("persistence-backup-platform-allowed".into(), cfg.persistence.backup_allowed.to_string()),
+            ("persistence-export-platform-allowed".into(), cfg.persistence.export_allowed.to_string()),
+            ("persistence-import-platform-allowed".into(), cfg.persistence.import_allowed.to_string()),
+            ("persistence-backup-enabled".into(), stats.persistence_backup_enabled.to_string()),
+            ("persistence-export-enabled".into(), stats.persistence_export_enabled.to_string()),
+            ("persistence-import-enabled".into(), stats.persistence_import_enabled.to_string()),
         ]
     }
 
@@ -611,7 +637,16 @@ impl NodeHandle {
             }
 
             AdminRequest::BackupNow => {
-                let cfg = self.config.lock().unwrap().backup.clone();
+                let (backup_enabled, cfg) = {
+                    let cfg_guard = self.config.lock().unwrap();
+                    let (_, _, _, backup_enabled, _, _) = Self::persistence_states(&cfg_guard);
+                    (backup_enabled, cfg_guard.backup.clone())
+                };
+                if !backup_enabled {
+                    return AdminResponse::Error {
+                        message: "Backup is disabled by persistence policy. Require DITTO_PERSISTENCE_PLATFORM_ALLOWED=true, DITTO_PERSISTENCE_BACKUP_ALLOWED=true and runtime property persistence-runtime-enabled=true.".into(),
+                    };
+                }
                 match crate::backup::run_backup(Arc::clone(&self), &cfg).await {
                     Ok(path) => {
                         AdminResponse::BackupResult {
@@ -811,6 +846,13 @@ impl NodeHandle {
                             }
                             Err(_) => tracing::warn!("SetProperty version-check-interval: invalid value '{}'", value),
                         }
+                    }
+
+                    // ── persistence runtime gate ───────────────────────────────
+                    "persistence-runtime-enabled" | "persistence-enabled" => {
+                        let val = value.trim().eq_ignore_ascii_case("true");
+                        self.config.lock().unwrap().persistence.runtime_enabled = val;
+                        tracing::info!("persistence-runtime-enabled → {}", val);
                     }
 
                     other => tracing::warn!("SetProperty: unknown property '{}'", other),
@@ -1143,6 +1185,14 @@ impl NodeHandle {
         let log = self.write_log.lock().await;
         let cfg = self.config.lock().unwrap();
         let backup_dir_bytes = dir_size_bytes(&cfg.backup.path);
+        let (
+            persistence_platform_allowed,
+            persistence_runtime_enabled,
+            persistence_enabled,
+            persistence_backup_enabled,
+            persistence_export_enabled,
+            persistence_import_enabled,
+        ) = Self::persistence_states(&cfg);
         NodeStats {
             node_id:           self.id,
             status:            set.local_status(),
@@ -1161,6 +1211,12 @@ impl NodeHandle {
             compression_threshold_bytes: s.compression_threshold_bytes,
             node_name:        cfg.node.id.clone(),
             backup_dir_bytes,
+            persistence_platform_allowed,
+            persistence_runtime_enabled,
+            persistence_enabled,
+            persistence_backup_enabled,
+            persistence_export_enabled,
+            persistence_import_enabled,
         }
     }
 }
@@ -1178,4 +1234,57 @@ fn dir_size_bytes(path: &str) -> u64 {
                 .sum()
         })
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NodeHandle;
+    use crate::config::Config;
+
+    #[test]
+    fn persistence_states_default_is_fully_disabled() {
+        let cfg = Config::default();
+        let (platform, runtime, enabled, backup, export, import) =
+            NodeHandle::persistence_states(&cfg);
+        assert!(!platform);
+        assert!(!runtime);
+        assert!(!enabled);
+        assert!(!backup);
+        assert!(!export);
+        assert!(!import);
+    }
+
+    #[test]
+    fn persistence_states_require_platform_and_runtime() {
+        let mut cfg = Config::default();
+        cfg.persistence.platform_allowed = true;
+        cfg.persistence.runtime_enabled = false;
+        cfg.persistence.backup_allowed = true;
+        cfg.persistence.export_allowed = true;
+        cfg.persistence.import_allowed = true;
+
+        let (_platform, _runtime, enabled, backup, export, import) =
+            NodeHandle::persistence_states(&cfg);
+        assert!(!enabled);
+        assert!(!backup);
+        assert!(!export);
+        assert!(!import);
+    }
+
+    #[test]
+    fn persistence_states_apply_feature_flags_after_global_enable() {
+        let mut cfg = Config::default();
+        cfg.persistence.platform_allowed = true;
+        cfg.persistence.runtime_enabled = true;
+        cfg.persistence.backup_allowed = true;
+        cfg.persistence.export_allowed = false;
+        cfg.persistence.import_allowed = true;
+
+        let (_platform, _runtime, enabled, backup, export, import) =
+            NodeHandle::persistence_states(&cfg);
+        assert!(enabled);
+        assert!(backup);
+        assert!(!export);
+        assert!(import);
+    }
 }

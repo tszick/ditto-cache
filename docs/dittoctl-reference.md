@@ -77,6 +77,16 @@ dittoctl node set <property> <target> <value>
 Special local settings:
 - `target=local` + `property=url|timeout|format` updates `kvctl.toml`.
 
+Persistence runtime toggle:
+
+```bash
+dittoctl node set persistence-runtime-enabled <target> <true|false>
+```
+
+Effective policy is:
+
+`enabled = PERSISTENCE_PLATFORM_ALLOWED && persistence_runtime_enabled`
+
 ### List sub-resources
 
 ```bash
@@ -89,6 +99,8 @@ dittoctl node list ports <target>
 dittoctl node backup <target>
 ```
 
+Backup works only when persistence backup is enabled by policy (platform allow + runtime enabled).
+
 ### Status
 
 ```bash
@@ -96,6 +108,7 @@ dittoctl node status <target>
 ```
 
 `target` can be `local`, `all`, or a specific node address/name expected by mgmt.
+Status output includes persistence policy flags (`persistence_platform_allowed`, `persistence_runtime_enabled`, `persistence_enabled`, and per-feature states).
 
 ## Cache commands
 
