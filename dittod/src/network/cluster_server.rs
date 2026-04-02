@@ -1,5 +1,5 @@
 use crate::node::NodeHandle;
-use ditto_protocol::{ClusterMessage, encode, decode};
+use ditto_protocol::{decode, encode, ClusterMessage};
 use std::{sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -22,7 +22,7 @@ pub async fn start(
     loop {
         let (stream, addr) = listener.accept().await?;
         debug!("Cluster/Admin connection from {}", addr);
-        let node     = node.clone();
+        let node = node.clone();
         let acceptor = acceptor.clone();
         tokio::spawn(async move {
             let result = if let Some(acc) = acceptor {
@@ -92,14 +92,17 @@ pub async fn send_cluster(
 
     if let Some(connector) = tls {
         let server_name = crate::network::tls::cluster_server_name();
-        let tls_stream  = connector.connect(server_name, tcp).await?;
+        let tls_stream = connector.connect(server_name, tcp).await?;
         do_cluster_rpc(tls_stream, msg).await
     } else {
         do_cluster_rpc(tcp, msg).await
     }
 }
 
-async fn do_cluster_rpc<S>(mut stream: S, msg: &ClusterMessage) -> anyhow::Result<Option<ClusterMessage>>
+async fn do_cluster_rpc<S>(
+    mut stream: S,
+    msg: &ClusterMessage,
+) -> anyhow::Result<Option<ClusterMessage>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -117,7 +120,11 @@ where
             let len = u32::from_be_bytes(len_buf) as usize;
             const MAX_RPC_RESPONSE_BYTES: usize = 128 * 1024 * 1024;
             if len > MAX_RPC_RESPONSE_BYTES {
-                anyhow::bail!("RPC response length {} exceeds max {}", len, MAX_RPC_RESPONSE_BYTES);
+                anyhow::bail!(
+                    "RPC response length {} exceeds max {}",
+                    len,
+                    MAX_RPC_RESPONSE_BYTES
+                );
             }
             let alloc_len = len.min(MAX_RPC_RESPONSE_BYTES);
             let mut payload = vec![0u8; alloc_len];

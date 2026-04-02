@@ -10,14 +10,14 @@ use std::{fs, path::PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CtlConfig {
-    pub mgmt:   MgmtConfig,
+    pub mgmt: MgmtConfig,
     pub output: OutputConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MgmtConfig {
     /// Base URL of the ditto-mgmt service.  e.g. "http://localhost:7781"
-    pub url:        String,
+    pub url: String,
     /// HTTP request timeout in milliseconds.
     pub timeout_ms: u64,
 }
@@ -32,7 +32,7 @@ impl Default for CtlConfig {
     fn default() -> Self {
         Self {
             mgmt: MgmtConfig {
-                url:        "http://localhost:7781".into(),
+                url: "http://localhost:7781".into(),
                 timeout_ms: 3000,
             },
             output: OutputConfig {
@@ -46,8 +46,7 @@ impl CtlConfig {
     pub fn load() -> Result<Self> {
         let path = config_path();
         if path.exists() {
-            let raw = fs::read_to_string(&path)
-                .with_context(|| format!("reading {:?}", path))?;
+            let raw = fs::read_to_string(&path).with_context(|| format!("reading {:?}", path))?;
             toml::from_str(&raw).context("parsing dittoctl config")
         } else {
             Ok(Self::default())

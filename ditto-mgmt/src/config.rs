@@ -11,13 +11,13 @@ use std::{fs, path::PathBuf};
 /// Top-level configuration for the management service.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MgmtConfig {
-    pub server:           ServerConfig,
-    pub connection:       ConnectionConfig,
+    pub server: ServerConfig,
+    pub connection: ConnectionConfig,
     #[serde(default)]
-    pub tls:              TlsConfig,
+    pub tls: TlsConfig,
     /// Optional HTTP Basic Auth for the management API (7781).
     #[serde(default)]
-    pub admin:            AdminConfig,
+    pub admin: AdminConfig,
     /// Credentials ditto-mgmt uses when proxying cache requests to dittod's
     /// HTTP REST port (7778), when auth is enabled there.
     #[serde(default)]
@@ -42,11 +42,11 @@ pub struct ServerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionConfig {
     /// Bootstrap seed addresses in "host:cluster_port" format.
-    pub seeds:        Vec<String>,
+    pub seeds: Vec<String>,
     /// Cluster/admin TCP port (default 7779).
     pub cluster_port: u16,
     /// RPC timeout in milliseconds.
-    pub timeout_ms:   u64,
+    pub timeout_ms: u64,
 }
 
 /// TLS configuration for mTLS connections to node cluster ports.
@@ -57,9 +57,9 @@ pub struct TlsConfig {
     #[serde(default)]
     pub ca_cert: String,
     #[serde(default)]
-    pub cert:    String,
+    pub cert: String,
     #[serde(default)]
-    pub key:     String,
+    pub key: String,
 }
 
 /// Optional HTTP Basic Auth for the management server (port 7781).
@@ -73,7 +73,7 @@ pub struct TlsConfig {
 pub struct AdminConfig {
     /// Username (default: `"admin"` when only hash is set).
     #[serde(default)]
-    pub username:      Option<String>,
+    pub username: Option<String>,
     /// bcrypt hash of the password.  When absent, auth is disabled.
     #[serde(default)]
     pub password_hash: Option<String>,
@@ -97,18 +97,18 @@ impl Default for MgmtConfig {
     fn default() -> Self {
         Self {
             server: ServerConfig {
-                bind:     "0.0.0.0".into(),
-                port:     7781,
+                bind: "0.0.0.0".into(),
+                port: 7781,
                 tls_cert: None,
-                tls_key:  None,
+                tls_key: None,
             },
             connection: ConnectionConfig {
-                seeds:        vec!["127.0.0.1:7779".into()],
+                seeds: vec!["127.0.0.1:7779".into()],
                 cluster_port: 7779,
-                timeout_ms:   3000,
+                timeout_ms: 3000,
             },
-            tls:              TlsConfig::default(),
-            admin:            AdminConfig::default(),
+            tls: TlsConfig::default(),
+            admin: AdminConfig::default(),
             http_client_auth: HttpClientAuthConfig::default(),
         }
     }
@@ -118,8 +118,7 @@ impl MgmtConfig {
     pub fn load() -> Result<Self> {
         let path = config_path();
         if path.exists() {
-            let raw = fs::read_to_string(&path)
-                .with_context(|| format!("reading {:?}", path))?;
+            let raw = fs::read_to_string(&path).with_context(|| format!("reading {:?}", path))?;
             toml::from_str(&raw).context("parsing ditto-mgmt config")
         } else {
             Ok(Self::default())

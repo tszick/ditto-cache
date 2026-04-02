@@ -15,10 +15,13 @@ use serde_json::Value;
 
 /// GET {url} → parsed JSON Value.
 pub async fn mgmt_get(client: &reqwest::Client, url: &str) -> Result<Value> {
-    let resp = client.get(url).send().await
+    let resp = client
+        .get(url)
+        .send()
+        .await
         .with_context(|| format!("GET {}", url))?;
     let status = resp.status();
-    let body   = resp.text().await?;
+    let body = resp.text().await?;
     if !status.is_success() {
         anyhow::bail!("GET {} → {}: {}", url, status, body);
     }
@@ -27,12 +30,14 @@ pub async fn mgmt_get(client: &reqwest::Client, url: &str) -> Result<Value> {
 
 /// POST {url} with JSON body → parsed JSON Value.
 pub async fn mgmt_post(client: &reqwest::Client, url: &str, body: Value) -> Result<Value> {
-    let resp = client.post(url)
+    let resp = client
+        .post(url)
         .json(&body)
-        .send().await
+        .send()
+        .await
         .with_context(|| format!("POST {}", url))?;
     let status = resp.status();
-    let text   = resp.text().await?;
+    let text = resp.text().await?;
     if !status.is_success() {
         anyhow::bail!("POST {} → {}: {}", url, status, text);
     }
@@ -41,12 +46,14 @@ pub async fn mgmt_post(client: &reqwest::Client, url: &str, body: Value) -> Resu
 
 /// PUT {url} with JSON body → parsed JSON Value.
 pub async fn mgmt_put(client: &reqwest::Client, url: &str, body: Value) -> Result<Value> {
-    let resp = client.put(url)
+    let resp = client
+        .put(url)
         .json(&body)
-        .send().await
+        .send()
+        .await
         .with_context(|| format!("PUT {}", url))?;
     let status = resp.status();
-    let text   = resp.text().await?;
+    let text = resp.text().await?;
     if !status.is_success() {
         anyhow::bail!("PUT {} → {}: {}", url, status, text);
     }
@@ -55,10 +62,13 @@ pub async fn mgmt_put(client: &reqwest::Client, url: &str, body: Value) -> Resul
 
 /// DELETE {url} → parsed JSON Value.
 pub async fn mgmt_delete(client: &reqwest::Client, url: &str) -> Result<Value> {
-    let resp = client.delete(url).send().await
+    let resp = client
+        .delete(url)
+        .send()
+        .await
         .with_context(|| format!("DELETE {}", url))?;
     let status = resp.status();
-    let text   = resp.text().await?;
+    let text = resp.text().await?;
     if !status.is_success() {
         anyhow::bail!("DELETE {} → {}: {}", url, status, text);
     }
@@ -75,8 +85,9 @@ fn percent_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
-            | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             b => out.push_str(&format!("%{:02X}", b)),
         }
     }

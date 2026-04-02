@@ -12,29 +12,29 @@ use uuid::Uuid;
 /// Primary is normally the active node with the lexicographically smallest UUID,
 /// but can be overridden by a `ForcePrimary` admin command.
 pub struct ActiveSet {
-    local_id:       Uuid,
-    local_addr:     SocketAddr,
-    cluster_port:   u16,
-    nodes:          HashMap<Uuid, NodeState>,
-    dead_after:     Duration,
-    max_nodes:      usize,
+    local_id: Uuid,
+    local_addr: SocketAddr,
+    cluster_port: u16,
+    nodes: HashMap<Uuid, NodeState>,
+    dead_after: Duration,
+    max_nodes: usize,
     /// Force-elected primary override; None = automatic (smallest UUID).
     pinned_primary: Option<Uuid>,
 }
 
 #[derive(Debug, Clone)]
 pub struct NodeState {
-    pub info:      NodeInfo,
+    pub info: NodeInfo,
     pub last_seen: Instant,
 }
 
 impl ActiveSet {
     pub fn new(
-        local_id:     Uuid,
-        local_addr:   SocketAddr,
+        local_id: Uuid,
+        local_addr: SocketAddr,
         cluster_port: u16,
         dead_after_ms: u64,
-        max_nodes:    usize,
+        max_nodes: usize,
     ) -> Self {
         let mut set = Self {
             local_id,
@@ -47,10 +47,10 @@ impl ActiveSet {
         };
         // Register ourselves immediately.
         set.upsert(NodeInfo {
-            id:           local_id,
-            addr:         local_addr,
+            id: local_id,
+            addr: local_addr,
             cluster_port,
-            status:       NodeStatus::Active,
+            status: NodeStatus::Active,
             last_applied: 0,
         });
         set
@@ -64,14 +64,18 @@ impl ActiveSet {
         if !is_known && self.nodes.len() >= self.max_nodes {
             tracing::warn!(
                 "Cluster is at max capacity ({} nodes). Ignoring join from {}.",
-                self.max_nodes, info.id
+                self.max_nodes,
+                info.id
             );
             return false;
         }
-        self.nodes.insert(info.id, NodeState {
-            info,
-            last_seen: Instant::now(),
-        });
+        self.nodes.insert(
+            info.id,
+            NodeState {
+                info,
+                last_seen: Instant::now(),
+            },
+        );
         true
     }
 
@@ -140,10 +144,7 @@ impl ActiveSet {
                 return Some(pinned);
             }
         }
-        self.active_nodes()
-            .into_iter()
-            .map(|n| n.id)
-            .min()
+        self.active_nodes().into_iter().map(|n| n.id).min()
     }
 
     pub fn is_primary(&self) -> bool {

@@ -1,9 +1,9 @@
 use crate::config::TlsConfig;
 use anyhow::{Context, Result};
 use rustls::{
-    ClientConfig, RootCertStore, ServerConfig,
     pki_types::{CertificateDer, PrivateKeyDer, ServerName},
     server::WebPkiClientVerifier,
+    ClientConfig, RootCertStore, ServerConfig,
 };
 use rustls_pemfile::{certs, private_key};
 use std::{fs, io::BufReader, sync::Arc};
@@ -11,21 +11,22 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 /// Build a TLS acceptor for the cluster/admin server (mTLS – requires client cert).
 pub fn build_acceptor(cfg: &TlsConfig) -> Result<TlsAcceptor> {
-    let ca_certs = load_certs(&cfg.ca_cert)
-        .with_context(|| format!("loading CA cert '{}'", cfg.ca_cert))?;
+    let ca_certs =
+        load_certs(&cfg.ca_cert).with_context(|| format!("loading CA cert '{}'", cfg.ca_cert))?;
     let mut root_store = RootCertStore::empty();
     for cert in ca_certs {
-        root_store.add(cert).context("adding CA cert to root store")?;
+        root_store
+            .add(cert)
+            .context("adding CA cert to root store")?;
     }
 
     let client_verifier = WebPkiClientVerifier::builder(Arc::new(root_store))
         .build()
         .context("building WebPkiClientVerifier")?;
 
-    let certs = load_certs(&cfg.cert)
-        .with_context(|| format!("loading server cert '{}'", cfg.cert))?;
-    let key = load_key(&cfg.key)
-        .with_context(|| format!("loading server key '{}'", cfg.key))?;
+    let certs =
+        load_certs(&cfg.cert).with_context(|| format!("loading server cert '{}'", cfg.cert))?;
+    let key = load_key(&cfg.key).with_context(|| format!("loading server key '{}'", cfg.key))?;
 
     let server_cfg = ServerConfig::builder()
         .with_client_cert_verifier(client_verifier)
@@ -37,17 +38,18 @@ pub fn build_acceptor(cfg: &TlsConfig) -> Result<TlsAcceptor> {
 
 /// Build a TLS connector for outbound cluster connections (mTLS – presents client cert).
 pub fn build_connector(cfg: &TlsConfig) -> Result<TlsConnector> {
-    let ca_certs = load_certs(&cfg.ca_cert)
-        .with_context(|| format!("loading CA cert '{}'", cfg.ca_cert))?;
+    let ca_certs =
+        load_certs(&cfg.ca_cert).with_context(|| format!("loading CA cert '{}'", cfg.ca_cert))?;
     let mut root_store = RootCertStore::empty();
     for cert in ca_certs {
-        root_store.add(cert).context("adding CA cert to root store")?;
+        root_store
+            .add(cert)
+            .context("adding CA cert to root store")?;
     }
 
-    let certs = load_certs(&cfg.cert)
-        .with_context(|| format!("loading client cert '{}'", cfg.cert))?;
-    let key = load_key(&cfg.key)
-        .with_context(|| format!("loading client key '{}'", cfg.key))?;
+    let certs =
+        load_certs(&cfg.cert).with_context(|| format!("loading client cert '{}'", cfg.cert))?;
+    let key = load_key(&cfg.key).with_context(|| format!("loading client key '{}'", cfg.key))?;
 
     let client_cfg = ClientConfig::builder()
         .with_root_certificates(root_store)

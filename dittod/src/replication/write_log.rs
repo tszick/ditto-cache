@@ -7,19 +7,19 @@ use std::collections::VecDeque;
 /// Entries are appended on every write and compacted once all active nodes
 /// have confirmed they applied a given index.
 pub struct WriteLog {
-    entries:         VecDeque<WriteLogEntry>,
-    next_index:      u64,
+    entries: VecDeque<WriteLogEntry>,
+    next_index: u64,
     committed_index: u64,
 }
 
 #[derive(Debug, Clone)]
 pub struct WriteLogEntry {
-    pub index:    u64,
-    pub key:      String,
-    pub value:    Option<Bytes>,
+    pub index: u64,
+    pub key: String,
+    pub value: Option<Bytes>,
     pub ttl_secs: Option<u64>,
-    pub ts_ms:    u64,
-    pub status:   EntryStatus,
+    pub ts_ms: u64,
+    pub status: EntryStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,8 +33,8 @@ pub enum EntryStatus {
 impl WriteLog {
     pub fn new() -> Self {
         Self {
-            entries:         VecDeque::new(),
-            next_index:      1,
+            entries: VecDeque::new(),
+            next_index: 1,
             committed_index: 0,
         }
     }
@@ -134,11 +134,11 @@ impl WriteLog {
             .iter()
             .filter(|e| e.index > from && e.status == EntryStatus::Committed)
             .map(|e| LogEntry {
-                index:    e.index,
-                key:      e.key.clone(),
-                value:    e.value.clone(),
+                index: e.index,
+                key: e.key.clone(),
+                value: e.value.clone(),
                 ttl_secs: e.ttl_secs,
-                ts_ms:    e.ts_ms,
+                ts_ms: e.ts_ms,
             })
             .collect()
     }

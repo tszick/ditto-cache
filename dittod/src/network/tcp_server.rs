@@ -1,5 +1,5 @@
 use crate::node::NodeHandle;
-use ditto_protocol::{ClientRequest, ClientResponse, encode, decode};
+use ditto_protocol::{decode, encode, ClientRequest, ClientResponse};
 use std::{collections::HashSet, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},

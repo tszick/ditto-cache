@@ -1,13 +1,12 @@
 use crate::node::NodeHandle;
 use axum::{
-    Router,
     body::Body,
     extract::{Path, Query, State},
-    http::{Request, StatusCode, header},
+    http::{header, Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json,
+    Json, Router,
 };
 use bytes::Bytes;
 use ditto_protocol::{ClientRequest, ClientResponse, ErrorCode};
@@ -45,12 +44,13 @@ pub async fn start(
 
 fn build_app(node: Arc<NodeHandle>) -> Router {
     Router::new()
-        .route("/key/:key", get(handle_get)
-            .put(handle_set)
-            .delete(handle_delete))
+        .route(
+            "/key/:key",
+            get(handle_get).put(handle_set).delete(handle_delete),
+        )
         .route("/keys/delete-by-pattern", post(handle_delete_by_pattern))
         .route("/keys/ttl-by-pattern", post(handle_set_ttl_by_pattern))
-        .route("/ping",  get(handle_ping))
+        .route("/ping", get(handle_ping))
         .route("/stats", get(handle_stats))
         .layer(middleware::from_fn_with_state(
             Arc::clone(&node),
@@ -84,18 +84,22 @@ async fn http_basic_auth(
     // (which is !Send) is dropped before the future suspends.
     let auth = {
         let cfg = node.config.lock().unwrap();
-        (cfg.http_auth.password_hash.clone(), cfg.http_auth.username.clone())
+        (
+            cfg.http_auth.password_hash.clone(),
+            cfg.http_auth.username.clone(),
+        )
     }; // MutexGuard dropped here — future is Send from this point on
 
     let (expected_user, expected_hash) = match auth {
-        (None, _) => return next.run(req).await,   // auth disabled
+        (None, _) => return next.run(req).await, // auth disabled
         (Some(hash), username) => {
             let user = username.unwrap_or_else(|| "ditto".to_string());
             (user, hash)
         }
     };
 
-    let credential = req.headers()
+    let credential = req
+        .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Basic "))
@@ -105,9 +109,13 @@ async fn http_basic_auth(
         })
         .and_then(|bytes| String::from_utf8(bytes).ok());
 
-    let (is_valid_user, pass_to_check) = match credential.as_deref().and_then(|s| s.split_once(':')) {
+    let (is_valid_user, pass_to_check) = match credential.as_deref().and_then(|s| s.split_once(':'))
+    {
         Some((user, pass)) if user == expected_user => (true, pass.to_string()),
-        _ => (false, "dummy-password-for-timing-attack-mitigation".to_string()),
+        _ => (
+            false,
+            "dummy-password-for-timing-attack-mitigation".to_string(),
+        ),
     };
 
     let is_valid_pass = tokio::task::spawn_blocking(move || {
@@ -134,10 +142,7 @@ async fn http_basic_auth(
 // Handlers
 // ---------------------------------------------------------------------------
 
-async fn handle_get(
-    Path(key): Path<String>,
-    State(node): State<Arc<NodeHandle>>,
-) -> Response {
+async fn handle_get(Path(key): Path<String>, State(node): State<Arc<NodeHandle>>) -> Response {
     match node.handle_client(ClientRequest::Get { key }).await {
         ClientResponse::Value { value, version, .. } => {
             let body = serde_json::json!({
@@ -149,7 +154,8 @@ async fn handle_get(
         ClientResponse::NotFound => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": "not_found" })),
-        ).into_response(),
+        )
+            .into_response(),
         ClientResponse::Error { code, message } => error_response(code, message),
         _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
@@ -180,13 +186,10 @@ async fn handle_set(
     }
 }
 
-async fn handle_delete(
-    Path(key): Path<String>,
-    State(node): State<Arc<NodeHandle>>,
-) -> Response {
+async fn handle_delete(Path(key): Path<String>, State(node): State<Arc<NodeHandle>>) -> Response {
     match node.handle_client(ClientRequest::Delete { key }).await {
-        ClientResponse::Deleted           => StatusCode::NO_CONTENT.into_response(),
-        ClientResponse::NotFound          => StatusCode::NOT_FOUND.into_response(),
+        ClientResponse::Deleted => StatusCode::NO_CONTENT.into_response(),
+        ClientResponse::NotFound => StatusCode::NOT_FOUND.into_response(),
         ClientResponse::Error { code, message } => error_response(code, message),
         _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
@@ -276,7 +279,13 @@ mod tests {
 
     #[test]
     fn status_mapping_for_rate_limit_and_circuit_open() {
-        assert_eq!(status_for_error(&ErrorCode::RateLimited), StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(status_for_error(&ErrorCode::CircuitOpen), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            status_for_error(&ErrorCode::RateLimited),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            status_for_error(&ErrorCode::CircuitOpen),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 }

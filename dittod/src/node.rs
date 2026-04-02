@@ -1,23 +1,27 @@
 use crate::{
     config::Config,
-    replication::{ActiveSet, WriteLog},
-    store::{kv_store::{LimitError, sanitize_for_log}, KvStore},
     network::cluster_server::send_cluster,
+    replication::{ActiveSet, WriteLog},
+    store::{
+        kv_store::{sanitize_for_log, LimitError},
+        KvStore,
+    },
 };
 use bytes::Bytes;
 use ditto_protocol::{
-    AdminRequest, AdminResponse, ClientRequest, ClientResponse,
-    ClusterMessage, ErrorCode, NodeStats, NodeStatus,
+    AdminRequest, AdminResponse, ClientRequest, ClientResponse, ClusterMessage, ErrorCode,
+    NodeStats, NodeStatus,
 };
 use std::{
+    collections::HashMap,
     net::SocketAddr,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::{broadcast, Mutex as AsyncMutex};
+use tokio::sync::{broadcast, watch, Mutex as AsyncMutex};
 use tokio_rustls::TlsConnector;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -85,20 +89,36 @@ struct CircuitRuntime {
     half_open_successes: u64,
 }
 
+#[derive(Debug)]
+struct GetFlight {
+    tx: watch::Sender<Option<ClientResponse>>,
+    waiters: AtomicUsize,
+}
+
+impl GetFlight {
+    fn new() -> Self {
+        let (tx, _rx) = watch::channel(None);
+        Self {
+            tx,
+            waiters: AtomicUsize::new(0),
+        }
+    }
+}
+
 /// Shared state handle passed to every server task.
 pub struct NodeHandle {
-    pub id:           Uuid,
+    pub id: Uuid,
     /// Runtime-mutable config (port changes write back to file).
-    pub config:       Mutex<Config>,
+    pub config: Mutex<Config>,
     /// Path to the node.toml config file for persistence.
-    pub config_path:  String,
-    pub store:        Arc<KvStore>,
-    pub write_log:    Arc<AsyncMutex<WriteLog>>,
-    pub active_set:   Arc<AsyncMutex<ActiveSet>>,
-    pub started_at:   Instant,
+    pub config_path: String,
+    pub store: Arc<KvStore>,
+    pub write_log: Arc<AsyncMutex<WriteLog>>,
+    pub active_set: Arc<AsyncMutex<ActiveSet>>,
+    pub started_at: Instant,
     /// Runtime active/inactive toggle (set via SetProperty "active").
     /// Initialised from config.node.active; can be flipped without restart.
-    pub active:       AtomicBool,
+    pub active: AtomicBool,
     /// TLS connector for outbound cluster connections; None when TLS is disabled.
     pub tls_connector: Option<TlsConnector>,
     /// DITTO-02: broadcast channel for watch events.
@@ -109,6 +129,9 @@ pub struct NodeHandle {
     rate_limited_requests_total: AtomicU64,
     circuit_breaker_open_total: AtomicU64,
     circuit_breaker_reject_total: AtomicU64,
+    get_flights: AsyncMutex<HashMap<String, Arc<GetFlight>>>,
+    hot_key_coalesced_hits_total: AtomicU64,
+    hot_key_fallback_exec_total: AtomicU64,
 }
 
 impl NodeHandle {
@@ -124,12 +147,9 @@ impl NodeHandle {
         cluster_bind_ip: String,
     ) -> Arc<Self> {
         let id = Uuid::new_v4();
-        let local_addr: SocketAddr = format!(
-            "{}:{}",
-            cluster_bind_ip, config.node.cluster_port
-        )
-        .parse()
-        .unwrap_or_else(|_| "0.0.0.0:7779".parse().unwrap());
+        let local_addr: SocketAddr = format!("{}:{}", cluster_bind_ip, config.node.cluster_port)
+            .parse()
+            .unwrap_or_else(|_| "0.0.0.0:7779".parse().unwrap());
 
         let active_set = ActiveSet::new(
             id,
@@ -143,13 +163,13 @@ impl NodeHandle {
 
         Arc::new(Self {
             id,
-            active:        AtomicBool::new(config.node.active),
-            config:        Mutex::new(config.clone()),
+            active: AtomicBool::new(config.node.active),
+            config: Mutex::new(config.clone()),
             config_path,
             store,
-            write_log:     Arc::new(AsyncMutex::new(WriteLog::new())),
-            active_set:    Arc::new(AsyncMutex::new(active_set)),
-            started_at:    Instant::now(),
+            write_log: Arc::new(AsyncMutex::new(WriteLog::new())),
+            active_set: Arc::new(AsyncMutex::new(active_set)),
+            started_at: Instant::now(),
             tls_connector,
             watch_tx,
             rate_bucket: Mutex::new(TokenBucket::new(
@@ -165,6 +185,9 @@ impl NodeHandle {
             rate_limited_requests_total: AtomicU64::new(0),
             circuit_breaker_open_total: AtomicU64::new(0),
             circuit_breaker_reject_total: AtomicU64::new(0),
+            get_flights: AsyncMutex::new(HashMap::new()),
+            hot_key_coalesced_hits_total: AtomicU64::new(0),
+            hot_key_fallback_exec_total: AtomicU64::new(0),
         })
     }
 
@@ -198,7 +221,8 @@ impl NodeHandle {
         }
         let allowed = bucket.try_take();
         if !allowed {
-            self.rate_limited_requests_total.fetch_add(1, Ordering::Relaxed);
+            self.rate_limited_requests_total
+                .fetch_add(1, Ordering::Relaxed);
         }
         allowed
     }
@@ -226,7 +250,8 @@ impl NodeHandle {
                     c.half_open_successes = 0;
                     true
                 } else {
-                    self.circuit_breaker_reject_total.fetch_add(1, Ordering::Relaxed);
+                    self.circuit_breaker_reject_total
+                        .fetch_add(1, Ordering::Relaxed);
                     false
                 }
             }
@@ -275,7 +300,8 @@ impl NodeHandle {
                         c.state = CircuitState::Open;
                         c.open_until_ms = now_ms.saturating_add(open_ms);
                         c.half_open_successes = 0;
-                        self.circuit_breaker_open_total.fetch_add(1, Ordering::Relaxed);
+                        self.circuit_breaker_open_total
+                            .fetch_add(1, Ordering::Relaxed);
                     }
                 } else {
                     c.consecutive_failures = 0;
@@ -288,13 +314,104 @@ impl NodeHandle {
                     c.open_until_ms = now_ms.saturating_add(open_ms);
                     c.half_open_successes = 0;
                     c.consecutive_failures = threshold;
-                    self.circuit_breaker_open_total.fetch_add(1, Ordering::Relaxed);
+                    self.circuit_breaker_open_total
+                        .fetch_add(1, Ordering::Relaxed);
                 } else {
                     c.half_open_successes += 1;
                     if c.half_open_successes >= half_open_max_requests {
                         c.state = CircuitState::Closed;
                         c.consecutive_failures = 0;
                         c.half_open_successes = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    fn execute_get(&self, key: String) -> ClientResponse {
+        match self.store.get(&key) {
+            Some(entry) => ClientResponse::Value {
+                key,
+                value: entry.value,
+                version: entry.version,
+            },
+            None => ClientResponse::NotFound,
+        }
+    }
+
+    async fn handle_get_with_single_flight(&self, key: String) -> ClientResponse {
+        let (enabled, max_waiters) = {
+            let cfg = self.config.lock().unwrap();
+            (cfg.hot_key.enabled, cfg.hot_key.max_waiters.max(1))
+        };
+        if !enabled {
+            return self.execute_get(key);
+        }
+
+        enum JoinDecision {
+            Leader(Arc<GetFlight>),
+            Follower {
+                flight: Arc<GetFlight>,
+                rx: watch::Receiver<Option<ClientResponse>>,
+            },
+            Fallback,
+        }
+
+        let decision = {
+            let mut flights = self.get_flights.lock().await;
+            if let Some(existing) = flights.get(&key) {
+                let current = existing.waiters.load(Ordering::Relaxed);
+                if current >= max_waiters {
+                    JoinDecision::Fallback
+                } else {
+                    existing.waiters.fetch_add(1, Ordering::Relaxed);
+                    let rx = existing.tx.subscribe();
+                    JoinDecision::Follower {
+                        flight: Arc::clone(existing),
+                        rx,
+                    }
+                }
+            } else {
+                let created = Arc::new(GetFlight::new());
+                flights.insert(key.clone(), Arc::clone(&created));
+                JoinDecision::Leader(created)
+            }
+        };
+
+        match decision {
+            JoinDecision::Fallback => {
+                self.hot_key_fallback_exec_total
+                    .fetch_add(1, Ordering::Relaxed);
+                self.execute_get(key)
+            }
+            JoinDecision::Leader(flight) => {
+                let response = self.execute_get(key.clone());
+                let _ = flight.tx.send(Some(response.clone()));
+                let mut flights = self.get_flights.lock().await;
+                if flights
+                    .get(&key)
+                    .map(|f| Arc::ptr_eq(f, &flight))
+                    .unwrap_or(false)
+                {
+                    flights.remove(&key);
+                }
+                response
+            }
+            JoinDecision::Follower { flight, mut rx } => {
+                self.hot_key_coalesced_hits_total
+                    .fetch_add(1, Ordering::Relaxed);
+                let response = if rx.borrow().is_some() || rx.changed().await.is_ok() {
+                    rx.borrow().clone()
+                } else {
+                    None
+                };
+                flight.waiters.fetch_sub(1, Ordering::Relaxed);
+                match response {
+                    Some(resp) => resp,
+                    None => {
+                        self.hot_key_fallback_exec_total
+                            .fetch_add(1, Ordering::Relaxed);
+                        self.execute_get(key)
                     }
                 }
             }
@@ -308,7 +425,7 @@ impl NodeHandle {
     pub async fn handle_client(&self, req: ClientRequest) -> ClientResponse {
         if !self.active.load(Ordering::Relaxed) {
             return ClientResponse::Error {
-                code:    ErrorCode::NodeInactive,
+                code: ErrorCode::NodeInactive,
                 message: "Node is inactive (maintenance mode)".into(),
             };
         }
@@ -331,41 +448,30 @@ impl NodeHandle {
                 message: "Authentication is already complete or invalid in this context".into(),
             },
 
-            ClientRequest::Get { key } => {
-                match self.store.get(&key) {
-                    Some(entry) => ClientResponse::Value {
-                        key,
-                        value:   entry.value,
-                        version: entry.version,
-                    },
-                    None => ClientResponse::NotFound,
-                }
-            }
+            ClientRequest::Get { key } => self.handle_get_with_single_flight(key).await,
 
-            ClientRequest::Set { key, value, ttl_secs } => {
-                match self.store.check_limits(&key, &value) {
-                    Err(LimitError::ValueTooLarge) => ClientResponse::Error {
-                        code:    ErrorCode::ValueTooLarge,
-                        message: format!(
-                            "Value size {} bytes exceeds the configured limit",
-                            value.len()
-                        ),
-                    },
-                    Err(LimitError::KeyLimitReached) => ClientResponse::Error {
-                        code:    ErrorCode::KeyLimitReached,
-                        message: "Cache is at the maximum key count limit".into(),
-                    },
-                    Ok(()) => self.coordinate_write(key, Some(value), ttl_secs).await,
-                }
-            }
+            ClientRequest::Set {
+                key,
+                value,
+                ttl_secs,
+            } => match self.store.check_limits(&key, &value) {
+                Err(LimitError::ValueTooLarge) => ClientResponse::Error {
+                    code: ErrorCode::ValueTooLarge,
+                    message: format!(
+                        "Value size {} bytes exceeds the configured limit",
+                        value.len()
+                    ),
+                },
+                Err(LimitError::KeyLimitReached) => ClientResponse::Error {
+                    code: ErrorCode::KeyLimitReached,
+                    message: "Cache is at the maximum key count limit".into(),
+                },
+                Ok(()) => self.coordinate_write(key, Some(value), ttl_secs).await,
+            },
 
-            ClientRequest::Delete { key } => {
-                self.coordinate_write(key, None, None).await
-            }
+            ClientRequest::Delete { key } => self.coordinate_write(key, None, None).await,
 
-            ClientRequest::DeleteByPattern { pattern } => {
-                self.delete_by_pattern(pattern).await
-            }
+            ClientRequest::DeleteByPattern { pattern } => self.delete_by_pattern(pattern).await,
 
             ClientRequest::SetTtlByPattern { pattern, ttl_secs } => {
                 self.set_ttl_by_pattern(pattern, ttl_secs).await
@@ -373,12 +479,10 @@ impl NodeHandle {
 
             // Watch/Unwatch are handled at the TCP connection level (tcp_server.rs)
             // and should never reach handle_client. Guard against misuse.
-            ClientRequest::Watch { .. } | ClientRequest::Unwatch { .. } => {
-                ClientResponse::Error {
-                    code:    ErrorCode::InternalError,
-                    message: "Watch/Unwatch must be handled at the connection level".into(),
-                }
-            }
+            ClientRequest::Watch { .. } | ClientRequest::Unwatch { .. } => ClientResponse::Error {
+                code: ErrorCode::InternalError,
+                message: "Watch/Unwatch must be handled at the connection level".into(),
+            },
         };
         self.record_circuit_result(&response);
         response
@@ -404,18 +508,16 @@ impl NodeHandle {
         ClientResponse::PatternDeleted { deleted }
     }
 
-    async fn set_ttl_by_pattern(
-        &self,
-        pattern: String,
-        ttl_secs: Option<u64>,
-    ) -> ClientResponse {
+    async fn set_ttl_by_pattern(&self, pattern: String, ttl_secs: Option<u64>) -> ClientResponse {
         let keys = self.store.keys(Some(&pattern));
         let mut updated = 0usize;
         for key in keys {
             let Some(entry) = self.store.get(&key) else {
                 continue;
             };
-            let resp = self.coordinate_write(key, Some(entry.value), ttl_secs).await;
+            let resp = self
+                .coordinate_write(key, Some(entry.value), ttl_secs)
+                .await;
             match resp {
                 ClientResponse::Ok { .. } => updated += 1,
                 ClientResponse::NotFound => {}
@@ -442,11 +544,18 @@ impl NodeHandle {
         ttl_secs: Option<u64>,
     ) -> ClientResponse {
         if !self.active_set.lock().await.is_primary() {
-            let resp = self.forward_to_primary(key.clone(), value.clone(), ttl_secs).await;
+            let resp = self
+                .forward_to_primary(key.clone(), value.clone(), ttl_secs)
+                .await;
             // forward_to_primary marks the old primary as Inactive when it refuses.
             // Re-check whether we became primary; if so, fall through to the write path.
-            if !matches!(&resp, ClientResponse::Error { code: ErrorCode::NodeInactive, .. })
-                || !self.active_set.lock().await.is_primary()
+            if !matches!(
+                &resp,
+                ClientResponse::Error {
+                    code: ErrorCode::NodeInactive,
+                    ..
+                }
+            ) || !self.active_set.lock().await.is_primary()
             {
                 return resp;
             }
@@ -470,18 +579,19 @@ impl NodeHandle {
 
         let prepare_msg = ClusterMessage::Prepare {
             log_index,
-            key:      key.clone(),
-            value:    value.clone(),
+            key: key.clone(),
+            value: value.clone(),
             ttl_secs,
         };
 
-        let timeout = Duration::from_millis(self.config.lock().unwrap().replication.write_timeout_ms);
+        let timeout =
+            Duration::from_millis(self.config.lock().unwrap().replication.write_timeout_ms);
         let all_acked = self.broadcast_and_wait(&peers, &prepare_msg, timeout).await;
 
         if !all_acked {
             warn!("PREPARE timed out for log_index={}", log_index);
             return ClientResponse::Error {
-                code:    ErrorCode::WriteTimeout,
+                code: ErrorCode::WriteTimeout,
                 message: format!("Write timed out at PREPARE (index {})", log_index),
             };
         }
@@ -498,7 +608,7 @@ impl NodeHandle {
 
         match value {
             Some(_) => ClientResponse::Ok { version },
-            None    => ClientResponse::Deleted,
+            None => ClientResponse::Deleted,
         }
     }
 
@@ -512,12 +622,15 @@ impl NodeHandle {
             let set = self.active_set.lock().await;
             let primary_id = match set.primary_id() {
                 Some(id) => id,
-                None => return ClientResponse::Error {
-                    code:    ErrorCode::NoQuorum,
-                    message: "No primary elected".into(),
-                },
+                None => {
+                    return ClientResponse::Error {
+                        code: ErrorCode::NoQuorum,
+                        message: "No primary elected".into(),
+                    }
+                }
             };
-            let addr = set.all_nodes()
+            let addr = set
+                .all_nodes()
                 .into_iter()
                 .find(|n| n.id == primary_id)
                 .map(|n| SocketAddr::new(n.addr.ip(), n.cluster_port));
@@ -526,43 +639,58 @@ impl NodeHandle {
 
         let addr = match primary_addr {
             Some(a) => a,
-            None    => return ClientResponse::Error {
-                code:    ErrorCode::NoQuorum,
-                message: "Primary address unknown".into(),
-            },
+            None => {
+                return ClientResponse::Error {
+                    code: ErrorCode::NoQuorum,
+                    message: "Primary address unknown".into(),
+                }
+            }
         };
 
         let req = if let Some(v) = value {
-            ClientRequest::Set { key, value: v, ttl_secs }
+            ClientRequest::Set {
+                key,
+                value: v,
+                ttl_secs,
+            }
         } else {
             ClientRequest::Delete { key }
         };
 
         let forward = ClusterMessage::Forward {
-            request:     req,
+            request: req,
             origin_node: self.id,
         };
 
         let resp = match send_cluster(addr, &forward, self.tls_connector.as_ref()).await {
             Ok(Some(ClusterMessage::ForwardResponse(r))) => r,
             Err(e) => ClientResponse::Error {
-                code:    ErrorCode::InternalError,
+                code: ErrorCode::InternalError,
                 message: e.to_string(),
             },
             _ => ClientResponse::Error {
-                code:    ErrorCode::InternalError,
+                code: ErrorCode::InternalError,
                 message: "No ForwardResponse from primary".into(),
             },
         };
 
         // If the supposed primary is actually inactive, update our local view immediately
         // so the next primary election will choose a different node without waiting for gossip.
-        if matches!(&resp, ClientResponse::Error { code: ErrorCode::NodeInactive, .. }) {
+        if matches!(
+            &resp,
+            ClientResponse::Error {
+                code: ErrorCode::NodeInactive,
+                ..
+            }
+        ) {
             let mut set = self.active_set.lock().await;
             if let Some(mut info) = set.snapshot().into_iter().find(|n| n.id == primary_id) {
                 info.status = NodeStatus::Inactive;
                 set.upsert(info);
-                info!("Primary {} reported NodeInactive; updated local view, triggering re-election", primary_id);
+                info!(
+                    "Primary {} reported NodeInactive; updated local view, triggering re-election",
+                    primary_id
+                );
             }
         }
 
@@ -595,7 +723,9 @@ impl NodeHandle {
                 let stored_value = v.clone();
                 let ver = self.store.set(key.to_string(), v, log_index, ttl_secs);
                 // DITTO-02: notify watchers (fire-and-forget; ignore if no receivers).
-                let _ = self.watch_tx.send((key.to_string(), Some(stored_value), ver));
+                let _ = self
+                    .watch_tx
+                    .send((key.to_string(), Some(stored_value), ver));
                 ver
             }
             None => {
@@ -618,13 +748,16 @@ impl NodeHandle {
             return true;
         }
 
-        let handles: Vec<_> = peers.iter().map(|&addr| {
-            let msg = msg.clone();
-            let tls = self.tls_connector.clone();
-            tokio::spawn(async move {
-                tokio::time::timeout(timeout, send_cluster(addr, &msg, tls.as_ref())).await
+        let handles: Vec<_> = peers
+            .iter()
+            .map(|&addr| {
+                let msg = msg.clone();
+                let tls = self.tls_connector.clone();
+                tokio::spawn(async move {
+                    tokio::time::timeout(timeout, send_cluster(addr, &msg, tls.as_ref())).await
+                })
             })
-        }).collect();
+            .collect();
 
         let mut all_ok = true;
         for h in handles {
@@ -645,9 +778,20 @@ impl NodeHandle {
     /// (e.g. `Prepare` → `PrepareAck`), or `None` for fire-and-forget messages.
     pub async fn handle_cluster(self: Arc<Self>, msg: ClusterMessage) -> Option<ClusterMessage> {
         match msg {
-            ClusterMessage::Prepare { log_index, key, value, ttl_secs } => {
-                self.write_log.lock().await.append_at(log_index, key, value, ttl_secs);
-                Some(ClusterMessage::PrepareAck { log_index, node_id: self.id })
+            ClusterMessage::Prepare {
+                log_index,
+                key,
+                value,
+                ttl_secs,
+            } => {
+                self.write_log
+                    .lock()
+                    .await
+                    .append_at(log_index, key, value, ttl_secs);
+                Some(ClusterMessage::PrepareAck {
+                    log_index,
+                    node_id: self.id,
+                })
             }
 
             ClusterMessage::Commit { log_index } => {
@@ -658,7 +802,10 @@ impl NodeHandle {
                     self.write_log.lock().await.commit(log_index);
                 }
                 self.active_set.lock().await.set_local_applied(log_index);
-                Some(ClusterMessage::CommitAck { log_index, node_id: self.id })
+                Some(ClusterMessage::CommitAck {
+                    log_index,
+                    node_id: self.id,
+                })
             }
 
             ClusterMessage::Forward { request, .. } => {
@@ -673,17 +820,25 @@ impl NodeHandle {
 
             ClusterMessage::LogEntries { entries } => {
                 for entry in entries {
-                    self.apply_locally(&entry.key, entry.value.clone(), entry.ttl_secs, entry.index);
+                    self.apply_locally(
+                        &entry.key,
+                        entry.value.clone(),
+                        entry.ttl_secs,
+                        entry.index,
+                    );
                     self.write_log.lock().await.commit(entry.index);
                     self.active_set.lock().await.set_local_applied(entry.index);
                 }
                 None
             }
 
-            ClusterMessage::Synced { node_id, last_applied } => {
+            ClusterMessage::Synced {
+                node_id,
+                last_applied,
+            } => {
                 let mut set = self.active_set.lock().await;
                 if let Some(mut info) = set.snapshot().into_iter().find(|n| n.id == node_id) {
-                    info.status       = NodeStatus::Active;
+                    info.status = NodeStatus::Active;
                     info.last_applied = last_applied;
                     set.upsert(info);
                 }
@@ -729,59 +884,174 @@ impl NodeHandle {
 
     // Build the full list of node properties as key-value pairs.
     async fn all_properties(&self) -> Vec<(String, String)> {
-        let stats  = self.stats().await;
-        let set    = self.active_set.lock().await;
-        let cfg    = self.config.lock().unwrap();
+        let stats = self.stats().await;
+        let set = self.active_set.lock().await;
+        let cfg = self.config.lock().unwrap();
         vec![
             // --- read-only ---
-            ("id".into(),                   cfg.node.id.clone()),
-            ("committed-index".into(),      stats.committed_index.to_string()),
-            ("uptime".into(),               format!("{}s", stats.uptime_secs)),
+            ("id".into(), cfg.node.id.clone()),
+            ("committed-index".into(), stats.committed_index.to_string()),
+            ("uptime".into(), format!("{}s", stats.uptime_secs)),
             // --- read-write ---
-            ("status".into(),               format!("{:?}", set.local_status())),
-            ("primary".into(),              set.is_primary().to_string()),
-            ("bind-addr".into(),            cfg.node.bind_addr.clone()),
-            ("cluster-bind-addr".into(),    cfg.node.cluster_bind_addr.clone()),
-            ("client-port".into(),          cfg.node.client_port.to_string()),
-            ("http-port".into(),            cfg.node.http_port.to_string()),
-            ("cluster-port".into(),         cfg.node.cluster_port.to_string()),
-            ("gossip-port".into(),          cfg.node.gossip_port.to_string()),
-            ("frame-read-timeout-ms".into(),cfg.node.frame_read_timeout_ms.to_string()),
-            ("max-memory".into(),           format!("{}mb", cfg.cache.max_memory_mb)),
-            ("default-ttl".into(),          format!("{}s", cfg.cache.default_ttl_secs)),
-            ("value-size-limit".into(),     if stats.value_size_limit_bytes == 0 { "unlimited".into() } else { format!("{}b", stats.value_size_limit_bytes) }),
-            ("max-keys".into(),             if stats.max_keys_limit == 0 { "unlimited".into() } else { stats.max_keys_limit.to_string() }),
-            ("compression-enabled".into(),  stats.compression_enabled.to_string()),
-            ("compression-threshold".into(),format!("{}b", stats.compression_threshold_bytes)),
-            ("version-check-interval".into(), format!("{}ms", cfg.replication.version_check_interval_ms)),
-            ("persistence-platform-allowed".into(), stats.persistence_platform_allowed.to_string()),
-            ("persistence-runtime-enabled".into(), stats.persistence_runtime_enabled.to_string()),
-            ("persistence-enabled".into(), stats.persistence_enabled.to_string()),
-            ("persistence-backup-platform-allowed".into(), cfg.persistence.backup_allowed.to_string()),
-            ("persistence-export-platform-allowed".into(), cfg.persistence.export_allowed.to_string()),
-            ("persistence-import-platform-allowed".into(), cfg.persistence.import_allowed.to_string()),
-            ("persistence-backup-enabled".into(), stats.persistence_backup_enabled.to_string()),
-            ("persistence-export-enabled".into(), stats.persistence_export_enabled.to_string()),
-            ("persistence-import-enabled".into(), stats.persistence_import_enabled.to_string()),
-            ("rate-limit-enabled".into(), stats.rate_limit_enabled.to_string()),
-            ("rate-limit-requests-per-sec".into(), cfg.rate_limit.requests_per_sec.to_string()),
+            ("status".into(), format!("{:?}", set.local_status())),
+            ("primary".into(), set.is_primary().to_string()),
+            ("bind-addr".into(), cfg.node.bind_addr.clone()),
+            (
+                "cluster-bind-addr".into(),
+                cfg.node.cluster_bind_addr.clone(),
+            ),
+            ("client-port".into(), cfg.node.client_port.to_string()),
+            ("http-port".into(), cfg.node.http_port.to_string()),
+            ("cluster-port".into(), cfg.node.cluster_port.to_string()),
+            ("gossip-port".into(), cfg.node.gossip_port.to_string()),
+            (
+                "frame-read-timeout-ms".into(),
+                cfg.node.frame_read_timeout_ms.to_string(),
+            ),
+            (
+                "max-memory".into(),
+                format!("{}mb", cfg.cache.max_memory_mb),
+            ),
+            (
+                "default-ttl".into(),
+                format!("{}s", cfg.cache.default_ttl_secs),
+            ),
+            (
+                "value-size-limit".into(),
+                if stats.value_size_limit_bytes == 0 {
+                    "unlimited".into()
+                } else {
+                    format!("{}b", stats.value_size_limit_bytes)
+                },
+            ),
+            (
+                "max-keys".into(),
+                if stats.max_keys_limit == 0 {
+                    "unlimited".into()
+                } else {
+                    stats.max_keys_limit.to_string()
+                },
+            ),
+            (
+                "compression-enabled".into(),
+                stats.compression_enabled.to_string(),
+            ),
+            (
+                "compression-threshold".into(),
+                format!("{}b", stats.compression_threshold_bytes),
+            ),
+            (
+                "write-timeout-ms".into(),
+                cfg.replication.write_timeout_ms.to_string(),
+            ),
+            (
+                "gossip-interval-ms".into(),
+                cfg.replication.gossip_interval_ms.to_string(),
+            ),
+            (
+                "gossip-dead-ms".into(),
+                cfg.replication.gossip_dead_ms.to_string(),
+            ),
+            (
+                "version-check-interval".into(),
+                format!("{}ms", cfg.replication.version_check_interval_ms),
+            ),
+            (
+                "persistence-platform-allowed".into(),
+                stats.persistence_platform_allowed.to_string(),
+            ),
+            (
+                "persistence-runtime-enabled".into(),
+                stats.persistence_runtime_enabled.to_string(),
+            ),
+            (
+                "persistence-enabled".into(),
+                stats.persistence_enabled.to_string(),
+            ),
+            (
+                "persistence-backup-platform-allowed".into(),
+                cfg.persistence.backup_allowed.to_string(),
+            ),
+            (
+                "persistence-export-platform-allowed".into(),
+                cfg.persistence.export_allowed.to_string(),
+            ),
+            (
+                "persistence-import-platform-allowed".into(),
+                cfg.persistence.import_allowed.to_string(),
+            ),
+            (
+                "persistence-backup-enabled".into(),
+                stats.persistence_backup_enabled.to_string(),
+            ),
+            (
+                "persistence-export-enabled".into(),
+                stats.persistence_export_enabled.to_string(),
+            ),
+            (
+                "persistence-import-enabled".into(),
+                stats.persistence_import_enabled.to_string(),
+            ),
+            (
+                "rate-limit-enabled".into(),
+                stats.rate_limit_enabled.to_string(),
+            ),
+            (
+                "rate-limit-requests-per-sec".into(),
+                cfg.rate_limit.requests_per_sec.to_string(),
+            ),
             ("rate-limit-burst".into(), cfg.rate_limit.burst.to_string()),
-            ("rate-limited-requests-total".into(), stats.rate_limited_requests_total.to_string()),
-            ("circuit-breaker-enabled".into(), stats.circuit_breaker_enabled.to_string()),
-            ("circuit-breaker-failure-threshold".into(), cfg.circuit_breaker.failure_threshold.to_string()),
-            ("circuit-breaker-open-ms".into(), cfg.circuit_breaker.open_ms.to_string()),
-            ("circuit-breaker-half-open-max-requests".into(), cfg.circuit_breaker.half_open_max_requests.to_string()),
-            ("circuit-breaker-state".into(), stats.circuit_breaker_state.clone()),
-            ("circuit-breaker-open-total".into(), stats.circuit_breaker_open_total.to_string()),
-            ("circuit-breaker-reject-total".into(), stats.circuit_breaker_reject_total.to_string()),
+            (
+                "rate-limited-requests-total".into(),
+                stats.rate_limited_requests_total.to_string(),
+            ),
+            ("hot-key-enabled".into(), stats.hot_key_enabled.to_string()),
+            (
+                "hot-key-max-waiters".into(),
+                cfg.hot_key.max_waiters.to_string(),
+            ),
+            (
+                "hot-key-coalesced-hits-total".into(),
+                stats.hot_key_coalesced_hits_total.to_string(),
+            ),
+            (
+                "hot-key-fallback-exec-total".into(),
+                stats.hot_key_fallback_exec_total.to_string(),
+            ),
+            (
+                "circuit-breaker-enabled".into(),
+                stats.circuit_breaker_enabled.to_string(),
+            ),
+            (
+                "circuit-breaker-failure-threshold".into(),
+                cfg.circuit_breaker.failure_threshold.to_string(),
+            ),
+            (
+                "circuit-breaker-open-ms".into(),
+                cfg.circuit_breaker.open_ms.to_string(),
+            ),
+            (
+                "circuit-breaker-half-open-max-requests".into(),
+                cfg.circuit_breaker.half_open_max_requests.to_string(),
+            ),
+            (
+                "circuit-breaker-state".into(),
+                stats.circuit_breaker_state.clone(),
+            ),
+            (
+                "circuit-breaker-open-total".into(),
+                stats.circuit_breaker_open_total.to_string(),
+            ),
+            (
+                "circuit-breaker-reject-total".into(),
+                stats.circuit_breaker_reject_total.to_string(),
+            ),
         ]
     }
 
     async fn handle_admin(self: Arc<Self>, req: AdminRequest) -> AdminResponse {
         match req {
-            AdminRequest::Describe => {
-                AdminResponse::Properties(self.all_properties().await)
-            }
+            AdminRequest::Describe => AdminResponse::Properties(self.all_properties().await),
 
             AdminRequest::GetStats => AdminResponse::Stats(self.stats().await),
 
@@ -794,15 +1064,15 @@ impl NodeHandle {
                 let compressed = self.store.is_compressed(&key).unwrap_or(false);
                 match self.store.get(&key) {
                     Some(entry) => {
-                        let ttl  = entry.ttl_remaining_secs();
+                        let ttl = entry.ttl_remaining_secs();
                         let freq = entry.freq_count;
-                        let ver  = entry.version;
+                        let ver = entry.version;
                         AdminResponse::KeyInfo {
                             key,
-                            value:              entry.value,
-                            version:            ver,
+                            value: entry.value,
+                            version: ver,
                             ttl_remaining_secs: ttl,
-                            freq_count:         freq,
+                            freq_count: freq,
                             compressed,
                         }
                     }
@@ -826,7 +1096,9 @@ impl NodeHandle {
                                 AdminResponse::KeyPropertyUpdated
                             }
                             Err(msg) if msg == "key not found" => AdminResponse::NotFound,
-                            Err(msg) => AdminResponse::Error { message: msg.to_string() },
+                            Err(msg) => AdminResponse::Error {
+                                message: msg.to_string(),
+                            },
                         }
                     }
                     other => AdminResponse::Error {
@@ -885,7 +1157,9 @@ impl NodeHandle {
                             bytes: 0, // actual size logged server-side
                         }
                     }
-                    Err(e) => AdminResponse::Error { message: e.to_string() },
+                    Err(e) => AdminResponse::Error {
+                        message: e.to_string(),
+                    },
                 }
             }
 
@@ -1111,6 +1385,21 @@ impl NodeHandle {
                         }
                     }
 
+                    "hot-key-enabled" => {
+                        let val = value.trim().eq_ignore_ascii_case("true");
+                        self.config.lock().unwrap().hot_key.enabled = val;
+                        tracing::info!("hot-key-enabled -> {}", val);
+                    }
+                    "hot-key-max-waiters" => {
+                        match value.trim().parse::<usize>() {
+                            Ok(v) if v > 0 => {
+                                self.config.lock().unwrap().hot_key.max_waiters = v;
+                                tracing::info!("hot-key-max-waiters -> {}", v);
+                            }
+                            _ => tracing::warn!("SetProperty hot-key-max-waiters: invalid value '{}'", value),
+                        }
+                    }
+
                     // circuit breaker
                     "circuit-breaker-enabled" => {
                         let val = value.trim().eq_ignore_ascii_case("true");
@@ -1205,7 +1494,8 @@ impl NodeHandle {
             });
 
             // Fallback: peer furthest ahead.
-            let fallback_addr = set.all_nodes()
+            let fallback_addr = set
+                .all_nodes()
                 .into_iter()
                 .filter(|n| n.id != set.local_id() && n.last_applied > our_index)
                 .max_by_key(|n| n.last_applied)
@@ -1224,18 +1514,29 @@ impl NodeHandle {
 
         tracing::info!(
             "Recovery: syncing from {} (our index={}).",
-            peer_addr, our_index
+            peer_addr,
+            our_index
         );
 
         // Set ourselves to Syncing so we are excluded from write quorum.
-        self.active_set.lock().await.set_local_status(NodeStatus::Syncing);
+        self.active_set
+            .lock()
+            .await
+            .set_local_status(NodeStatus::Syncing);
 
-        let req = ClusterMessage::RequestLog { from_index: our_index };
+        let req = ClusterMessage::RequestLog {
+            from_index: our_index,
+        };
         match send_cluster(peer_addr, &req, self.tls_connector.as_ref()).await {
             Ok(Some(ClusterMessage::LogEntries { entries })) => {
                 let count = entries.len();
                 for entry in entries {
-                    self.apply_locally(&entry.key, entry.value.clone(), entry.ttl_secs, entry.index);
+                    self.apply_locally(
+                        &entry.key,
+                        entry.value.clone(),
+                        entry.ttl_secs,
+                        entry.index,
+                    );
                     self.write_log.lock().await.commit(entry.index);
                     self.active_set.lock().await.set_local_applied(entry.index);
                 }
@@ -1244,23 +1545,30 @@ impl NodeHandle {
             Err(e) => {
                 tracing::error!(
                     "Recovery: failed to sync from {}: {}. Setting node Inactive.",
-                    peer_addr, e
+                    peer_addr,
+                    e
                 );
                 self.active.store(false, Ordering::Relaxed);
-                self.active_set.lock().await.set_local_status(NodeStatus::Inactive);
+                self.active_set
+                    .lock()
+                    .await
+                    .set_local_status(NodeStatus::Inactive);
                 return;
             }
             _ => {}
         }
 
         // Re-join the active set.
-        self.active_set.lock().await.set_local_status(NodeStatus::Active);
+        self.active_set
+            .lock()
+            .await
+            .set_local_status(NodeStatus::Active);
         let final_index = self.write_log.lock().await.committed_index();
         tracing::info!("Recovery complete. committed_index={}", final_index);
 
         // Announce to peers that we are synced.
         let synced_msg = ClusterMessage::Synced {
-            node_id:      self.id,
+            node_id: self.id,
             last_applied: final_index,
         };
         for addr in peers {
@@ -1282,7 +1590,10 @@ impl NodeHandle {
         let our_index = self.write_log.lock().await.committed_index();
 
         // Mark as Syncing so we are excluded from the write quorum during catch-up.
-        self.active_set.lock().await.set_local_status(NodeStatus::Syncing);
+        self.active_set
+            .lock()
+            .await
+            .set_local_status(NodeStatus::Syncing);
 
         // Snapshot peer addresses for the Synced broadcast later.
         let peers: Vec<SocketAddr> = {
@@ -1302,10 +1613,13 @@ impl NodeHandle {
                     tracing::info!("Resync: we are the primary, rejoining active set.");
                     self.active.store(true, Ordering::Relaxed);
                     drop(set);
-                    self.active_set.lock().await.set_local_status(NodeStatus::Active);
+                    self.active_set
+                        .lock()
+                        .await
+                        .set_local_status(NodeStatus::Active);
                     let final_index = self.write_log.lock().await.committed_index();
                     let synced_msg = ClusterMessage::Synced {
-                        node_id:      self.id,
+                        node_id: self.id,
                         last_applied: final_index,
                     };
                     for addr in peers {
@@ -1318,7 +1632,10 @@ impl NodeHandle {
                     tracing::warn!("Resync: no primary elected. Setting node Inactive.");
                     self.active.store(false, Ordering::Relaxed);
                     drop(set);
-                    self.active_set.lock().await.set_local_status(NodeStatus::Inactive);
+                    self.active_set
+                        .lock()
+                        .await
+                        .set_local_status(NodeStatus::Inactive);
                     return;
                 }
             };
@@ -1333,22 +1650,33 @@ impl NodeHandle {
             None => {
                 tracing::warn!("Resync: primary address unknown. Setting node Inactive.");
                 self.active.store(false, Ordering::Relaxed);
-                self.active_set.lock().await.set_local_status(NodeStatus::Inactive);
+                self.active_set
+                    .lock()
+                    .await
+                    .set_local_status(NodeStatus::Inactive);
                 return;
             }
         };
 
         tracing::info!(
             "Resync: at index={}, fetching missed entries from primary {}.",
-            our_index, peer_addr
+            our_index,
+            peer_addr
         );
 
-        let req = ClusterMessage::RequestLog { from_index: our_index };
+        let req = ClusterMessage::RequestLog {
+            from_index: our_index,
+        };
         match send_cluster(peer_addr, &req, self.tls_connector.as_ref()).await {
             Ok(Some(ClusterMessage::LogEntries { entries })) => {
                 let count = entries.len();
                 for entry in entries {
-                    self.apply_locally(&entry.key, entry.value.clone(), entry.ttl_secs, entry.index);
+                    self.apply_locally(
+                        &entry.key,
+                        entry.value.clone(),
+                        entry.ttl_secs,
+                        entry.index,
+                    );
                     self.write_log.lock().await.commit(entry.index);
                     self.active_set.lock().await.set_local_applied(entry.index);
                 }
@@ -1357,10 +1685,14 @@ impl NodeHandle {
             Err(e) => {
                 tracing::warn!(
                     "Resync: failed to sync from primary {}: {}. Setting node Inactive.",
-                    peer_addr, e
+                    peer_addr,
+                    e
                 );
                 self.active.store(false, Ordering::Relaxed);
-                self.active_set.lock().await.set_local_status(NodeStatus::Inactive);
+                self.active_set
+                    .lock()
+                    .await
+                    .set_local_status(NodeStatus::Inactive);
                 return;
             }
             _ => {}
@@ -1368,13 +1700,19 @@ impl NodeHandle {
 
         // Success: rejoin the active set and allow client requests.
         self.active.store(true, Ordering::Relaxed);
-        self.active_set.lock().await.set_local_status(NodeStatus::Active);
+        self.active_set
+            .lock()
+            .await
+            .set_local_status(NodeStatus::Active);
         let final_index = self.write_log.lock().await.committed_index();
-        tracing::info!("Resync complete. Node is Active. committed_index={}", final_index);
+        tracing::info!(
+            "Resync complete. Node is Active. committed_index={}",
+            final_index
+        );
 
         // Broadcast Synced so all peers update their view of us immediately.
         let synced_msg = ClusterMessage::Synced {
-            node_id:      self.id,
+            node_id: self.id,
             last_applied: final_index,
         };
         for addr in peers {
@@ -1402,7 +1740,8 @@ impl NodeHandle {
                 log.compact(safe_index);
                 tracing::debug!(
                     "Log compaction: safe_index={} committed_index={}",
-                    safe_index, before
+                    safe_index,
+                    before
                 );
             }
         });
@@ -1418,7 +1757,12 @@ impl NodeHandle {
     pub fn start_version_check(self: Arc<Self>) {
         tokio::spawn(async move {
             loop {
-                let interval_ms = self.config.lock().unwrap().replication.version_check_interval_ms;
+                let interval_ms = self
+                    .config
+                    .lock()
+                    .unwrap()
+                    .replication
+                    .version_check_interval_ms;
                 if interval_ms == 0 {
                     // Disabled -- sleep briefly and re-check in case it gets enabled.
                     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -1431,7 +1775,8 @@ impl NodeHandle {
                     let set = self.active_set.lock().await;
                     let status = set.local_status();
                     let am_primary = set.is_primary();
-                    let our_index = set.all_nodes()
+                    let our_index = set
+                        .all_nodes()
                         .iter()
                         .find(|n| n.id == set.local_id())
                         .map(|n| n.last_applied)
@@ -1457,9 +1802,7 @@ impl NodeHandle {
                     );
                     Arc::clone(&self).run_resync().await;
                 } else {
-                    tracing::debug!(
-                        "Version check: in sync (index={}).", our_index
-                    );
+                    tracing::debug!("Version check: in sync (index={}).", our_index);
                 }
             }
         });
@@ -1470,7 +1813,7 @@ impl NodeHandle {
     /// Acquires short-lived locks on the store, active-set, write-log, and config.
     /// Used by both the admin `GetStats` RPC and the HTTP `/health` endpoint.
     pub async fn stats(&self) -> NodeStats {
-        let s   = self.store.stats();
+        let s = self.store.stats();
         let set = self.active_set.lock().await;
         let log = self.write_log.lock().await;
         let cfg = self.config.lock().unwrap();
@@ -1485,28 +1828,29 @@ impl NodeHandle {
         ) = Self::persistence_states(&cfg);
         let rate_limit_enabled = cfg.rate_limit.enabled;
         let circuit_breaker_enabled = cfg.circuit_breaker.enabled;
+        let hot_key_enabled = cfg.hot_key.enabled;
         let circuit_breaker_state = if circuit_breaker_enabled {
             self.circuit.lock().unwrap().state.as_str().to_string()
         } else {
             "disabled".to_string()
         };
         NodeStats {
-            node_id:           self.id,
-            status:            set.local_status(),
-            is_primary:        set.is_primary(),
-            committed_index:   log.committed_index(),
-            key_count:         s.key_count,
+            node_id: self.id,
+            status: set.local_status(),
+            is_primary: set.is_primary(),
+            committed_index: log.committed_index(),
+            key_count: s.key_count,
             memory_used_bytes: s.memory_used_bytes,
-            memory_max_bytes:  s.memory_max_bytes,
-            evictions:         s.evictions,
-            hit_count:         s.hit_count,
-            miss_count:        s.miss_count,
-            uptime_secs:       self.started_at.elapsed().as_secs(),
-            value_size_limit_bytes:      s.value_size_limit_bytes,
-            max_keys_limit:              s.max_keys_limit,
-            compression_enabled:         s.compression_enabled,
+            memory_max_bytes: s.memory_max_bytes,
+            evictions: s.evictions,
+            hit_count: s.hit_count,
+            miss_count: s.miss_count,
+            uptime_secs: self.started_at.elapsed().as_secs(),
+            value_size_limit_bytes: s.value_size_limit_bytes,
+            max_keys_limit: s.max_keys_limit,
+            compression_enabled: s.compression_enabled,
             compression_threshold_bytes: s.compression_threshold_bytes,
-            node_name:        cfg.node.id.clone(),
+            node_name: cfg.node.id.clone(),
             backup_dir_bytes,
             persistence_platform_allowed,
             persistence_runtime_enabled,
@@ -1517,6 +1861,9 @@ impl NodeHandle {
             rate_limit_enabled,
             rate_limited_requests_total: self.rate_limited_requests_total.load(Ordering::Relaxed),
             circuit_breaker_enabled,
+            hot_key_enabled,
+            hot_key_coalesced_hits_total: self.hot_key_coalesced_hits_total.load(Ordering::Relaxed),
+            hot_key_fallback_exec_total: self.hot_key_fallback_exec_total.load(Ordering::Relaxed),
             circuit_breaker_state,
             circuit_breaker_open_total: self.circuit_breaker_open_total.load(Ordering::Relaxed),
             circuit_breaker_reject_total: self.circuit_breaker_reject_total.load(Ordering::Relaxed),
@@ -1541,9 +1888,32 @@ fn dir_size_bytes(path: &str) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{NodeHandle, TokenBucket};
+    use super::{GetFlight, NodeHandle, TokenBucket};
     use crate::config::Config;
+    use crate::store::KvStore;
+    use bytes::Bytes;
+    use ditto_protocol::ClientResponse;
+    use std::sync::{atomic::Ordering, Arc};
     use std::time::Duration;
+
+    fn test_node(mut cfg: Config) -> Arc<NodeHandle> {
+        cfg.node.id = "test-node".into();
+        let store = Arc::new(KvStore::new(
+            cfg.cache.max_memory_mb,
+            cfg.cache.default_ttl_secs,
+            cfg.cache.value_size_limit_bytes,
+            cfg.cache.max_keys,
+            cfg.compression.enabled,
+            cfg.compression.threshold_bytes,
+        ));
+        NodeHandle::new(
+            cfg,
+            "test-node.toml".into(),
+            store,
+            None,
+            "127.0.0.1".into(),
+        )
+    }
 
     #[test]
     fn persistence_states_default_is_fully_disabled() {
@@ -1612,5 +1982,55 @@ mod tests {
             }
         }
         assert_eq!(allowed, 10);
+    }
+
+    #[tokio::test]
+    async fn hot_key_waiter_uses_coalesced_response() {
+        let mut cfg = Config::default();
+        cfg.hot_key.enabled = true;
+        cfg.hot_key.max_waiters = 8;
+        let node = test_node(cfg);
+        let key = "hot:key".to_string();
+
+        let flight = Arc::new(GetFlight::new());
+        {
+            let mut flights = node.get_flights.lock().await;
+            flights.insert(key.clone(), Arc::clone(&flight));
+        }
+
+        let flight_for_sender = Arc::clone(&flight);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(15)).await;
+            let _ = flight_for_sender.tx.send(Some(ClientResponse::Value {
+                key: "hot:key".into(),
+                value: Bytes::from("v1"),
+                version: 7,
+            }));
+        });
+
+        let resp = node.handle_get_with_single_flight(key).await;
+        assert!(matches!(resp, ClientResponse::Value { version: 7, .. }));
+        assert_eq!(node.hot_key_coalesced_hits_total.load(Ordering::Relaxed), 1);
+        assert_eq!(node.hot_key_fallback_exec_total.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn hot_key_waiter_cap_triggers_fallback() {
+        let mut cfg = Config::default();
+        cfg.hot_key.enabled = true;
+        cfg.hot_key.max_waiters = 1;
+        let node = test_node(cfg);
+        let key = "hot:cap".to_string();
+
+        let flight = Arc::new(GetFlight::new());
+        flight.waiters.store(1, Ordering::Relaxed);
+        {
+            let mut flights = node.get_flights.lock().await;
+            flights.insert(key.clone(), Arc::clone(&flight));
+        }
+
+        let resp = node.handle_get_with_single_flight(key).await;
+        assert!(matches!(resp, ClientResponse::NotFound));
+        assert_eq!(node.hot_key_fallback_exec_total.load(Ordering::Relaxed), 1);
     }
 }

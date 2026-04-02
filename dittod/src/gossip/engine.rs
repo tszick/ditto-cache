@@ -5,21 +5,21 @@ use tokio::{net::UdpSocket, sync::Mutex};
 use tracing::{debug, info, warn};
 
 pub struct GossipEngine {
-    socket:      Arc<UdpSocket>,
-    active_set:  Arc<Mutex<ActiveSet>>,
-    interval:    Duration,
+    socket: Arc<UdpSocket>,
+    active_set: Arc<Mutex<ActiveSet>>,
+    interval: Duration,
     /// Gossip addresses of seed nodes as "host:port" strings.
     /// Kept as strings so tokio can do DNS resolution at send time
     /// (SocketAddr::parse() does not accept hostnames like "node-2").
-    seed_addrs:  Vec<String>,
+    seed_addrs: Vec<String>,
 }
 
 impl GossipEngine {
     pub async fn new(
-        bind_addr:   SocketAddr,
-        active_set:  Arc<Mutex<ActiveSet>>,
+        bind_addr: SocketAddr,
+        active_set: Arc<Mutex<ActiveSet>>,
         interval_ms: u64,
-        seed_addrs:  Vec<String>,
+        seed_addrs: Vec<String>,
     ) -> anyhow::Result<Self> {
         let socket = UdpSocket::bind(bind_addr).await?;
         Ok(Self {
@@ -66,10 +66,10 @@ impl GossipEngine {
                     None => continue,
                     Some(me) => {
                         let msg = GossipMessage::Heartbeat {
-                            node_id:      me.id,
-                            addr:         me.addr,
+                            node_id: me.id,
+                            addr: me.addr,
                             cluster_port: me.cluster_port,
-                            status:       me.status,
+                            status: me.status,
                             last_applied: me.last_applied,
                         };
                         (msg, peers)
@@ -133,7 +133,7 @@ impl GossipEngine {
         match msg {
             GossipMessage::Heartbeat {
                 node_id,
-                addr: _,       // ignore – may be 0.0.0.0 (bind addr)
+                addr: _, // ignore – may be 0.0.0.0 (bind addr)
                 cluster_port,
                 status,
                 last_applied,
@@ -141,15 +141,17 @@ impl GossipEngine {
                 let is_new = !set.all_nodes().iter().any(|n| n.id == node_id);
                 // Use the actual UDP source address: real routable IP + gossip port.
                 set.upsert(NodeInfo {
-                    id:           node_id,
-                    addr:         src,
+                    id: node_id,
+                    addr: src,
                     cluster_port,
                     status,
                     last_applied,
                 });
                 if is_new {
-                    info!("Gossip: discovered new peer {} at {} (cluster :{})",
-                          node_id, src, cluster_port);
+                    info!(
+                        "Gossip: discovered new peer {} at {} (cluster :{})",
+                        node_id, src, cluster_port
+                    );
                 } else {
                     debug!("Gossip: heartbeat from {} (src={})", node_id, src);
                 }

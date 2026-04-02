@@ -1,5 +1,5 @@
-﻿use anyhow::{Context, Result};
-use ditto_protocol::{AdminRequest, AdminResponse, ClusterMessage, encode, decode};
+use anyhow::{Context, Result};
+use ditto_protocol::{decode, encode, AdminRequest, AdminResponse, ClusterMessage};
 use rustls::pki_types::ServerName;
 use std::{net::SocketAddr, time::Duration};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -24,7 +24,7 @@ pub async fn admin_rpc(
     req: AdminRequest,
     tls: Option<&TlsConnector>,
 ) -> Result<AdminResponse> {
-    let msg   = ClusterMessage::Admin(req);
+    let msg = ClusterMessage::Admin(req);
     let bytes = encode(&msg)?;
 
     let tcp = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr))
@@ -33,8 +33,8 @@ pub async fn admin_rpc(
         .with_context(|| format!("connecting to {}", addr))?;
 
     let response: ClusterMessage = if let Some(connector) = tls {
-        let server_name = ServerName::try_from("ditto-cluster")
-            .context("invalid TLS server name")?;
+        let server_name =
+            ServerName::try_from("ditto-cluster").context("invalid TLS server name")?;
         let mut stream = connector
             .connect(server_name, tcp)
             .await
@@ -53,9 +53,7 @@ pub async fn admin_rpc(
     }
 }
 
-async fn read_framed<S: AsyncRead + AsyncWrite + Unpin>(
-    stream: &mut S,
-) -> Result<ClusterMessage> {
+async fn read_framed<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S) -> Result<ClusterMessage> {
     let mut len_buf = [0u8; 4];
     tokio::time::timeout(RPC_READ_TIMEOUT, stream.read_exact(&mut len_buf))
         .await
@@ -63,7 +61,11 @@ async fn read_framed<S: AsyncRead + AsyncWrite + Unpin>(
     let len = u32::from_be_bytes(len_buf) as usize;
     let max_message_size = 128 * 1024 * 1024;
     if len > max_message_size {
-        anyhow::bail!("RPC response length {} exceeds max {}", len, max_message_size);
+        anyhow::bail!(
+            "RPC response length {} exceeds max {}",
+            len,
+            max_message_size
+        );
     }
     let mut payload = vec![0u8; len];
     tokio::time::timeout(RPC_READ_TIMEOUT, stream.read_exact(&mut payload))
@@ -93,7 +95,7 @@ pub fn is_valid_target(target: &str) -> bool {
     // Split off an optional ":port" suffix.
     let (host, port_opt) = match target.rsplit_once(':') {
         Some((h, p)) => (h, Some(p)),
-        None         => (target, None),
+        None => (target, None),
     };
     // Port, if present, must be a valid u16.
     if let Some(p) = port_opt {
@@ -132,13 +134,14 @@ pub async fn resolve_target(target: &str, cluster_port: u16, seeds: &[String]) -
             // Inside Docker, 127.0.0.1 is the mgmt container's own loopback â€” not a dittod
             // node. Resolve the first configured seed via DNS so that "local" means
             // "any available node" regardless of deployment topology.
-            let seed = seeds.first().cloned()
+            let seed = seeds
+                .first()
+                .cloned()
                 .unwrap_or_else(|| format!("127.0.0.1:{}", cluster_port));
-            tokio::net::lookup_host(&seed).await
+            tokio::net::lookup_host(&seed)
+                .await
                 .map(|it| it.filter(|a| a.is_ipv4()).collect())
-                .unwrap_or_else(|_| {
-                    vec![format!("127.0.0.1:{}", cluster_port).parse().unwrap()]
-                })
+                .unwrap_or_else(|_| vec![format!("127.0.0.1:{}", cluster_port).parse().unwrap()])
         }
         "all" => seeds.iter().filter_map(|s| s.parse().ok()).collect(),
         other => {
@@ -154,10 +157,14 @@ pub async fn resolve_target(target: &str, cluster_port: u16, seeds: &[String]) -
             } else {
                 format!("{}:{}", normalised, cluster_port)
             };
-            tokio::net::lookup_host(&with_port).await
+            tokio::net::lookup_host(&with_port)
+                .await
                 .map(|it| it.filter(|a| a.is_ipv4()).collect())
                 .unwrap_or_else(|_| {
-                    eprintln!("Warning: cannot resolve target '{}' to a socket address", target);
+                    eprintln!(
+                        "Warning: cannot resolve target '{}' to a socket address",
+                        target
+                    );
                     vec![]
                 })
         }
@@ -254,4 +261,3 @@ fn split_host_port(input: &str, default_port: u16) -> (String, u16) {
     }
     (normalised, default_port)
 }
-

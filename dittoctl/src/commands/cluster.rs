@@ -38,8 +38,16 @@ pub async fn run(cmd: ClusterCommand, cfg: &CtlConfig, client: &reqwest::Client)
                         "  {:<38} {:<12} {:<10} {}",
                         n["id"].as_str().unwrap_or("?"),
                         status,
-                        if n["is_primary"].as_bool().unwrap_or(false) { "yes" } else { "no" },
-                        n["last_applied"].as_u64().map(|v| v.to_string()).as_deref().unwrap_or("?")
+                        if n["is_primary"].as_bool().unwrap_or(false) {
+                            "yes"
+                        } else {
+                            "no"
+                        },
+                        n["last_applied"]
+                            .as_u64()
+                            .map(|v| v.to_string())
+                            .as_deref()
+                            .unwrap_or("?")
                     );
                 }
                 let total = data["total"].as_u64().unwrap_or(nodes.len() as u64);
@@ -61,17 +69,23 @@ pub async fn run(cmd: ClusterCommand, cfg: &CtlConfig, client: &reqwest::Client)
                 let data = mgmt_get(client, &format!("{}/api/cluster/primary", base)).await?;
                 match data["primary"].as_str() {
                     Some(id) => println!("  primary: {}", id),
-                    None     => println!("  (no primary elected)"),
+                    None => println!("  (no primary elected)"),
                 }
             }
             "committed-index" => {
                 let data = mgmt_get(client, &format!("{}/api/nodes", base)).await?;
                 let nodes = data["nodes"].as_array().cloned().unwrap_or_default();
                 if let Some(first) = nodes.first() {
-                    println!("  committed-index: {}", first["committed_index"].as_u64().unwrap_or(0));
+                    println!(
+                        "  committed-index: {}",
+                        first["committed_index"].as_u64().unwrap_or(0)
+                    );
                 }
             }
-            other => eprintln!("Unknown get target '{}'. Use: status | primary | committed-index", other),
+            other => eprintln!(
+                "Unknown get target '{}'. Use: status | primary | committed-index",
+                other
+            ),
         },
     }
     Ok(())

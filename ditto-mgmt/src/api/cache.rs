@@ -36,9 +36,8 @@ fn is_valid_cache_key(key: &str) -> bool {
     if key.is_empty() {
         return false;
     }
-    key.chars().all(|c| {
-        c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':')
-    })
+    key.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
 }
 
 /// Percent-encode a validated cache key for safe embedding in a URL path.
@@ -48,8 +47,7 @@ fn encode_key_for_url(key: &str) -> String {
     let mut out = String::with_capacity(key.len());
     for b in key.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
-            | b'-' | b'_' | b'.' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => out.push(b as char),
             b => out.push_str(&format!("%{:02X}", b)),
         }
     }
@@ -68,7 +66,12 @@ pub async fn cache_stats(
     let addrs = if target == "all" {
         state.cluster_addrs().await
     } else {
-        resolve_target(&target, state.cfg.connection.cluster_port, &state.cfg.connection.seeds).await
+        resolve_target(
+            &target,
+            state.cfg.connection.cluster_port,
+            &state.cfg.connection.seeds,
+        )
+        .await
     };
 
     let mut results = Vec::new();
@@ -77,7 +80,9 @@ pub async fn cache_stats(
             Ok(AdminResponse::Stats(s)) => {
                 let hit_rate = if s.hit_count + s.miss_count > 0 {
                     s.hit_count * 100 / (s.hit_count + s.miss_count)
-                } else { 0 };
+                } else {
+                    0
+                };
                 results.push(serde_json::json!({
                     "addr":               addr.to_string(),
                     "key_count":          s.key_count,
@@ -89,7 +94,8 @@ pub async fn cache_stats(
                     "hit_rate_pct":       hit_rate,
                 }));
             }
-            Err(e) => results.push(serde_json::json!({ "addr": addr.to_string(), "error": e.to_string() })),
+            Err(e) => results
+                .push(serde_json::json!({ "addr": addr.to_string(), "error": e.to_string() })),
             _ => {}
         }
     }
@@ -111,7 +117,12 @@ pub async fn flush_cache(
     let addrs = if target == "all" {
         state.cluster_addrs().await
     } else {
-        resolve_target(&target, state.cfg.connection.cluster_port, &state.cfg.connection.seeds).await
+        resolve_target(
+            &target,
+            state.cfg.connection.cluster_port,
+            &state.cfg.connection.seeds,
+        )
+        .await
     };
 
     let mut results = Vec::new();
@@ -145,16 +156,30 @@ pub async fn list_keys(
     let addrs = if target == "all" {
         state.cluster_addrs().await
     } else {
-        resolve_target(&target, state.cfg.connection.cluster_port, &state.cfg.connection.seeds).await
+        resolve_target(
+            &target,
+            state.cfg.connection.cluster_port,
+            &state.cfg.connection.seeds,
+        )
+        .await
     };
 
     let mut results = Vec::new();
     for addr in addrs {
-        match admin_rpc(addr, AdminRequest::ListKeys { pattern: q.pattern.clone() }, state.tls.as_ref()).await {
-            Ok(AdminResponse::Keys(keys)) =>
-                results.push(serde_json::json!({ "addr": addr.to_string(), "keys": keys })),
-            Err(e) =>
-                results.push(serde_json::json!({ "addr": addr.to_string(), "error": e.to_string() })),
+        match admin_rpc(
+            addr,
+            AdminRequest::ListKeys {
+                pattern: q.pattern.clone(),
+            },
+            state.tls.as_ref(),
+        )
+        .await
+        {
+            Ok(AdminResponse::Keys(keys)) => {
+                results.push(serde_json::json!({ "addr": addr.to_string(), "keys": keys }))
+            }
+            Err(e) => results
+                .push(serde_json::json!({ "addr": addr.to_string(), "error": e.to_string() })),
             _ => {}
         }
     }
@@ -175,8 +200,11 @@ pub async fn get_key(
     // delete_key already perform this check; apply it here for consistency and
     // to prevent path-traversal / URL-injection (CodeQL rust/request-forgery #2).
     if !is_valid_cache_key(&key) {
-        return (StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "invalid key" }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "invalid key" })),
+        )
+            .into_response();
     }
 
     let authority = match http_authority_for_target(
@@ -185,23 +213,44 @@ pub async fn get_key(
         &state.cfg.connection.seeds,
     ) {
         Some(a) => a,
-        None => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "invalid target" }))).into_response(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "invalid target" })),
+            )
+                .into_response()
+        }
     };
 
-    let url = format!("{}://{}/key/{}", state.http_scheme(), authority, encode_key_for_url(&key));
+    let url = format!(
+        "{}://{}/key/{}",
+        state.http_scheme(),
+        authority,
+        encode_key_for_url(&key)
+    );
 
-    match node_http_request(state.http_client.get(&url), &state).send().await {
+    match node_http_request(state.http_client.get(&url), &state)
+        .send()
+        .await
+    {
         Ok(resp) => {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             if status.is_success() {
                 (StatusCode::OK, Json(serde_json::json!({ "value": body }))).into_response()
             } else {
-                (StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
-                 Json(serde_json::json!({ "error": body }))).into_response()
+                (
+                    StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
+                    Json(serde_json::json!({ "error": body })),
+                )
+                    .into_response()
             }
         }
-        Err(e) => (StatusCode::BAD_GATEWAY, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -212,7 +261,7 @@ pub async fn get_key(
 
 #[derive(Deserialize)]
 pub struct SetKeyBody {
-    pub value:    String,
+    pub value: String,
     pub ttl_secs: Option<u64>,
 }
 
@@ -225,8 +274,11 @@ pub async fn set_key(
     Json(body): Json<SetKeyBody>,
 ) -> impl IntoResponse {
     if !is_valid_cache_key(&key) {
-        return (StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "invalid key" }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "invalid key" })),
+        )
+            .into_response();
     }
 
     let authority = match http_authority_for_target(
@@ -235,24 +287,47 @@ pub async fn set_key(
         &state.cfg.connection.seeds,
     ) {
         Some(a) => a,
-        None => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "invalid target" }))).into_response(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "invalid target" })),
+            )
+                .into_response()
+        }
     };
 
-    let mut url = format!("{}://{}/key/{}", state.http_scheme(), authority, encode_key_for_url(&key));
+    let mut url = format!(
+        "{}://{}/key/{}",
+        state.http_scheme(),
+        authority,
+        encode_key_for_url(&key)
+    );
     if let Some(ttl) = body.ttl_secs {
         url.push_str(&format!("?ttl={}", ttl));
     }
 
-    match node_http_request(state.http_client.put(&url), &state).body(body.value).send().await {
-        Ok(resp) if resp.status().is_success() =>
-            (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response(),
+    match node_http_request(state.http_client.put(&url), &state)
+        .body(body.value)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
+        }
         Ok(resp) => {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            (StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
-             Json(serde_json::json!({ "error": body }))).into_response()
+            (
+                StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
+                Json(serde_json::json!({ "error": body })),
+            )
+                .into_response()
         }
-        Err(e) => (StatusCode::BAD_GATEWAY, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -267,8 +342,11 @@ pub async fn delete_key(
     Path((target, key)): Path<(String, String)>,
 ) -> impl IntoResponse {
     if !is_valid_cache_key(&key) {
-        return (StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "invalid key" }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "invalid key" })),
+        )
+            .into_response();
     }
 
     let authority = match http_authority_for_target(
@@ -277,21 +355,43 @@ pub async fn delete_key(
         &state.cfg.connection.seeds,
     ) {
         Some(a) => a,
-        None => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "invalid target" }))).into_response(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "invalid target" })),
+            )
+                .into_response()
+        }
     };
 
-    let url = format!("{}://{}/key/{}", state.http_scheme(), authority, encode_key_for_url(&key));
+    let url = format!(
+        "{}://{}/key/{}",
+        state.http_scheme(),
+        authority,
+        encode_key_for_url(&key)
+    );
 
-    match node_http_request(state.http_client.delete(&url), &state).send().await {
-        Ok(resp) if resp.status().is_success() =>
-            (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response(),
+    match node_http_request(state.http_client.delete(&url), &state)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
+        }
         Ok(resp) => {
             let s = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            (StatusCode::from_u16(s.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
-             Json(serde_json::json!({ "error": body }))).into_response()
+            (
+                StatusCode::from_u16(s.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
+                Json(serde_json::json!({ "error": body })),
+            )
+                .into_response()
         }
-        Err(e) => (StatusCode::BAD_GATEWAY, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -306,8 +406,8 @@ pub struct SetCompressedBody {
 
 #[derive(Serialize)]
 struct CompressedResult {
-    addr:  String,
-    ok:    bool,
+    addr: String,
+    ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -321,35 +421,64 @@ pub async fn set_compressed(
     Json(body): Json<SetCompressedBody>,
 ) -> impl IntoResponse {
     if !is_valid_cache_key(&key) {
-        return (StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "invalid key" }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "invalid key" })),
+        )
+            .into_response();
     }
 
     let addrs = if target == "all" {
         state.cluster_addrs().await
     } else {
-        resolve_target(&target, state.cfg.connection.cluster_port, &state.cfg.connection.seeds).await
+        resolve_target(
+            &target,
+            state.cfg.connection.cluster_port,
+            &state.cfg.connection.seeds,
+        )
+        .await
     };
 
     let value = if body.compressed { "true" } else { "false" }.to_string();
     let mut results: Vec<CompressedResult> = Vec::new();
 
     for addr in addrs {
-        match admin_rpc(addr, AdminRequest::SetKeyProperty {
-            key:   key.clone(),
-            name:  "compressed".into(),
-            value: value.clone(),
-        }, state.tls.as_ref()).await {
-            Ok(AdminResponse::KeyPropertyUpdated) =>
-                results.push(CompressedResult { addr: addr.to_string(), ok: true, error: None }),
-            Ok(AdminResponse::NotFound) =>
-                results.push(CompressedResult { addr: addr.to_string(), ok: false, error: Some("key not found".into()) }),
-            Ok(AdminResponse::Error { message }) =>
-                results.push(CompressedResult { addr: addr.to_string(), ok: false, error: Some(message) }),
-            Err(e) =>
-                results.push(CompressedResult { addr: addr.to_string(), ok: false, error: Some(e.to_string()) }),
-            _ =>
-                results.push(CompressedResult { addr: addr.to_string(), ok: false, error: Some("unexpected response".into()) }),
+        match admin_rpc(
+            addr,
+            AdminRequest::SetKeyProperty {
+                key: key.clone(),
+                name: "compressed".into(),
+                value: value.clone(),
+            },
+            state.tls.as_ref(),
+        )
+        .await
+        {
+            Ok(AdminResponse::KeyPropertyUpdated) => results.push(CompressedResult {
+                addr: addr.to_string(),
+                ok: true,
+                error: None,
+            }),
+            Ok(AdminResponse::NotFound) => results.push(CompressedResult {
+                addr: addr.to_string(),
+                ok: false,
+                error: Some("key not found".into()),
+            }),
+            Ok(AdminResponse::Error { message }) => results.push(CompressedResult {
+                addr: addr.to_string(),
+                ok: false,
+                error: Some(message),
+            }),
+            Err(e) => results.push(CompressedResult {
+                addr: addr.to_string(),
+                ok: false,
+                error: Some(e.to_string()),
+            }),
+            _ => results.push(CompressedResult {
+                addr: addr.to_string(),
+                ok: false,
+                error: Some("unexpected response".into()),
+            }),
         }
     }
     Json(results).into_response()
@@ -361,16 +490,16 @@ pub async fn set_compressed(
 
 #[derive(Deserialize)]
 pub struct SetTtlBody {
-    pub pattern:  String,
+    pub pattern: String,
     pub ttl_secs: Option<u64>,
 }
 
 #[derive(Serialize)]
 struct TtlResult {
-    addr:    String,
+    addr: String,
     updated: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error:   Option<String>,
+    error: Option<String>,
 }
 
 /// `POST /api/cache/:target/ttl` — Set TTL for all keys matching a glob pattern.
@@ -386,21 +515,41 @@ pub async fn set_keys_ttl(
     let addrs = if target == "all" {
         state.cluster_addrs().await
     } else {
-        resolve_target(&target, state.cfg.connection.cluster_port, &state.cfg.connection.seeds).await
+        resolve_target(
+            &target,
+            state.cfg.connection.cluster_port,
+            &state.cfg.connection.seeds,
+        )
+        .await
     };
 
     let mut results: Vec<TtlResult> = Vec::new();
     for addr in addrs {
-        match admin_rpc(addr, AdminRequest::SetKeysTtl {
-            pattern:  body.pattern.clone(),
-            ttl_secs: body.ttl_secs,
-        }, state.tls.as_ref()).await {
-            Ok(AdminResponse::TtlUpdated { updated }) =>
-                results.push(TtlResult { addr: addr.to_string(), updated, error: None }),
-            Err(e) =>
-                results.push(TtlResult { addr: addr.to_string(), updated: 0, error: Some(e.to_string()) }),
-            _ =>
-                results.push(TtlResult { addr: addr.to_string(), updated: 0, error: Some("unexpected response".into()) }),
+        match admin_rpc(
+            addr,
+            AdminRequest::SetKeysTtl {
+                pattern: body.pattern.clone(),
+                ttl_secs: body.ttl_secs,
+            },
+            state.tls.as_ref(),
+        )
+        .await
+        {
+            Ok(AdminResponse::TtlUpdated { updated }) => results.push(TtlResult {
+                addr: addr.to_string(),
+                updated,
+                error: None,
+            }),
+            Err(e) => results.push(TtlResult {
+                addr: addr.to_string(),
+                updated: 0,
+                error: Some(e.to_string()),
+            }),
+            _ => results.push(TtlResult {
+                addr: addr.to_string(),
+                updated: 0,
+                error: Some("unexpected response".into()),
+            }),
         }
     }
     Json(results)
@@ -417,7 +566,10 @@ fn node_http_request(
     req: reqwest::RequestBuilder,
     state: &crate::api::AppState,
 ) -> reqwest::RequestBuilder {
-    match (&state.cfg.http_client_auth.username, &state.cfg.http_client_auth.password) {
+    match (
+        &state.cfg.http_client_auth.username,
+        &state.cfg.http_client_auth.password,
+    ) {
         (Some(user), Some(pass)) => req.basic_auth(user, Some(pass)),
         _ => req,
     }

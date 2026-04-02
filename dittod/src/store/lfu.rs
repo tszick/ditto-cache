@@ -8,17 +8,17 @@ use std::collections::HashMap;
 /// is chosen.
 pub struct LfuTracker {
     /// key → frequency
-    freq:     HashMap<String, u64>,
+    freq: HashMap<String, u64>,
     /// frequency → ordered set of keys (insertion order via Vec)
-    buckets:  HashMap<u64, Vec<String>>,
+    buckets: HashMap<u64, Vec<String>>,
     min_freq: u64,
 }
 
 impl LfuTracker {
     pub fn new() -> Self {
         Self {
-            freq:     HashMap::new(),
-            buckets:  HashMap::new(),
+            freq: HashMap::new(),
+            buckets: HashMap::new(),
             min_freq: 0,
         }
     }
@@ -49,7 +49,10 @@ impl LfuTracker {
             }
 
             // Add to new bucket.
-            self.buckets.entry(old + 1).or_default().push(key.to_string());
+            self.buckets
+                .entry(old + 1)
+                .or_default()
+                .push(key.to_string());
         }
     }
 

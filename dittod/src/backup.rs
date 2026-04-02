@@ -42,7 +42,10 @@ pub async fn run_backup(node: Arc<NodeHandle>, cfg: &BackupConfig) -> anyhow::Re
     let was_active = node.active.load(Ordering::Relaxed);
     if was_active {
         node.active.store(false, Ordering::Relaxed);
-        node.active_set.lock().await.set_local_status(NodeStatus::Inactive);
+        node.active_set
+            .lock()
+            .await
+            .set_local_status(NodeStatus::Inactive);
         tracing::info!("Backup: node set Inactive for snapshot");
     }
 
@@ -84,8 +87,8 @@ async fn write_snapshot(node: &NodeHandle, cfg: &BackupConfig) -> anyhow::Result
         None => (plaintext, base_ext.to_string()),
     };
 
-    let node_id  = node.config.lock().unwrap().node.id.clone();
-    let now      = chrono::Utc::now();
+    let node_id = node.config.lock().unwrap().node.id.clone();
+    let now = chrono::Utc::now();
     let filename = format!(
         "{}_backup_{}_UTC.{}",
         node_id,
@@ -102,7 +105,11 @@ async fn write_snapshot(node: &NodeHandle, cfg: &BackupConfig) -> anyhow::Result
         "Backup written: {:?}  ({} bytes{})",
         full_path,
         data.len(),
-        if cfg.encryption_key.is_some() { ", encrypted" } else { "" },
+        if cfg.encryption_key.is_some() {
+            ", encrypted"
+        } else {
+            ""
+        },
     );
     Ok(full_path.to_string_lossy().into_owned())
 }
@@ -224,7 +231,8 @@ pub async fn run_scheduler(node: Arc<NodeHandle>, cfg: BackupConfig) {
         Err(e) => {
             tracing::error!(
                 "Invalid backup schedule '{}': {}. Scheduler will not run.",
-                cfg.schedule, e
+                cfg.schedule,
+                e
             );
             return;
         }
@@ -235,7 +243,7 @@ pub async fn run_scheduler(node: Arc<NodeHandle>, cfg: BackupConfig) {
     loop {
         let next = match schedule.upcoming(chrono::Utc).next() {
             Some(t) => t,
-            None    => {
+            None => {
                 tracing::warn!("Backup schedule has no future occurrences. Stopping.");
                 break;
             }

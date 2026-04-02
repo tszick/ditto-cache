@@ -11,11 +11,37 @@ use config::{Config, LogConfig};
 use gossip::GossipEngine;
 use node::NodeHandle;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 fn parse_bool_env(var: &str) -> Option<bool> {
-    std::env::var(var).ok().map(|v| v.trim().eq_ignore_ascii_case("true"))
+    std::env::var(var)
+        .ok()
+        .map(|v| v.trim().eq_ignore_ascii_case("true"))
+}
+
+fn apply_replication_guardrails(config: &mut Config) {
+    let interval_ms = config.replication.gossip_interval_ms.max(1);
+    let min_dead_ms = interval_ms.saturating_mul(3);
+    if config.replication.gossip_dead_ms < min_dead_ms {
+        warn!(
+            "gossip_dead_ms={}ms is lower than 3x gossip_interval_ms={}ms; clamping to {}ms",
+            config.replication.gossip_dead_ms, interval_ms, min_dead_ms
+        );
+        config.replication.gossip_dead_ms = min_dead_ms;
+    }
+    if config.replication.gossip_dead_ms < 3000 {
+        warn!(
+            "gossip_dead_ms={}ms is aggressive and may cause false OFFLINE flapping under transient pauses",
+            config.replication.gossip_dead_ms
+        );
+    }
+    if config.replication.gossip_dead_ms > 30_000 {
+        warn!(
+            "gossip_dead_ms={}ms is high and may delay true failure detection",
+            config.replication.gossip_dead_ms
+        );
+    }
 }
 
 #[tokio::main]
@@ -102,8 +128,8 @@ async fn main() -> Result<()> {
     {
         config.persistence.import_allowed = v;
     }
-    if let Some(v) = parse_bool_env("DITTO_RATE_LIMIT_ENABLED")
-        .or_else(|| parse_bool_env("RATE_LIMIT_ENABLED"))
+    if let Some(v) =
+        parse_bool_env("DITTO_RATE_LIMIT_ENABLED").or_else(|| parse_bool_env("RATE_LIMIT_ENABLED"))
     {
         config.rate_limit.enabled = v;
     }
@@ -114,8 +140,8 @@ async fn main() -> Result<()> {
             config.rate_limit.requests_per_sec = n.max(1);
         }
     }
-    if let Ok(v) = std::env::var("DITTO_RATE_LIMIT_BURST")
-        .or_else(|_| std::env::var("RATE_LIMIT_BURST"))
+    if let Ok(v) =
+        std::env::var("DITTO_RATE_LIMIT_BURST").or_else(|_| std::env::var("RATE_LIMIT_BURST"))
     {
         if let Ok(n) = v.parse::<u64>() {
             config.rate_limit.burst = n.max(1);
@@ -147,6 +173,18 @@ async fn main() -> Result<()> {
             config.circuit_breaker.half_open_max_requests = n.max(1);
         }
     }
+    if let Some(v) =
+        parse_bool_env("DITTO_HOT_KEY_ENABLED").or_else(|| parse_bool_env("HOT_KEY_ENABLED"))
+    {
+        config.hot_key.enabled = v;
+    }
+    if let Ok(v) =
+        std::env::var("DITTO_HOT_KEY_MAX_WAITERS").or_else(|_| std::env::var("HOT_KEY_MAX_WAITERS"))
+    {
+        if let Ok(n) = v.parse::<usize>() {
+            config.hot_key.max_waiters = n.max(1);
+        }
+    }
     if let Ok(v) = std::env::var("DITTO_BIND_ADDR") {
         config.node.bind_addr = v;
     }
@@ -160,6 +198,7 @@ async fn main() -> Result<()> {
             config.node.frame_read_timeout_ms = ms.max(1);
         }
     }
+    apply_replication_guardrails(&mut config);
 
     // Strict security mode: cluster/admin traffic must use mTLS.
     if !config.tls.enabled {
@@ -186,7 +225,7 @@ async fn main() -> Result<()> {
 
     // Resolve bind addresses early so startup fails fast with a clear error
     // when "site-local" is requested but no private interface is available.
-    let resolved_bind         = ditto_config::resolve_bind_addr(&config.node.bind_addr)
+    let resolved_bind = ditto_config::resolve_bind_addr(&config.node.bind_addr)
         .context("resolving node.bind_addr")?;
     let resolved_cluster_bind = ditto_config::resolve_bind_addr(&config.node.cluster_bind_addr)
         .context("resolving node.cluster_bind_addr")?;
@@ -197,8 +236,7 @@ async fn main() -> Result<()> {
     );
     info!(
         "Bind addresses — client: {} (bind_addr={})  cluster: {} (cluster_bind_addr={})",
-        resolved_bind, config.node.bind_addr,
-        resolved_cluster_bind, config.node.cluster_bind_addr,
+        resolved_bind, config.node.bind_addr, resolved_cluster_bind, config.node.cluster_bind_addr,
     );
 
     // Log file cleanup task: hourly sweep that removes old rolling files.
@@ -228,7 +266,7 @@ async fn main() -> Result<()> {
 
     // TLS acceptor / connector (optional; only built when [tls] enabled = true)
     let (tls_acceptor, tls_connector) = if config.tls.enabled {
-        let acceptor  = network::tls::build_acceptor(&config.tls)?;
+        let acceptor = network::tls::build_acceptor(&config.tls)?;
         let connector = network::tls::build_connector(&config.tls)?;
         info!("mTLS enabled on cluster/admin port");
         (Some(acceptor), Some(connector))
@@ -246,17 +284,16 @@ async fn main() -> Result<()> {
     );
 
     // Gossip engine
-    let gossip_addr: SocketAddr = format!(
-        "{}:{}",
-        resolved_cluster_bind, config.node.gossip_port
-    )
-    .parse()?;
+    let gossip_addr: SocketAddr =
+        format!("{}:{}", resolved_cluster_bind, config.node.gossip_port).parse()?;
 
     // Derive gossip addresses for seed nodes: replace the cluster port in each
     // seed string with the local gossip port.  Keep as strings so tokio can
     // resolve hostnames (e.g. "node-2") at send time – SocketAddr::parse()
     // rejects DNS names.
-    let seed_gossip_addrs: Vec<String> = config.cluster.seeds
+    let seed_gossip_addrs: Vec<String> = config
+        .cluster
+        .seeds
         .iter()
         .filter_map(|seed| {
             let host = seed.split(':').next()?;
@@ -271,7 +308,8 @@ async fn main() -> Result<()> {
             node.active_set.clone(),
             config.replication.gossip_interval_ms,
             seed_gossip_addrs,
-        ).await?,
+        )
+        .await?,
     );
     gossip.start();
     info!("Gossip engine started on UDP {}", gossip_addr);
@@ -284,7 +322,7 @@ async fn main() -> Result<()> {
 
     // Backup scheduler (runs only if backup.enabled = true in config).
     {
-        let n   = node.clone();
+        let n = node.clone();
         let cfg = config.backup.clone();
         tokio::spawn(async move { backup::run_scheduler(n, cfg).await });
     }
@@ -298,8 +336,8 @@ async fn main() -> Result<()> {
 
     // Start servers concurrently.
     // Client-facing ports use bind_addr; cluster/gossip ports use cluster_bind_addr.
-    let tcp_bind     = format!("{}:{}", resolved_bind, config.node.client_port);
-    let http_bind    = format!("{}:{}", resolved_bind, config.node.http_port);
+    let tcp_bind = format!("{}:{}", resolved_bind, config.node.client_port);
+    let http_bind = format!("{}:{}", resolved_bind, config.node.http_port);
     let cluster_bind = format!("{}:{}", resolved_cluster_bind, config.node.cluster_port);
 
     // Optional server-only TLS for the HTTP REST port (uses the same cert as
@@ -337,10 +375,8 @@ async fn main() -> Result<()> {
 /// down and queued records to be lost.
 fn init_logging(cfg: &LogConfig) -> Result<tracing_appender::non_blocking::WorkerGuard> {
     // EnvFilter: RUST_LOG env var takes precedence; fallback to config level.
-    let level_str = std::env::var("RUST_LOG")
-        .unwrap_or_else(|_| format!("dittod={}", cfg.level));
-    let filter = EnvFilter::try_new(&level_str)
-        .unwrap_or_else(|_| EnvFilter::new("dittod=info"));
+    let level_str = std::env::var("RUST_LOG").unwrap_or_else(|_| format!("dittod={}", cfg.level));
+    let filter = EnvFilter::try_new(&level_str).unwrap_or_else(|_| EnvFilter::new("dittod=info"));
 
     let console = tracing_subscriber::fmt::layer()
         .with_target(false)
@@ -349,20 +385,16 @@ fn init_logging(cfg: &LogConfig) -> Result<tracing_appender::non_blocking::Worke
     let registry = tracing_subscriber::registry().with(console);
 
     if cfg.enabled {
-        std::fs::create_dir_all(&cfg.path).map_err(|e| {
-            anyhow::anyhow!("cannot create log directory {:?}: {}", cfg.path, e)
-        })?;
+        std::fs::create_dir_all(&cfg.path)
+            .map_err(|e| anyhow::anyhow!("cannot create log directory {:?}: {}", cfg.path, e))?;
 
         let rotation = match cfg.rotation.as_str() {
             "hourly" => tracing_appender::rolling::Rotation::HOURLY,
-            "never"  => tracing_appender::rolling::Rotation::NEVER,
-            _        => tracing_appender::rolling::Rotation::DAILY,
+            "never" => tracing_appender::rolling::Rotation::NEVER,
+            _ => tracing_appender::rolling::Rotation::DAILY,
         };
-        let appender = tracing_appender::rolling::RollingFileAppender::new(
-            rotation,
-            &cfg.path,
-            "dittod.log",
-        );
+        let appender =
+            tracing_appender::rolling::RollingFileAppender::new(rotation, &cfg.path, "dittod.log");
         let (non_blocking, guard) = tracing_appender::non_blocking(appender);
         registry
             .with(
@@ -390,7 +422,9 @@ fn rotate_old_logs(dir: &str, retain_days: u64) {
         .checked_sub(std::time::Duration::from_secs(retain_days * 86_400))
         .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
 
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if !path
@@ -408,5 +442,29 @@ fn rotate_old_logs(dir: &str, retain_days: u64) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_replication_guardrails;
+    use crate::config::Config;
+
+    #[test]
+    fn guardrail_clamps_dead_threshold_to_at_least_three_intervals() {
+        let mut cfg = Config::default();
+        cfg.replication.gossip_interval_ms = 400;
+        cfg.replication.gossip_dead_ms = 500;
+        apply_replication_guardrails(&mut cfg);
+        assert_eq!(cfg.replication.gossip_dead_ms, 1200);
+    }
+
+    #[test]
+    fn guardrail_keeps_valid_dead_threshold_unchanged() {
+        let mut cfg = Config::default();
+        cfg.replication.gossip_interval_ms = 200;
+        cfg.replication.gossip_dead_ms = 15000;
+        apply_replication_guardrails(&mut cfg);
+        assert_eq!(cfg.replication.gossip_dead_ms, 15000);
     }
 }

@@ -62,6 +62,8 @@ Prompts for a password and prints bcrypt hash.
 dittoctl node describe <target>
 ```
 
+`node describe` includes replication/socket tuning fields such as `write-timeout-ms`, `gossip-interval-ms`, `gossip-dead-ms`, and `frame-read-timeout-ms`.
+
 ### Get property
 
 ```bash
@@ -93,6 +95,8 @@ Resilience runtime tuning:
 dittoctl node set rate-limit-enabled <target> <true|false>
 dittoctl node set rate-limit-requests-per-sec <target> <number>
 dittoctl node set rate-limit-burst <target> <number>
+dittoctl node set hot-key-enabled <target> <true|false>
+dittoctl node set hot-key-max-waiters <target> <number>
 dittoctl node set circuit-breaker-enabled <target> <true|false>
 dittoctl node set circuit-breaker-failure-threshold <target> <number>
 dittoctl node set circuit-breaker-open-ms <target> <number>
@@ -121,7 +125,7 @@ dittoctl node status <target>
 
 `target` can be `local`, `all`, or a specific node address/name expected by mgmt.
 Status output includes persistence policy flags (`persistence_platform_allowed`, `persistence_runtime_enabled`, `persistence_enabled`, and per-feature states).
-Status output also includes resilience-runtime fields (`rate_limit_enabled`, `rate_limited_requests_total`, `circuit_breaker_enabled`, `circuit_breaker_state`, `circuit_breaker_open_total`, `circuit_breaker_reject_total`).
+Status output also includes resilience-runtime fields (`rate_limit_enabled`, `rate_limited_requests_total`, `hot_key_enabled`, `hot_key_coalesced_hits_total`, `hot_key_fallback_exec_total`, `circuit_breaker_enabled`, `circuit_breaker_state`, `circuit_breaker_open_total`, `circuit_breaker_reject_total`).
 
 ## Cache commands
 

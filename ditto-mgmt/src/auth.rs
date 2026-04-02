@@ -12,7 +12,7 @@ use crate::api::SharedState;
 use axum::{
     body::Body,
     extract::State,
-    http::{Request, StatusCode, header},
+    http::{header, Request, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -24,9 +24,12 @@ pub async fn basic_auth_middleware(
     next: Next,
 ) -> Response {
     let (expected_user, expected_hash) = match &state.cfg.admin.password_hash {
-        None => return next.run(req).await,   // auth not configured → pass through
+        None => return next.run(req).await, // auth not configured → pass through
         Some(hash) => {
-            let user = state.cfg.admin.username
+            let user = state
+                .cfg
+                .admin
+                .username
                 .as_deref()
                 .unwrap_or("admin")
                 .to_string();
@@ -34,7 +37,8 @@ pub async fn basic_auth_middleware(
         }
     };
 
-    let credential = req.headers()
+    let credential = req
+        .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Basic "))
@@ -44,9 +48,13 @@ pub async fn basic_auth_middleware(
         })
         .and_then(|bytes| String::from_utf8(bytes).ok());
 
-    let (is_valid_user, pass_to_check) = match credential.as_deref().and_then(|s| s.split_once(':')) {
+    let (is_valid_user, pass_to_check) = match credential.as_deref().and_then(|s| s.split_once(':'))
+    {
         Some((user, pass)) if user == expected_user => (true, pass.to_string()),
-        _ => (false, "dummy-password-for-timing-attack-mitigation".to_string()),
+        _ => (
+            false,
+            "dummy-password-for-timing-attack-mitigation".to_string(),
+        ),
     };
 
     let is_valid_pass = tokio::task::spawn_blocking(move || {

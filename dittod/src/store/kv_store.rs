@@ -1,12 +1,12 @@
 use crate::store::lfu::LfuTracker;
 use bytes::Bytes;
+use lz4_flex::{compress_prepend_size, decompress_size_prepended};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use lz4_flex::{compress_prepend_size, decompress_size_prepended};
 
 /// Maximum allowed TTL for any entry, in seconds (e.g. 30 days).
 const MAX_TTL_SECS: u64 = 30 * 24 * 60 * 60;
@@ -32,8 +32,8 @@ const MAX_COMPRESS_INPUT_BYTES: usize = 512 * 1024 * 1024; // 512 MiB
 #[derive(Debug, Clone)]
 pub struct Entry {
     /// Raw stored bytes (may be LZ4-compressed; see `compressed` flag).
-    pub value:      Bytes,
-    pub version:    u64,
+    pub value: Bytes,
+    pub version: u64,
     pub expires_at: Option<Instant>,
     pub freq_count: u64,
     /// Whether `value` is stored in LZ4-compressed form.
@@ -42,14 +42,20 @@ pub struct Entry {
 
 impl Entry {
     pub fn is_expired(&self) -> bool {
-        self.expires_at.map(|e| Instant::now() >= e).unwrap_or(false)
+        self.expires_at
+            .map(|e| Instant::now() >= e)
+            .unwrap_or(false)
     }
 
     /// Remaining TTL in seconds, if set.
     pub fn ttl_remaining_secs(&self) -> Option<u64> {
         self.expires_at.map(|e| {
             let now = Instant::now();
-            if now >= e { 0 } else { (e - now).as_secs() }
+            if now >= e {
+                0
+            } else {
+                (e - now).as_secs()
+            }
         })
     }
 }
@@ -57,19 +63,23 @@ impl Entry {
 /// Serialisable snapshot of a single entry (no Instant).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportEntry {
-    pub value:           Vec<u8>,
-    pub version:         u64,
+    pub value: Vec<u8>,
+    pub version: u64,
     /// Unix timestamp (ms) of expiry, if set.
-    pub expires_at_ms:   Option<u64>,
+    pub expires_at_ms: Option<u64>,
 }
 
 impl From<&Entry> for ExportEntry {
     fn from(e: &Entry) -> Self {
         let expires_at_ms = e.expires_at.map(|instant| {
             let now_instant = Instant::now();
-            let now_system  = SystemTime::now();
-            let remaining   = if instant > now_instant { instant - now_instant } else { Duration::ZERO };
-            let expiry_sys  = now_system + remaining;
+            let now_system = SystemTime::now();
+            let remaining = if instant > now_instant {
+                instant - now_instant
+            } else {
+                Duration::ZERO
+            };
+            let expiry_sys = now_system + remaining;
             expiry_sys
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -81,22 +91,23 @@ impl From<&Entry> for ExportEntry {
         // before allocating.  Use MAX_DECOMPRESSED_FALLBACK_BYTES as the hard cap
         // because ExportEntry::from() has no access to the per-store limit.
         let raw_value = if e.compressed {
-            let oversized = e.value.get(..4)
+            let oversized = e
+                .value
+                .get(..4)
                 .map(|h| u32::from_le_bytes(h.try_into().unwrap()) as u64)
                 .map_or(false, |declared| declared > MAX_DECOMPRESSED_FALLBACK_BYTES);
             if oversized {
                 // Return the compressed bytes as-is rather than risk a memory bomb.
                 e.value.to_vec()
             } else {
-                decompress_size_prepended(&e.value)
-                    .unwrap_or_else(|_| e.value.to_vec())
+                decompress_size_prepended(&e.value).unwrap_or_else(|_| e.value.to_vec())
             }
         } else {
             e.value.to_vec()
         };
         ExportEntry {
-            value:         raw_value,
-            version:       e.version,
+            value: raw_value,
+            version: e.version,
             expires_at_ms,
         }
     }
@@ -107,47 +118,47 @@ pub struct KvStore {
 }
 
 struct StoreInner {
-    data:          HashMap<String, Entry>,
-    lfu:           LfuTracker,
-    max_bytes:     u64,
-    used_bytes:    u64,
-    default_ttl:   Option<Duration>,
-    evictions:     u64,
-    hit_count:     u64,
-    miss_count:    u64,
+    data: HashMap<String, Entry>,
+    lfu: LfuTracker,
+    max_bytes: u64,
+    used_bytes: u64,
+    default_ttl: Option<Duration>,
+    evictions: u64,
+    hit_count: u64,
+    miss_count: u64,
     /// Maximum allowed value size in bytes; 0 = unlimited.
-    max_value_bytes:         u64,
+    max_value_bytes: u64,
     /// Maximum number of keys; 0 = unlimited.
-    max_keys_limit:          usize,
+    max_keys_limit: usize,
     /// LZ4 compression enabled (logic added in Feature 3).
-    compression_enabled:     bool,
+    compression_enabled: bool,
     /// Values larger than this threshold are compressed.
     compression_threshold_bytes: u64,
 }
 
 impl KvStore {
     pub fn new(
-        max_memory_mb:           u64,
-        default_ttl_secs:        u64,
-        max_value_bytes:         u64,
-        max_keys_limit:          usize,
-        compression_enabled:     bool,
+        max_memory_mb: u64,
+        default_ttl_secs: u64,
+        max_value_bytes: u64,
+        max_keys_limit: usize,
+        compression_enabled: bool,
         compression_threshold_bytes: u64,
     ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(StoreInner {
-                data:        HashMap::new(),
-                lfu:         LfuTracker::new(),
-                max_bytes:   max_memory_mb * 1024 * 1024,
-                used_bytes:  0,
+                data: HashMap::new(),
+                lfu: LfuTracker::new(),
+                max_bytes: max_memory_mb * 1024 * 1024,
+                used_bytes: 0,
                 default_ttl: if default_ttl_secs > 0 {
                     Some(Duration::from_secs(default_ttl_secs))
                 } else {
                     None
                 },
-                evictions:   0,
-                hit_count:   0,
-                miss_count:  0,
+                evictions: 0,
+                hit_count: 0,
+                miss_count: 0,
                 max_value_bytes,
                 max_keys_limit,
                 compression_enabled,
@@ -194,8 +205,7 @@ impl KvStore {
                         MAX_DECOMPRESSED_FALLBACK_BYTES
                     };
                     if let Some(header) = entry.value.get(..4) {
-                        let declared_size =
-                            u32::from_le_bytes(header.try_into().unwrap()) as u64;
+                        let declared_size = u32::from_le_bytes(header.try_into().unwrap()) as u64;
                         if declared_size > decomp_limit {
                             tracing::warn!(
                                 // Sanitize the key before logging to prevent a
@@ -213,7 +223,7 @@ impl KvStore {
                     }
                     match decompress_size_prepended(&entry.value) {
                         Ok(decompressed) => {
-                            entry.value      = Bytes::from(decompressed);
+                            entry.value = Bytes::from(decompressed);
                             entry.compressed = false;
                         }
                         Err(e) => {
@@ -258,11 +268,14 @@ impl KvStore {
         match (compress, current_compressed) {
             (true, false) => {
                 let new_value = Bytes::from(compress_prepend_size(&current_value));
-                let old_sz    = entry_size(key, &current_value);
-                let new_sz    = entry_size(key, &new_value);
-                inner.used_bytes = inner.used_bytes.saturating_sub(old_sz).saturating_add(new_sz);
+                let old_sz = entry_size(key, &current_value);
+                let new_sz = entry_size(key, &new_value);
+                inner.used_bytes = inner
+                    .used_bytes
+                    .saturating_sub(old_sz)
+                    .saturating_add(new_sz);
                 let e = inner.data.get_mut(key).unwrap();
-                e.value      = new_value;
+                e.value = new_value;
                 e.compressed = true;
             }
             (false, true) => {
@@ -273,8 +286,7 @@ impl KvStore {
                     MAX_DECOMPRESSED_FALLBACK_BYTES
                 };
                 if let Some(header) = current_value.get(..4) {
-                    let declared_size =
-                        u32::from_le_bytes(header.try_into().unwrap()) as u64;
+                    let declared_size = u32::from_le_bytes(header.try_into().unwrap()) as u64;
                     if declared_size > decomp_limit {
                         return Err("decompressed size exceeds limit");
                     }
@@ -282,11 +294,14 @@ impl KvStore {
                 let decompressed = decompress_size_prepended(&current_value)
                     .map_err(|_| "decompression failed")?;
                 let new_value = Bytes::from(decompressed);
-                let old_sz    = entry_size(key, &current_value);
-                let new_sz    = entry_size(key, &new_value);
-                inner.used_bytes = inner.used_bytes.saturating_sub(old_sz).saturating_add(new_sz);
+                let old_sz = entry_size(key, &current_value);
+                let new_sz = entry_size(key, &new_value);
+                inner.used_bytes = inner
+                    .used_bytes
+                    .saturating_sub(old_sz)
+                    .saturating_add(new_sz);
                 let e = inner.data.get_mut(key).unwrap();
-                e.value      = new_value;
+                e.value = new_value;
                 e.compressed = false;
             }
             _ => {} // already in the desired state
@@ -334,24 +349,23 @@ impl KvStore {
             .map(|d| Instant::now() + d);
 
         // Compress if eligible.
-        let (stored_value, is_compressed) =
-            if inner.compression_enabled
-                && value.len() as u64 > inner.compression_threshold_bytes
-            {
-                // Guard directly before the allocation with a compile-time
-                // constant so static analysis can verify the bound (CWE-789).
-                if value.len() > MAX_COMPRESS_INPUT_BYTES {
-                    return version;
-                }
-                let compressed = Bytes::from(compress_prepend_size(&value));
-                (compressed, true)
-            } else {
-                (value, false)
-            };
+        let (stored_value, is_compressed) = if inner.compression_enabled
+            && value.len() as u64 > inner.compression_threshold_bytes
+        {
+            // Guard directly before the allocation with a compile-time
+            // constant so static analysis can verify the bound (CWE-789).
+            if value.len() > MAX_COMPRESS_INPUT_BYTES {
+                return version;
+            }
+            let compressed = Bytes::from(compress_prepend_size(&value));
+            (compressed, true)
+        } else {
+            (value, false)
+        };
 
-        let sz    = entry_size(&key, &stored_value);
+        let sz = entry_size(&key, &stored_value);
         let entry = Entry {
-            value:      stored_value,
+            value: stored_value,
             version,
             expires_at,
             freq_count: 1,
@@ -398,7 +412,7 @@ impl KvStore {
             .data
             .keys()
             .filter(|k| match pattern {
-                None    => true,
+                None => true,
                 Some(p) => glob_match(p, k),
             })
             .cloned()
@@ -431,14 +445,16 @@ impl KvStore {
     /// Serialisable snapshot (converts Instant → unix timestamp ms).
     pub fn snapshot(&self) -> Vec<(String, ExportEntry)> {
         let inner = self.inner.lock().unwrap();
-        inner.data.iter()
+        inner
+            .data
+            .iter()
             .map(|(k, v)| (k.clone(), ExportEntry::from(v)))
             .collect()
     }
 
     /// Restore entries from an exported snapshot.
     pub fn restore(&self, entries: Vec<(String, ExportEntry)>) {
-        let now_sys  = SystemTime::now();
+        let now_sys = SystemTime::now();
         let now_inst = Instant::now();
         for (key, exp) in entries {
             let expires_at = exp.expires_at_ms.and_then(|ms| {
@@ -446,17 +462,20 @@ impl KvStore {
                 expiry.duration_since(now_sys).ok().map(|d| now_inst + d)
             });
             let value = Bytes::from(exp.value);
-            let sz    = entry_size(&key, &value);
+            let sz = entry_size(&key, &value);
             let mut inner = self.inner.lock().unwrap();
             inner.ensure_capacity(sz);
             inner.lfu.insert(&key);
-            inner.data.insert(key, Entry {
-                value,
-                version:    exp.version,
-                expires_at,
-                freq_count: 1,
-                compressed: false, // exported values are always decompressed
-            });
+            inner.data.insert(
+                key,
+                Entry {
+                    value,
+                    version: exp.version,
+                    expires_at,
+                    freq_count: 1,
+                    compressed: false, // exported values are always decompressed
+                },
+            );
             inner.used_bytes += sz;
         }
     }
@@ -468,15 +487,15 @@ impl KvStore {
     pub fn stats(&self) -> StoreStats {
         let inner = self.inner.lock().unwrap();
         StoreStats {
-            key_count:               inner.data.len() as u64,
-            memory_used_bytes:       inner.used_bytes,
-            memory_max_bytes:        inner.max_bytes,
-            evictions:               inner.evictions,
-            hit_count:               inner.hit_count,
-            miss_count:              inner.miss_count,
-            value_size_limit_bytes:  inner.max_value_bytes,
-            max_keys_limit:          inner.max_keys_limit as u64,
-            compression_enabled:     inner.compression_enabled,
+            key_count: inner.data.len() as u64,
+            memory_used_bytes: inner.used_bytes,
+            memory_max_bytes: inner.max_bytes,
+            evictions: inner.evictions,
+            hit_count: inner.hit_count,
+            miss_count: inner.miss_count,
+            value_size_limit_bytes: inner.max_value_bytes,
+            max_keys_limit: inner.max_keys_limit as u64,
+            compression_enabled: inner.compression_enabled,
             compression_threshold_bytes: inner.compression_threshold_bytes,
         }
     }
@@ -509,7 +528,11 @@ impl KvStore {
     /// `secs == 0` means no TTL (keys live forever unless explicitly given one).
     pub fn set_default_ttl_secs(&self, secs: u64) {
         let mut inner = self.inner.lock().unwrap();
-        inner.default_ttl = if secs > 0 { Some(Duration::from_secs(secs)) } else { None };
+        inner.default_ttl = if secs > 0 {
+            Some(Duration::from_secs(secs))
+        } else {
+            None
+        };
     }
 
     pub fn set_value_size_limit(&self, bytes: u64) {
@@ -564,15 +587,15 @@ pub enum LimitError {
 }
 
 pub struct StoreStats {
-    pub key_count:               u64,
-    pub memory_used_bytes:       u64,
-    pub memory_max_bytes:        u64,
-    pub evictions:               u64,
-    pub hit_count:               u64,
-    pub miss_count:              u64,
-    pub value_size_limit_bytes:  u64,
-    pub max_keys_limit:          u64,
-    pub compression_enabled:     bool,
+    pub key_count: u64,
+    pub memory_used_bytes: u64,
+    pub memory_max_bytes: u64,
+    pub evictions: u64,
+    pub hit_count: u64,
+    pub miss_count: u64,
+    pub value_size_limit_bytes: u64,
+    pub max_keys_limit: u64,
+    pub compression_enabled: bool,
     pub compression_threshold_bytes: u64,
 }
 
@@ -585,7 +608,9 @@ impl StoreInner {
         while self.used_bytes + needed > self.max_bytes && !self.lfu.is_empty() {
             if let Some(victim) = self.lfu.evict() {
                 if let Some(e) = self.data.remove(&victim) {
-                    self.used_bytes = self.used_bytes.saturating_sub(entry_size(&victim, &e.value));
+                    self.used_bytes = self
+                        .used_bytes
+                        .saturating_sub(entry_size(&victim, &e.value));
                     self.evictions += 1;
                 }
             }
@@ -624,7 +649,7 @@ fn glob_match(pattern: &str, s: &str) -> bool {
         } else {
             match s[pos..].find(part) {
                 Some(idx) => pos += idx + part.len(),
-                None      => return false,
+                None => return false,
             }
         }
     }

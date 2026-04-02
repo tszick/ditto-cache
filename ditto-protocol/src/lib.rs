@@ -20,10 +20,10 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeInfo {
-    pub id:           Uuid,
-    pub addr:         SocketAddr,
+    pub id: Uuid,
+    pub addr: SocketAddr,
     pub cluster_port: u16,
-    pub status:       NodeStatus,
+    pub status: NodeStatus,
     pub last_applied: u64,
 }
 
@@ -45,41 +45,77 @@ pub enum NodeStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientRequest {
-    Get    { key: String },
-    Set    { key: String, value: Bytes, ttl_secs: Option<u64> },
-    Delete { key: String },
+    Get {
+        key: String,
+    },
+    Set {
+        key: String,
+        value: Bytes,
+        ttl_secs: Option<u64>,
+    },
+    Delete {
+        key: String,
+    },
     Ping,
-    Auth   { token: String },
+    Auth {
+        token: String,
+    },
     // DITTO-02: pub/sub watch API (variants 5, 6)
-    Watch   { key: String },
-    Unwatch { key: String },
+    Watch {
+        key: String,
+    },
+    Unwatch {
+        key: String,
+    },
     /// Delete all keys matching a glob-style pattern (`*` wildcard).
-    DeleteByPattern { pattern: String },
+    DeleteByPattern {
+        pattern: String,
+    },
     /// Update TTL for all keys matching a glob-style pattern.
     /// `ttl_secs = None` removes TTL for matched keys.
-    SetTtlByPattern { pattern: String, ttl_secs: Option<u64> },
+    SetTtlByPattern {
+        pattern: String,
+        ttl_secs: Option<u64>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientResponse {
-    Value    { key: String, value: Bytes, version: u64 },
-    Ok       { version: u64 },
+    Value {
+        key: String,
+        value: Bytes,
+        version: u64,
+    },
+    Ok {
+        version: u64,
+    },
     Deleted,
     NotFound,
     Pong,
     AuthOk,
-    Error    { code: ErrorCode, message: String },
+    Error {
+        code: ErrorCode,
+        message: String,
+    },
     // DITTO-02: pub/sub watch API (variants 7, 8, 9)
     /// Acknowledge to a Watch request.
     Watching,
     /// Acknowledge to an Unwatch request.
     Unwatched,
     /// Server-push: a watched key was committed (value = None means the key was deleted).
-    WatchEvent { key: String, value: Option<Bytes>, version: u64 },
+    WatchEvent {
+        key: String,
+        value: Option<Bytes>,
+        version: u64,
+    },
     /// Number of keys deleted by a pattern-based delete operation.
-    PatternDeleted { deleted: usize },
+    PatternDeleted {
+        deleted: usize,
+    },
     /// Number of keys updated by a pattern-based TTL operation.
-    PatternTtlUpdated { updated: usize },
+    PatternTtlUpdated {
+        updated: usize,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,35 +147,50 @@ pub enum ErrorCode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClusterMessage {
     // --- Write path (two-phase) ---
-
     /// Primary → all active nodes: "prepare this entry".
     Prepare {
         log_index: u64,
-        key:       String,
-        value:     Option<Bytes>,
-        ttl_secs:  Option<u64>,
+        key: String,
+        value: Option<Bytes>,
+        ttl_secs: Option<u64>,
     },
     /// Follower → primary: prepare acknowledged.
-    PrepareAck { log_index: u64, node_id: Uuid },
+    PrepareAck {
+        log_index: u64,
+        node_id: Uuid,
+    },
 
     /// Primary → all active nodes: "commit, make visible".
-    Commit { log_index: u64 },
+    Commit {
+        log_index: u64,
+    },
     /// Follower → primary: commit acknowledged.
-    CommitAck { log_index: u64, node_id: Uuid },
+    CommitAck {
+        log_index: u64,
+        node_id: Uuid,
+    },
 
     // --- Forwarding (non-primary receives client write) ---
-
     /// Non-primary → primary: forward a client write.
-    Forward { request: ClientRequest, origin_node: Uuid },
+    Forward {
+        request: ClientRequest,
+        origin_node: Uuid,
+    },
 
     // --- Recovery / anti-entropy ---
-
     /// Recovering node → any active node: "give me log entries".
-    RequestLog { from_index: u64 },
+    RequestLog {
+        from_index: u64,
+    },
     /// Active node → recovering node: log entries response.
-    LogEntries { entries: Vec<LogEntry> },
+    LogEntries {
+        entries: Vec<LogEntry>,
+    },
     /// Recovering node → gossip: "I'm fully synced".
-    Synced { node_id: Uuid, last_applied: u64 },
+    Synced {
+        node_id: Uuid,
+        last_applied: u64,
+    },
 
     // --- Forward response (primary → follower after handling forwarded write) ---
     /// Primary → non-primary: result of a forwarded client write.
@@ -147,7 +198,9 @@ pub enum ClusterMessage {
 
     // --- Primary election override ---
     /// Broadcast by force-elected primary to all peers.
-    ForcePrimary { node_id: Uuid },
+    ForcePrimary {
+        node_id: Uuid,
+    },
 
     // --- Admin (also on port 7779) ---
     Admin(AdminRequest),
@@ -157,11 +210,11 @@ pub enum ClusterMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogEntry {
-    pub index:    u64,
-    pub key:      String,
-    pub value:    Option<Bytes>,
+    pub index: u64,
+    pub key: String,
+    pub value: Option<Bytes>,
     pub ttl_secs: Option<u64>,
-    pub ts_ms:    u64,
+    pub ts_ms: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -172,10 +225,10 @@ pub struct LogEntry {
 pub enum GossipMessage {
     /// Periodic heartbeat broadcast.
     Heartbeat {
-        node_id:      Uuid,
-        addr:         SocketAddr,
+        node_id: Uuid,
+        addr: SocketAddr,
         cluster_port: u16,
-        status:       NodeStatus,
+        status: NodeStatus,
         last_applied: u64,
     },
     /// Triggered when active-set membership changes.
@@ -189,74 +242,96 @@ pub enum GossipMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AdminRequest {
     Describe,
-    GetProperty     { name: String },
-    SetProperty     { name: String, value: String },
-    ListKeys        { pattern: Option<String> },
+    GetProperty {
+        name: String,
+    },
+    SetProperty {
+        name: String,
+        value: String,
+    },
+    ListKeys {
+        pattern: Option<String>,
+    },
     GetStats,
     /// Retrieve full info for a single key (value + TTL + freq + compressed).
-    GetKeyInfo      { key: String },
+    GetKeyInfo {
+        key: String,
+    },
     /// Set a per-key property (e.g. "compressed" = "true"/"false").
-    SetKeyProperty  { key: String, name: String, value: String },
+    SetKeyProperty {
+        key: String,
+        name: String,
+        value: String,
+    },
     FlushCache,
     ClusterStatus,
     /// Trigger an immediate backup on this node (inactivate → export → activate).
     BackupNow,
     /// Set TTL for all keys matching a glob pattern. `ttl_secs = None` removes TTL.
-    SetKeysTtl { pattern: String, ttl_secs: Option<u64> },
+    SetKeysTtl {
+        pattern: String,
+        ttl_secs: Option<u64>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AdminResponse {
-    Properties    (Vec<(String, String)>),
-    Keys          (Vec<String>),
-    Stats         (NodeStats),
+    Properties(Vec<(String, String)>),
+    Keys(Vec<String>),
+    Stats(NodeStats),
     /// Response to GetKeyInfo.
     KeyInfo {
-        key:                String,
-        value:              Bytes,
-        version:            u64,
+        key: String,
+        value: Bytes,
+        version: u64,
         ttl_remaining_secs: Option<u64>,
-        freq_count:         u64,
+        freq_count: u64,
         /// Whether the stored value is LZ4-compressed.
-        compressed:         bool,
+        compressed: bool,
     },
     /// Response to SetKeyProperty.
     KeyPropertyUpdated,
     Flushed,
-    ClusterView   (Vec<NodeInfo>),
+    ClusterView(Vec<NodeInfo>),
     /// Response to BackupNow: the path of the created backup file.
-    BackupResult  { path: String, bytes: u64 },
+    BackupResult {
+        path: String,
+        bytes: u64,
+    },
     /// Response to SetKeysTtl: number of keys whose TTL was updated.
-    TtlUpdated    { updated: usize },
+    TtlUpdated {
+        updated: usize,
+    },
     Ok,
     NotFound,
-    Error         { message: String },
+    Error {
+        message: String,
+    },
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeStats {
-    pub node_id:          Uuid,
-    pub status:           NodeStatus,
-    pub is_primary:       bool,
-    pub committed_index:  u64,
-    pub key_count:        u64,
-    pub memory_used_bytes:   u64,
-    pub memory_max_bytes:    u64,
-    pub evictions:           u64,
-    pub hit_count:           u64,
-    pub miss_count:          u64,
-    pub uptime_secs:         u64,
+    pub node_id: Uuid,
+    pub status: NodeStatus,
+    pub is_primary: bool,
+    pub committed_index: u64,
+    pub key_count: u64,
+    pub memory_used_bytes: u64,
+    pub memory_max_bytes: u64,
+    pub evictions: u64,
+    pub hit_count: u64,
+    pub miss_count: u64,
+    pub uptime_secs: u64,
     /// Maximum allowed value size in bytes (0 = unlimited).
     pub value_size_limit_bytes: u64,
     /// Maximum number of keys allowed in the cache (0 = unlimited).
-    pub max_keys_limit:      u64,
+    pub max_keys_limit: u64,
     /// Whether automatic LZ4 compression is enabled.
     pub compression_enabled: bool,
     /// Minimum value size (bytes) to trigger automatic compression.
     pub compression_threshold_bytes: u64,
     /// Human-readable node name (DITTO_NODE_ID / cfg.node.id).
-    pub node_name:        String,
+    pub node_name: String,
     /// Total bytes occupied by backup files in the configured backup directory.
     /// Computed at query time; 0 if the directory is empty or does not exist.
     pub backup_dir_bytes: u64,
@@ -278,6 +353,12 @@ pub struct NodeStats {
     pub rate_limited_requests_total: u64,
     /// Circuit breaker enabled.
     pub circuit_breaker_enabled: bool,
+    /// Hot-key GET coalescing enabled.
+    pub hot_key_enabled: bool,
+    /// Total GET requests served via in-flight coalescing wait path.
+    pub hot_key_coalesced_hits_total: u64,
+    /// Total GET requests that bypassed coalescing (waiter cap / fallback).
+    pub hot_key_fallback_exec_total: u64,
     /// Current circuit breaker state: "closed" | "open" | "half-open".
     pub circuit_breaker_state: String,
     /// Number of times the circuit transitioned to open.

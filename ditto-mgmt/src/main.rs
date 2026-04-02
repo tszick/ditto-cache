@@ -20,7 +20,7 @@ mod tls;
 mod web;
 
 use anyhow::{Context, Result};
-use api::{AppState, build_router};
+use api::{build_router, AppState};
 use config::MgmtConfig;
 use std::sync::Arc;
 
@@ -92,22 +92,24 @@ async fn main() -> Result<()> {
             .timeout(std::time::Duration::from_millis(cfg.connection.timeout_ms));
         if cfg.tls.enabled && !cfg.tls.ca_cert.is_empty() {
             match tls::load_reqwest_ca_cert(&cfg.tls.ca_cert) {
-                Ok(cert) => { builder = builder.add_root_certificate(cert); }
-                Err(e)   => eprintln!("warning: could not load CA cert for reqwest: {}", e),
+                Ok(cert) => {
+                    builder = builder.add_root_certificate(cert);
+                }
+                Err(e) => eprintln!("warning: could not load CA cert for reqwest: {}", e),
             }
         }
         builder.build()?
     };
 
-    let resolved_bind = ditto_config::resolve_bind_addr(&cfg.server.bind)
-        .context("resolving server.bind")?;
+    let resolved_bind =
+        ditto_config::resolve_bind_addr(&cfg.server.bind).context("resolving server.bind")?;
     let bind = format!("{}:{}", resolved_bind, cfg.server.port);
 
     let state = Arc::new(AppState {
-        cfg:         Arc::new(cfg),
+        cfg: Arc::new(cfg),
         tls,
         http_client,
-        addr_cache:  tokio::sync::Mutex::new(None),
+        addr_cache: tokio::sync::Mutex::new(None),
     });
 
     let app = build_router(state.clone());

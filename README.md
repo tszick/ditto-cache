@@ -214,7 +214,7 @@ threshold_bytes = 4096
 [replication]
 write_timeout_ms   = 500
 gossip_interval_ms = 200
-gossip_dead_ms     = 1000
+gossip_dead_ms     = 15000
 
 [tls]
 enabled = false
@@ -237,6 +237,7 @@ key     = "/etc/ditto/certs/node.key"
 | `DITTO_ACTIVE` | `node.active` |
 | `DITTO_SEEDS` | `cluster.seeds` (comma-separated) |
 | `DITTO_MAX_MEMORY_MB` | `cache.max_memory_mb` |
+| `DITTO_GOSSIP_DEAD_MS` | `replication.gossip_dead_ms` |
 | `DITTO_TLS_ENABLED` | `tls.enabled` |
 | `DITTO_TLS_CA_CERT` | `tls.ca_cert` |
 | `DITTO_TLS_CERT` | `tls.cert` |
@@ -254,10 +255,16 @@ key     = "/etc/ditto/certs/node.key"
 | `DITTO_RATE_LIMIT_ENABLED` | node request rate limiter enable flag |
 | `DITTO_RATE_LIMIT_REQUESTS_PER_SEC` | token bucket refill rate |
 | `DITTO_RATE_LIMIT_BURST` | token bucket burst capacity |
+| `DITTO_HOT_KEY_ENABLED` | hot-key GET coalescing enable flag |
+| `DITTO_HOT_KEY_MAX_WAITERS` | max concurrent waiters per in-flight key |
 | `DITTO_CIRCUIT_BREAKER_ENABLED` | circuit breaker enable flag |
 | `DITTO_CIRCUIT_BREAKER_FAILURE_THRESHOLD` | consecutive failure threshold to open |
 | `DITTO_CIRCUIT_BREAKER_OPEN_MS` | open-state timeout before half-open probes |
 | `DITTO_CIRCUIT_BREAKER_HALF_OPEN_MAX_REQUESTS` | successful half-open probes needed to close |
+
+`gossip_dead_ms` guardrails:
+- values lower than `3 * gossip_interval_ms` are clamped upward at startup.
+- values below `3000` may cause false OFFLINE flapping under transient pauses.
 
 Persistence effective state:
 

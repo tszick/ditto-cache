@@ -25,7 +25,7 @@ max_keys               = 100000     # 0 = unlimited
 [replication]
 write_timeout_ms   = 500
 gossip_interval_ms = 200
-gossip_dead_ms     = 1000
+gossip_dead_ms     = 15000
 
 [backup]
 enabled     = false
@@ -45,6 +45,10 @@ import_allowed   = false
 enabled          = false
 requests_per_sec = 1000
 burst            = 2000
+
+[hot_key]
+enabled     = false
+max_waiters = 128
 
 [circuit_breaker]
 enabled                = false

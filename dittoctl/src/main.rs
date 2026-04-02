@@ -77,10 +77,10 @@ async fn main() -> Result<()> {
         .build()?;
 
     match cli.resource {
-        Resource::Node    { cmd } => commands::node::run(cmd, &mut cfg, &http_client).await?,
-        Resource::Cache   { cmd } => commands::cache::run(cmd, &cfg, &http_client).await?,
+        Resource::Node { cmd } => commands::node::run(cmd, &mut cfg, &http_client).await?,
+        Resource::Cache { cmd } => commands::cache::run(cmd, &cfg, &http_client).await?,
         Resource::Cluster { cmd } => commands::cluster::run(cmd, &cfg, &http_client).await?,
-        Resource::HashPassword    => unreachable!(),
+        Resource::HashPassword => unreachable!(),
     }
     Ok(())
 }
@@ -107,7 +107,9 @@ fn rpassword_read() -> Result<String> {
     } else {
         let mut line = String::new();
         std::io::stdin().read_line(&mut line)?;
-        line.trim_end_matches('\n').trim_end_matches('\r').to_string()
+        line.trim_end_matches('\n')
+            .trim_end_matches('\r')
+            .to_string()
     };
     eprintln!();
     Ok(password)
@@ -120,7 +122,9 @@ fn atty_stdin() -> bool {
         unsafe { libc_isatty(std::io::stdin().as_raw_fd()) }
     }
     #[cfg(not(unix))]
-    { false }
+    {
+        false
+    }
 }
 
 #[cfg(unix)]
@@ -138,10 +142,14 @@ fn read_password_from_tty() -> String {
     {
         use std::io::Read;
         // Use /dev/tty directly so piped stdout doesn't interfere.
-        if let Ok(mut tty) = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty") {
+        if let Ok(mut tty) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/tty")
+        {
             disable_echo(&tty);
             let mut buf = String::new();
-            let _ = tty.read_to_string(&mut buf);   // reads until EOF (Ctrl-D) or newline
+            let _ = tty.read_to_string(&mut buf); // reads until EOF (Ctrl-D) or newline
             enable_echo(&tty);
             // read_to_string reads until EOF; trim the newline
             let line = buf.lines().next().unwrap_or("").to_string();
@@ -151,7 +159,9 @@ fn read_password_from_tty() -> String {
     // Fallback: plain stdin (password visible)
     let mut line = String::new();
     let _ = std::io::stdin().read_line(&mut line);
-    line.trim_end_matches('\n').trim_end_matches('\r').to_string()
+    line.trim_end_matches('\n')
+        .trim_end_matches('\r')
+        .to_string()
 }
 
 #[cfg(unix)]

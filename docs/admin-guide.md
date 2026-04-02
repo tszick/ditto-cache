@@ -137,6 +137,12 @@ Persistence is only effective when both conditions are true:
 Platform gates are disabled by default, so backup/export/import stay blocked until explicitly enabled.
 `node status` includes the persistence fields (`persistence_platform_allowed`, `persistence_runtime_enabled`, `persistence_enabled`, plus per-feature flags).
 `node status` also includes rate-limit and circuit-breaker runtime fields (`rate_limit_enabled`, `rate_limited_requests_total`, `circuit_breaker_state`, and related counters).
+`node describe` includes replication tuning properties (`write-timeout-ms`, `gossip-interval-ms`, `gossip-dead-ms`) and `frame-read-timeout-ms`.
+`node status` now also includes hot-key coalescing fields (`hot_key_enabled`, `hot_key_coalesced_hits_total`, `hot_key_fallback_exec_total`).
+
+Recommended gossip baseline:
+- Start with `gossip_interval_ms=200` and `gossip_dead_ms=15000`.
+- Avoid values below `3000` unless you explicitly accept higher false-OFFLINE risk.
 
 Example runtime tuning commands:
 
@@ -144,6 +150,8 @@ Example runtime tuning commands:
 dittoctl node set rate-limit-enabled local true
 dittoctl node set rate-limit-requests-per-sec local 1500
 dittoctl node set rate-limit-burst local 3000
+dittoctl node set hot-key-enabled local true
+dittoctl node set hot-key-max-waiters local 128
 dittoctl node set circuit-breaker-enabled local true
 dittoctl node set circuit-breaker-failure-threshold local 25
 dittoctl node set circuit-breaker-open-ms local 5000
