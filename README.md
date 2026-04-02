@@ -431,6 +431,27 @@ docker start ditto-node-3             # auto-syncs when restarted
 
 ---
 
+## CI Workflows
+
+Current GitHub Actions workflows:
+
+- `CodeQL` (`.github/workflows/codeql.yml`)
+  - Purpose: static security + quality analysis for Rust code.
+  - Triggers: push/PR on `main` + weekly scheduled scan.
+- `Chaos Dry Run` (`.github/workflows/chaos-dry-run.yml`)
+  - Purpose: validate chaos script wiring without Docker side effects.
+  - Triggers: push/PR on `main` + manual run (`workflow_dispatch`).
+  - Command: `./scripts/chaos-smoke.ps1 -DryRun -Iterations 1`
+
+Manual run (GitHub UI):
+
+1. Open **Actions** tab.
+2. Select **Chaos Dry Run** workflow.
+3. Click **Run workflow**.
+4. Choose `main` branch and run.
+
+---
+
 ## Security
 
 mTLS on the cluster/admin port (7779) is supported.  When enabled, every
