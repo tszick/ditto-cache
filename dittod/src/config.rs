@@ -19,6 +19,8 @@ pub struct Config {
     #[serde(default)]
     pub persistence: PersistenceConfig,
     #[serde(default)]
+    pub tenancy: TenancyConfig,
+    #[serde(default)]
     pub rate_limit: RateLimitConfig,
     #[serde(default)]
     pub circuit_breaker: CircuitBreakerConfig,
@@ -221,6 +223,30 @@ pub struct PersistenceConfig {
     pub import_allowed: bool,
 }
 
+/// Multi-tenant keyspace isolation and per-namespace quota.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TenancyConfig {
+    /// Enable namespace-based key isolation (`namespace::key` internally).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Namespace used when client request omits namespace.
+    #[serde(default = "default_tenancy_default_namespace")]
+    pub default_namespace: String,
+    /// Per-namespace key count limit (0 = unlimited).
+    #[serde(default)]
+    pub max_keys_per_namespace: usize,
+}
+
+impl Default for TenancyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            default_namespace: default_tenancy_default_namespace(),
+            max_keys_per_namespace: 0,
+        }
+    }
+}
+
 /// Node-level request rate limiter (token bucket).
 ///
 /// Applies to client requests handled by `dittod` (TCP + HTTP).
@@ -391,6 +417,9 @@ fn default_version_check_interval_ms() -> u64 {
 fn default_read_repair_min_interval_ms() -> u64 {
     5_000
 }
+fn default_tenancy_default_namespace() -> String {
+    "default".to_string()
+}
 fn default_anti_entropy_interval_ms() -> u64 {
     60_000
 }
@@ -542,6 +571,7 @@ impl Default for Config {
             http_auth: HttpAuthConfig::default(),
             backup: BackupConfig::default(),
             persistence: PersistenceConfig::default(),
+            tenancy: TenancyConfig::default(),
             rate_limit: RateLimitConfig::default(),
             circuit_breaker: CircuitBreakerConfig::default(),
             hot_key: HotKeyConfig::default(),

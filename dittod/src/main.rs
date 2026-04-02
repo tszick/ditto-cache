@@ -203,6 +203,25 @@ async fn main() -> Result<()> {
         config.persistence.import_allowed = v;
     }
     if let Some(v) =
+        parse_bool_env("DITTO_TENANCY_ENABLED").or_else(|| parse_bool_env("TENANCY_ENABLED"))
+    {
+        config.tenancy.enabled = v;
+    }
+    if let Ok(v) = std::env::var("DITTO_TENANCY_DEFAULT_NAMESPACE")
+        .or_else(|_| std::env::var("TENANCY_DEFAULT_NAMESPACE"))
+    {
+        if !v.trim().is_empty() {
+            config.tenancy.default_namespace = v.trim().to_string();
+        }
+    }
+    if let Ok(v) = std::env::var("DITTO_TENANCY_MAX_KEYS_PER_NAMESPACE")
+        .or_else(|_| std::env::var("TENANCY_MAX_KEYS_PER_NAMESPACE"))
+    {
+        if let Ok(n) = v.parse::<usize>() {
+            config.tenancy.max_keys_per_namespace = n;
+        }
+    }
+    if let Some(v) =
         parse_bool_env("DITTO_RATE_LIMIT_ENABLED").or_else(|| parse_bool_env("RATE_LIMIT_ENABLED"))
     {
         config.rate_limit.enabled = v;

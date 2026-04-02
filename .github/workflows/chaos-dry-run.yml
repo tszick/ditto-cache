@@ -1,0 +1,23 @@
+name: Chaos Dry Run
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  chaos-dry-run:
+    name: Chaos Script Dry Run
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run chaos smoke script in dry-run mode
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          ./scripts/chaos-smoke.ps1 -DryRun -Iterations 1

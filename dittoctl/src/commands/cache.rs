@@ -14,6 +14,8 @@ pub enum CacheCommand {
         target: String,
         #[arg(long)]
         pattern: Option<String>,
+        #[arg(long)]
+        namespace: Option<String>,
     },
     /// Get the value or TTL of a key.
     Get {
@@ -21,6 +23,8 @@ pub enum CacheCommand {
         what: String,
         target: String,
         key: String,
+        #[arg(long)]
+        namespace: Option<String>,
     },
     /// Set a key-value pair on a node.
     Set {
@@ -29,9 +33,16 @@ pub enum CacheCommand {
         value: String,
         #[arg(long)]
         ttl: Option<u64>,
+        #[arg(long)]
+        namespace: Option<String>,
     },
     /// Delete a key from a node.
-    Delete { target: String, key: String },
+    Delete {
+        target: String,
+        key: String,
+        #[arg(long)]
+        namespace: Option<String>,
+    },
     /// Flush all keys from a node (requires confirmation for "all").
     Flush { target: String },
     /// Set the compressed flag on a key (true / false).
@@ -39,6 +50,8 @@ pub enum CacheCommand {
         target: String,
         key: String,
         value: String,
+        #[arg(long)]
+        namespace: Option<String>,
     },
     /// Set TTL for all keys matching a glob pattern (e.g. "user:1234:*").
     SetTtl {
@@ -48,7 +61,18 @@ pub enum CacheCommand {
         /// TTL in seconds. Omit (or pass 0) to remove TTL entirely.
         #[arg(long)]
         ttl: Option<u64>,
+        #[arg(long)]
+        namespace: Option<String>,
     },
+}
+
+fn append_namespace_query(url: &mut String, namespace: Option<String>) {
+    if let Some(ns) = namespace.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
+        let sep = if url.contains('?') { '&' } else { '?' };
+        url.push(sep);
+        url.push_str("namespace=");
+        url.push_str(&enc(&ns));
+    }
 }
 
 pub async fn run(cmd: CacheCommand, cfg: &CtlConfig, client: &reqwest::Client) -> Result<()> {
@@ -59,6 +83,7 @@ pub async fn run(cmd: CacheCommand, cfg: &CtlConfig, client: &reqwest::Client) -
             what,
             target,
             pattern,
+            namespace,
         } => match what.as_str() {
             "stats" => {
                 let url = format!("{}/api/cache/{}/stats", base, enc(&target));
@@ -100,6 +125,7 @@ pub async fn run(cmd: CacheCommand, cfg: &CtlConfig, client: &reqwest::Client) -
                 if let Some(pat) = pattern {
                     url.push_str(&format!("?pattern={}", enc(&pat)));
                 }
+                append_namespace_query(&mut url, namespace);
                 let data = mgmt_get(client, &url).await?;
                 let results = data.as_array().cloned().unwrap_or_default();
                 for r in results {
@@ -121,8 +147,14 @@ pub async fn run(cmd: CacheCommand, cfg: &CtlConfig, client: &reqwest::Client) -
             other => eprintln!("Unknown list target '{}'. Use: keys | stats", other),
         },
 
-        CacheCommand::Get { what, target, key } => {
-            let url = format!("{}/api/cache/{}/keys/{}", base, enc(&target), enc(&key));
+        CacheCommand::Get {
+            what,
+            target,
+            key,
+            namespace,
+        } => {
+            let mut url = format!("{}/api/cache/{}/keys/{}", base, enc(&target), enc(&key));
+            append_namespace_query(&mut url, namespace);
             let data = mgmt_get(client, &url).await;
             match what.as_str() {
                 "key" => match data {
@@ -145,8 +177,10 @@ pub async fn run(cmd: CacheCommand, cfg: &CtlConfig, client: &reqwest::Client) -
             key,
             value,
             ttl,
+            namespace,
         } => {
-            let url = format!("{}/api/cache/{}/keys/{}", base, enc(&target), enc(&key));
+            let mut url = format!("{}/api/cache/{}/keys/{}", base, enc(&target), enc(&key));
+            append_namespace_query(&mut url, namespace);
             let body = serde_json::json!({ "value": value, "ttl_secs": ttl });
             match mgmt_put(client, &url, body).await {
                 Ok(_) => println!("  set ok"),
@@ -154,8 +188,13 @@ pub async fn run(cmd: CacheCommand, cfg: &CtlConfig, client: &reqwest::Client) -
             }
         }
 
-        CacheCommand::Delete { target, key } => {
-            let url = format!("{}/api/cache/{}/keys/{}", base, enc(&target), enc(&key));
+        CacheCommand::Delete {
+            target,
+            key,
+            namespace,
+        } => {
+            let mut url = format!("{}/api/cache/{}/keys/{}", base, enc(&target), enc(&key));
+            append_namespace_query(&mut url, namespace);
             match mgmt_delete(client, &url).await {
                 Ok(_) => println!("  deleted"),
                 Err(e) => eprintln!("  Error: {}", e),
@@ -196,9 +235,11 @@ pub async fn run(cmd: CacheCommand, cfg: &CtlConfig, client: &reqwest::Client) -
             target,
             pattern,
             ttl,
+            namespace,
         } => {
             let ttl_secs = ttl.filter(|&s| s > 0);
-            let url = format!("{}/api/cache/{}/ttl", base, enc(&target));
+            let mut url = format!("{}/api/cache/{}/ttl", base, enc(&target));
+            append_namespace_query(&mut url, namespace);
             let body = serde_json::json!({ "pattern": pattern, "ttl_secs": ttl_secs });
             match mgmt_post(client, &url, body).await {
                 Ok(data) => {
@@ -217,14 +258,20 @@ pub async fn run(cmd: CacheCommand, cfg: &CtlConfig, client: &reqwest::Client) -
             }
         }
 
-        CacheCommand::SetCompressed { target, key, value } => {
+        CacheCommand::SetCompressed {
+            target,
+            key,
+            value,
+            namespace,
+        } => {
             let compressed = value == "true";
-            let url = format!(
+            let mut url = format!(
                 "{}/api/cache/{}/keys/{}/compressed",
                 base,
                 enc(&target),
                 enc(&key)
             );
+            append_namespace_query(&mut url, namespace);
             let data = mgmt_post(
                 client,
                 &url,

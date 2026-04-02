@@ -8,6 +8,22 @@ use tokio::{
 };
 use tracing::{debug, error, info, warn};
 
+fn namespaced_watch_key(node: &Arc<NodeHandle>, namespace: Option<String>, key: String) -> String {
+    let cfg = node.config.lock().unwrap();
+    if !cfg.tenancy.enabled {
+        return key;
+    }
+    let ns = namespace
+        .unwrap_or_else(|| cfg.tenancy.default_namespace.clone())
+        .trim()
+        .to_string();
+    if ns.is_empty() {
+        key
+    } else {
+        format!("{}::{}", ns, key)
+    }
+}
+
 /// Start the client-facing TCP server (port 7777).
 pub async fn start(bind: String, node: Arc<NodeHandle>) -> anyhow::Result<()> {
     let listener = TcpListener::bind(&bind).await?;
@@ -80,13 +96,13 @@ async fn handle_client(mut stream: TcpStream, node: Arc<NodeHandle>) -> anyhow::
                 // DITTO-02: Watch / Unwatch are handled at the connection level
                 // (they mutate per-connection state, not node-wide state).
                 match request {
-                    ClientRequest::Watch { key } => {
-                        watched_keys.insert(key);
+                    ClientRequest::Watch { key, namespace } => {
+                        watched_keys.insert(namespaced_watch_key(&node, namespace, key));
                         let bytes = encode(&ClientResponse::Watching)?;
                         stream.write_all(&bytes).await?;
                     }
-                    ClientRequest::Unwatch { key } => {
-                        watched_keys.remove(&key);
+                    ClientRequest::Unwatch { key, namespace } => {
+                        watched_keys.remove(&namespaced_watch_key(&node, namespace, key));
                         let bytes = encode(&ClientResponse::Unwatched)?;
                         stream.write_all(&bytes).await?;
                     }

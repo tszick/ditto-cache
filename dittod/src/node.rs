@@ -136,6 +136,7 @@ pub struct NodeHandle {
     read_repair_trigger_total: AtomicU64,
     read_repair_success_total: AtomicU64,
     read_repair_throttled_total: AtomicU64,
+    namespace_quota_reject_total: AtomicU64,
     last_read_repair_trigger_ms: AtomicU64,
     anti_entropy_runs_total: AtomicU64,
     anti_entropy_repair_trigger_total: AtomicU64,
@@ -211,6 +212,7 @@ impl NodeHandle {
             read_repair_trigger_total: AtomicU64::new(0),
             read_repair_success_total: AtomicU64::new(0),
             read_repair_throttled_total: AtomicU64::new(0),
+            namespace_quota_reject_total: AtomicU64::new(0),
             last_read_repair_trigger_ms: AtomicU64::new(0),
             anti_entropy_runs_total: AtomicU64::new(0),
             anti_entropy_repair_trigger_total: AtomicU64::new(0),
@@ -247,6 +249,46 @@ impl NodeHandle {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0)
+    }
+
+    fn namespace_context(
+        &self,
+        namespace: Option<String>,
+    ) -> Result<Option<String>, ClientResponse> {
+        let cfg = self.config.lock().unwrap();
+        if !cfg.tenancy.enabled {
+            return Ok(None);
+        }
+        let ns = namespace
+            .unwrap_or_else(|| cfg.tenancy.default_namespace.clone())
+            .trim()
+            .to_string();
+        if ns.is_empty() || ns.contains("::") {
+            return Err(ClientResponse::Error {
+                code: ErrorCode::InternalError,
+                message: "Invalid namespace".into(),
+            });
+        }
+        Ok(Some(ns))
+    }
+
+    fn namespaced_key(&self, namespace: &Option<String>, key: &str) -> String {
+        match namespace {
+            Some(ns) => format!("{}::{}", ns, key),
+            None => key.to_string(),
+        }
+    }
+
+    fn namespaced_pattern(&self, namespace: &Option<String>, pattern: &str) -> String {
+        match namespace {
+            Some(ns) => format!("{}::{}", ns, pattern),
+            None => pattern.to_string(),
+        }
+    }
+
+    fn namespace_key_count(&self, namespace: &str) -> usize {
+        let pattern = format!("{}::*", namespace);
+        self.store.keys(Some(&pattern)).len()
     }
 
     fn allow_by_rate_limit(&self) -> bool {
@@ -375,10 +417,10 @@ impl NodeHandle {
         }
     }
 
-    fn execute_get(&self, key: String) -> ClientResponse {
-        match self.store.get(&key) {
+    fn execute_get(&self, lookup_key: String, response_key: String) -> ClientResponse {
+        match self.store.get(&lookup_key) {
             Some(entry) => ClientResponse::Value {
-                key,
+                key: response_key,
                 value: entry.value,
                 version: entry.version,
             },
@@ -386,13 +428,17 @@ impl NodeHandle {
         }
     }
 
-    async fn handle_get_with_single_flight(&self, key: String) -> ClientResponse {
+    async fn handle_get_with_single_flight(
+        &self,
+        lookup_key: String,
+        response_key: String,
+    ) -> ClientResponse {
         let (enabled, max_waiters) = {
             let cfg = self.config.lock().unwrap();
             (cfg.hot_key.enabled, cfg.hot_key.max_waiters.max(1))
         };
         if !enabled {
-            return self.execute_get(key);
+            return self.execute_get(lookup_key, response_key);
         }
 
         enum JoinDecision {
@@ -406,7 +452,7 @@ impl NodeHandle {
 
         let decision = {
             let mut flights = self.get_flights.lock().await;
-            if let Some(existing) = flights.get(&key) {
+            if let Some(existing) = flights.get(&lookup_key) {
                 let current = existing.waiters.load(Ordering::Relaxed);
                 if current >= max_waiters {
                     JoinDecision::Fallback
@@ -420,7 +466,7 @@ impl NodeHandle {
                 }
             } else {
                 let created = Arc::new(GetFlight::new());
-                flights.insert(key.clone(), Arc::clone(&created));
+                flights.insert(lookup_key.clone(), Arc::clone(&created));
                 JoinDecision::Leader(created)
             }
         };
@@ -429,18 +475,18 @@ impl NodeHandle {
             JoinDecision::Fallback => {
                 self.hot_key_fallback_exec_total
                     .fetch_add(1, Ordering::Relaxed);
-                self.execute_get(key)
+                self.execute_get(lookup_key, response_key)
             }
             JoinDecision::Leader(flight) => {
-                let response = self.execute_get(key.clone());
+                let response = self.execute_get(lookup_key.clone(), response_key.clone());
                 let _ = flight.tx.send(Some(response.clone()));
                 let mut flights = self.get_flights.lock().await;
                 if flights
-                    .get(&key)
+                    .get(&lookup_key)
                     .map(|f| Arc::ptr_eq(f, &flight))
                     .unwrap_or(false)
                 {
-                    flights.remove(&key);
+                    flights.remove(&lookup_key);
                 }
                 response
             }
@@ -458,14 +504,18 @@ impl NodeHandle {
                     None => {
                         self.hot_key_fallback_exec_total
                             .fetch_add(1, Ordering::Relaxed);
-                        self.execute_get(key)
+                        self.execute_get(lookup_key, response_key)
                     }
                 }
             }
         }
     }
 
-    async fn maybe_read_repair_on_miss(self: &Arc<Self>, key: String) -> Option<ClientResponse> {
+    async fn maybe_read_repair_on_miss(
+        self: &Arc<Self>,
+        namespace: Option<String>,
+        key: String,
+    ) -> Option<ClientResponse> {
         let (enabled, min_interval_ms) = {
             let cfg = self.config.lock().unwrap();
             (
@@ -498,7 +548,10 @@ impl NodeHandle {
             .fetch_add(1, Ordering::Relaxed);
 
         match self
-            .forward_request_to_primary(ClientRequest::Get { key: key.clone() })
+            .forward_request_to_primary(ClientRequest::Get {
+                key: key.clone(),
+                namespace,
+            })
             .await
         {
             v @ ClientResponse::Value { .. } => {
@@ -553,10 +606,19 @@ impl NodeHandle {
                 message: "Authentication is already complete or invalid in this context".into(),
             },
 
-            ClientRequest::Get { key } => {
-                let local = self.handle_get_with_single_flight(key.clone()).await;
+            ClientRequest::Get { key, namespace } => {
+                let ns = match self.namespace_context(namespace.clone()) {
+                    Ok(ns) => ns,
+                    Err(err) => return err,
+                };
+                let namespaced_key = self.namespaced_key(&ns, &key);
+                let local = self
+                    .handle_get_with_single_flight(namespaced_key, key.clone())
+                    .await;
                 if matches!(local, ClientResponse::NotFound) {
-                    self.maybe_read_repair_on_miss(key).await.unwrap_or(local)
+                    self.maybe_read_repair_on_miss(ns, key)
+                        .await
+                        .unwrap_or(local)
                 } else {
                     local
                 }
@@ -566,27 +628,78 @@ impl NodeHandle {
                 key,
                 value,
                 ttl_secs,
-            } => match self.store.check_limits(&key, &value) {
-                Err(LimitError::ValueTooLarge) => ClientResponse::Error {
-                    code: ErrorCode::ValueTooLarge,
-                    message: format!(
-                        "Value size {} bytes exceeds the configured limit",
-                        value.len()
-                    ),
-                },
-                Err(LimitError::KeyLimitReached) => ClientResponse::Error {
-                    code: ErrorCode::KeyLimitReached,
-                    message: "Cache is at the maximum key count limit".into(),
-                },
-                Ok(()) => self.coordinate_write(key, Some(value), ttl_secs).await,
-            },
+                namespace,
+            } => {
+                let ns = match self.namespace_context(namespace) {
+                    Ok(ns) => ns,
+                    Err(err) => return err,
+                };
+                let namespaced_key = self.namespaced_key(&ns, &key);
+                if let Some(ref namespace_name) = ns {
+                    let max = self.config.lock().unwrap().tenancy.max_keys_per_namespace;
+                    if max > 0
+                        && self.store.get(&namespaced_key).is_none()
+                        && self.namespace_key_count(namespace_name) >= max
+                    {
+                        self.namespace_quota_reject_total
+                            .fetch_add(1, Ordering::Relaxed);
+                        return ClientResponse::Error {
+                            code: ErrorCode::NamespaceQuotaExceeded,
+                            message: format!(
+                                "Namespace '{}' reached key limit ({})",
+                                namespace_name, max
+                            ),
+                        };
+                    }
+                }
+                match self.store.check_limits(&namespaced_key, &value) {
+                    Err(LimitError::ValueTooLarge) => ClientResponse::Error {
+                        code: ErrorCode::ValueTooLarge,
+                        message: format!(
+                            "Value size {} bytes exceeds the configured limit",
+                            value.len()
+                        ),
+                    },
+                    Err(LimitError::KeyLimitReached) => ClientResponse::Error {
+                        code: ErrorCode::KeyLimitReached,
+                        message: "Cache is at the maximum key count limit".into(),
+                    },
+                    Ok(()) => {
+                        self.coordinate_write(namespaced_key, Some(value), ttl_secs)
+                            .await
+                    }
+                }
+            }
 
-            ClientRequest::Delete { key } => self.coordinate_write(key, None, None).await,
+            ClientRequest::Delete { key, namespace } => {
+                let ns = match self.namespace_context(namespace) {
+                    Ok(ns) => ns,
+                    Err(err) => return err,
+                };
+                self.coordinate_write(self.namespaced_key(&ns, &key), None, None)
+                    .await
+            }
 
-            ClientRequest::DeleteByPattern { pattern } => self.delete_by_pattern(pattern).await,
+            ClientRequest::DeleteByPattern { pattern, namespace } => {
+                let ns = match self.namespace_context(namespace) {
+                    Ok(ns) => ns,
+                    Err(err) => return err,
+                };
+                self.delete_by_pattern(self.namespaced_pattern(&ns, &pattern))
+                    .await
+            }
 
-            ClientRequest::SetTtlByPattern { pattern, ttl_secs } => {
-                self.set_ttl_by_pattern(pattern, ttl_secs).await
+            ClientRequest::SetTtlByPattern {
+                pattern,
+                ttl_secs,
+                namespace,
+            } => {
+                let ns = match self.namespace_context(namespace) {
+                    Ok(ns) => ns,
+                    Err(err) => return err,
+                };
+                self.set_ttl_by_pattern(self.namespaced_pattern(&ns, &pattern), ttl_secs)
+                    .await
             }
 
             // Watch/Unwatch are handled at the TCP connection level (tcp_server.rs)
@@ -805,9 +918,13 @@ impl NodeHandle {
                 key,
                 value: v,
                 ttl_secs,
+                namespace: None,
             }
         } else {
-            ClientRequest::Delete { key }
+            ClientRequest::Delete {
+                key,
+                namespace: None,
+            }
         };
         self.forward_request_to_primary(req).await
     }
@@ -1179,6 +1296,10 @@ impl NodeHandle {
                 stats.read_repair_throttled_total.to_string(),
             ),
             (
+                "namespace-quota-reject-total".into(),
+                stats.namespace_quota_reject_total.to_string(),
+            ),
+            (
                 "persistence-platform-allowed".into(),
                 stats.persistence_platform_allowed.to_string(),
             ),
@@ -1189,6 +1310,15 @@ impl NodeHandle {
             (
                 "persistence-enabled".into(),
                 stats.persistence_enabled.to_string(),
+            ),
+            ("tenancy-enabled".into(), stats.tenancy_enabled.to_string()),
+            (
+                "tenancy-default-namespace".into(),
+                stats.tenancy_default_namespace.clone(),
+            ),
+            (
+                "tenancy-max-keys-per-namespace".into(),
+                stats.tenancy_max_keys_per_namespace.to_string(),
             ),
             (
                 "persistence-backup-platform-allowed".into(),
@@ -1715,6 +1845,34 @@ impl NodeHandle {
                         self.config.lock().unwrap().persistence.runtime_enabled = val;
                         tracing::info!("persistence-runtime-enabled → {}", val);
                     }
+
+                    "tenancy-enabled" => {
+                        let val = value.trim().eq_ignore_ascii_case("true");
+                        self.config.lock().unwrap().tenancy.enabled = val;
+                        tracing::info!("tenancy-enabled -> {}", val);
+                    }
+                    "tenancy-default-namespace" => {
+                        let v = value.trim();
+                        if v.is_empty() || v.contains("::") {
+                            tracing::warn!(
+                                "SetProperty tenancy-default-namespace: invalid value '{}'",
+                                value
+                            );
+                        } else {
+                            self.config.lock().unwrap().tenancy.default_namespace = v.to_string();
+                            tracing::info!("tenancy-default-namespace -> {}", v);
+                        }
+                    }
+                    "tenancy-max-keys-per-namespace" => match value.trim().parse::<usize>() {
+                        Ok(v) => {
+                            self.config.lock().unwrap().tenancy.max_keys_per_namespace = v;
+                            tracing::info!("tenancy-max-keys-per-namespace -> {}", v);
+                        }
+                        _ => tracing::warn!(
+                            "SetProperty tenancy-max-keys-per-namespace: invalid value '{}'",
+                            value
+                        ),
+                    },
 
                     // rate limiter
                     "rate-limit-enabled" => {
@@ -2525,6 +2683,9 @@ impl NodeHandle {
         let circuit_breaker_enabled = cfg.circuit_breaker.enabled;
         let hot_key_enabled = cfg.hot_key.enabled;
         let read_repair_enabled = cfg.replication.read_repair_on_miss_enabled;
+        let tenancy_enabled = cfg.tenancy.enabled;
+        let tenancy_default_namespace = cfg.tenancy.default_namespace.clone();
+        let tenancy_max_keys_per_namespace = cfg.tenancy.max_keys_per_namespace;
         let circuit_breaker_state = if circuit_breaker_enabled {
             self.circuit.lock().unwrap().state.as_str().to_string()
         } else {
@@ -2559,6 +2720,9 @@ impl NodeHandle {
             persistence_backup_enabled,
             persistence_export_enabled,
             persistence_import_enabled,
+            tenancy_enabled,
+            tenancy_default_namespace,
+            tenancy_max_keys_per_namespace,
             rate_limit_enabled,
             rate_limited_requests_total: self.rate_limited_requests_total.load(Ordering::Relaxed),
             circuit_breaker_enabled,
@@ -2569,6 +2733,7 @@ impl NodeHandle {
             read_repair_trigger_total: self.read_repair_trigger_total.load(Ordering::Relaxed),
             read_repair_success_total: self.read_repair_success_total.load(Ordering::Relaxed),
             read_repair_throttled_total: self.read_repair_throttled_total.load(Ordering::Relaxed),
+            namespace_quota_reject_total: self.namespace_quota_reject_total.load(Ordering::Relaxed),
             anti_entropy_runs_total: self.anti_entropy_runs_total.load(Ordering::Relaxed),
             anti_entropy_repair_trigger_total: self
                 .anti_entropy_repair_trigger_total
@@ -2871,7 +3036,9 @@ mod tests {
             }));
         });
 
-        let resp = node.handle_get_with_single_flight(key).await;
+        let resp = node
+            .handle_get_with_single_flight(key.clone(), key)
+            .await;
         assert!(matches!(resp, ClientResponse::Value { version: 7, .. }));
         assert_eq!(node.hot_key_coalesced_hits_total.load(Ordering::Relaxed), 1);
         assert_eq!(node.hot_key_fallback_exec_total.load(Ordering::Relaxed), 0);
@@ -2892,7 +3059,9 @@ mod tests {
             flights.insert(key.clone(), Arc::clone(&flight));
         }
 
-        let resp = node.handle_get_with_single_flight(key).await;
+        let resp = node
+            .handle_get_with_single_flight(key.clone(), key)
+            .await;
         assert!(matches!(resp, ClientResponse::NotFound));
         assert_eq!(node.hot_key_fallback_exec_total.load(Ordering::Relaxed), 1);
     }

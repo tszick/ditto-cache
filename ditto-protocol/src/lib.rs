@@ -47,14 +47,17 @@ pub enum NodeStatus {
 pub enum ClientRequest {
     Get {
         key: String,
+        namespace: Option<String>,
     },
     Set {
         key: String,
         value: Bytes,
         ttl_secs: Option<u64>,
+        namespace: Option<String>,
     },
     Delete {
         key: String,
+        namespace: Option<String>,
     },
     Ping,
     Auth {
@@ -63,19 +66,23 @@ pub enum ClientRequest {
     // DITTO-02: pub/sub watch API (variants 5, 6)
     Watch {
         key: String,
+        namespace: Option<String>,
     },
     Unwatch {
         key: String,
+        namespace: Option<String>,
     },
     /// Delete all keys matching a glob-style pattern (`*` wildcard).
     DeleteByPattern {
         pattern: String,
+        namespace: Option<String>,
     },
     /// Update TTL for all keys matching a glob-style pattern.
     /// `ttl_secs = None` removes TTL for matched keys.
     SetTtlByPattern {
         pattern: String,
         ttl_secs: Option<u64>,
+        namespace: Option<String>,
     },
 }
 
@@ -136,6 +143,8 @@ pub enum ErrorCode {
     RateLimited,
     /// Request rejected because circuit breaker is open.
     CircuitOpen,
+    /// Request rejected by per-namespace quota.
+    NamespaceQuotaExceeded,
     /// Invalid or missing authentication.
     AuthFailed,
 }
@@ -359,6 +368,12 @@ pub struct NodeStats {
     pub persistence_export_enabled: bool,
     /// Effective import gate (`platform && runtime && import_allowed`).
     pub persistence_import_enabled: bool,
+    /// Namespace isolation feature enabled.
+    pub tenancy_enabled: bool,
+    /// Default namespace for requests without explicit namespace.
+    pub tenancy_default_namespace: String,
+    /// Per-namespace key limit (0 = unlimited).
+    pub tenancy_max_keys_per_namespace: usize,
     /// Node-level request limiter enabled.
     pub rate_limit_enabled: bool,
     /// Total client requests rejected by rate limiting since startup.
@@ -379,6 +394,8 @@ pub struct NodeStats {
     pub read_repair_success_total: u64,
     /// Total read-repair attempts skipped due to min-interval throttling.
     pub read_repair_throttled_total: u64,
+    /// Total client requests rejected due to per-namespace quota.
+    pub namespace_quota_reject_total: u64,
     /// Total anti-entropy loop iterations.
     pub anti_entropy_runs_total: u64,
     /// Total anti-entropy triggered repair attempts.

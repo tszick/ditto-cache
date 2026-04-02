@@ -19,6 +19,7 @@ use crate::api::SharedState;
 use crate::node_client::{admin_rpc, http_authority_for_target, resolve_target};
 use axum::{
     extract::{Path, Query, State},
+    http::HeaderValue,
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -52,6 +53,42 @@ fn encode_key_for_url(key: &str) -> String {
         }
     }
     out
+}
+
+const NAMESPACE_HEADER: &str = "x-ditto-namespace";
+
+#[derive(Deserialize, Default, Clone)]
+pub struct NamespaceQuery {
+    pub namespace: Option<String>,
+}
+
+fn normalize_namespace(ns: Option<String>) -> Option<String> {
+    ns.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+fn namespaced_key(namespace: &Option<String>, key: &str) -> String {
+    match namespace {
+        Some(ns) => format!("{}::{}", ns, key),
+        None => key.to_string(),
+    }
+}
+
+fn namespaced_pattern(namespace: &Option<String>, pattern: Option<String>) -> Option<String> {
+    match (namespace, pattern) {
+        (Some(ns), Some(p)) => Some(format!("{}::{}", ns, p)),
+        (Some(ns), None) => Some(format!("{}::*", ns)),
+        (None, p) => p,
+    }
+}
+
+fn strip_namespace_prefix(namespace: &Option<String>, key: String) -> String {
+    match namespace {
+        Some(ns) => key
+            .strip_prefix(&format!("{}::", ns))
+            .unwrap_or(&key)
+            .to_string(),
+        None => key,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -152,7 +189,10 @@ pub async fn list_keys(
     State(state): State<SharedState>,
     Path(target): Path<String>,
     Query(q): Query<ListKeysQuery>,
+    Query(nsq): Query<NamespaceQuery>,
 ) -> impl IntoResponse {
+    let namespace = normalize_namespace(nsq.namespace);
+    let pattern = namespaced_pattern(&namespace, q.pattern.clone());
     let addrs = if target == "all" {
         state.cluster_addrs().await
     } else {
@@ -168,14 +208,16 @@ pub async fn list_keys(
     for addr in addrs {
         match admin_rpc(
             addr,
-            AdminRequest::ListKeys {
-                pattern: q.pattern.clone(),
-            },
+            AdminRequest::ListKeys { pattern: pattern.clone() },
             state.tls.as_ref(),
         )
         .await
         {
             Ok(AdminResponse::Keys(keys)) => {
+                let keys: Vec<String> = keys
+                    .into_iter()
+                    .map(|k| strip_namespace_prefix(&namespace, k))
+                    .collect();
                 results.push(serde_json::json!({ "addr": addr.to_string(), "keys": keys }))
             }
             Err(e) => results
@@ -195,6 +237,7 @@ pub async fn list_keys(
 pub async fn get_key(
     State(state): State<SharedState>,
     Path((target, key)): Path<(String, String)>,
+    Query(nsq): Query<NamespaceQuery>,
 ) -> impl IntoResponse {
     // Validate the key before it is embedded in the proxied URL.  set_key and
     // delete_key already perform this check; apply it here for consistency and
@@ -207,6 +250,7 @@ pub async fn get_key(
             .into_response();
     }
 
+    let namespace = normalize_namespace(nsq.namespace);
     let authority = match http_authority_for_target(
         &target,
         state.cfg.connection.cluster_port,
@@ -229,7 +273,7 @@ pub async fn get_key(
         encode_key_for_url(&key)
     );
 
-    match node_http_request(state.http_client.get(&url), &state)
+    match node_http_request(state.http_client.get(&url), &state, namespace)
         .send()
         .await
     {
@@ -271,6 +315,7 @@ pub struct SetKeyBody {
 pub async fn set_key(
     State(state): State<SharedState>,
     Path((target, key)): Path<(String, String)>,
+    Query(nsq): Query<NamespaceQuery>,
     Json(body): Json<SetKeyBody>,
 ) -> impl IntoResponse {
     if !is_valid_cache_key(&key) {
@@ -281,6 +326,7 @@ pub async fn set_key(
             .into_response();
     }
 
+    let namespace = normalize_namespace(nsq.namespace);
     let authority = match http_authority_for_target(
         &target,
         state.cfg.connection.cluster_port,
@@ -306,7 +352,7 @@ pub async fn set_key(
         url.push_str(&format!("?ttl={}", ttl));
     }
 
-    match node_http_request(state.http_client.put(&url), &state)
+    match node_http_request(state.http_client.put(&url), &state, namespace)
         .body(body.value)
         .send()
         .await
@@ -340,6 +386,7 @@ pub async fn set_key(
 pub async fn delete_key(
     State(state): State<SharedState>,
     Path((target, key)): Path<(String, String)>,
+    Query(nsq): Query<NamespaceQuery>,
 ) -> impl IntoResponse {
     if !is_valid_cache_key(&key) {
         return (
@@ -349,6 +396,7 @@ pub async fn delete_key(
             .into_response();
     }
 
+    let namespace = normalize_namespace(nsq.namespace);
     let authority = match http_authority_for_target(
         &target,
         state.cfg.connection.cluster_port,
@@ -371,7 +419,7 @@ pub async fn delete_key(
         encode_key_for_url(&key)
     );
 
-    match node_http_request(state.http_client.delete(&url), &state)
+    match node_http_request(state.http_client.delete(&url), &state, namespace)
         .send()
         .await
     {
@@ -418,6 +466,7 @@ struct CompressedResult {
 pub async fn set_compressed(
     State(state): State<SharedState>,
     Path((target, key)): Path<(String, String)>,
+    Query(nsq): Query<NamespaceQuery>,
     Json(body): Json<SetCompressedBody>,
 ) -> impl IntoResponse {
     if !is_valid_cache_key(&key) {
@@ -428,6 +477,8 @@ pub async fn set_compressed(
             .into_response();
     }
 
+    let namespace = normalize_namespace(nsq.namespace);
+    let key = namespaced_key(&namespace, &key);
     let addrs = if target == "all" {
         state.cluster_addrs().await
     } else {
@@ -510,8 +561,12 @@ struct TtlResult {
 pub async fn set_keys_ttl(
     State(state): State<SharedState>,
     Path(target): Path<String>,
+    Query(nsq): Query<NamespaceQuery>,
     Json(body): Json<SetTtlBody>,
 ) -> impl IntoResponse {
+    let namespace = normalize_namespace(nsq.namespace);
+    let pattern = namespaced_pattern(&namespace, Some(body.pattern.clone()))
+        .unwrap_or_else(|| body.pattern.clone());
     let addrs = if target == "all" {
         state.cluster_addrs().await
     } else {
@@ -528,7 +583,7 @@ pub async fn set_keys_ttl(
         match admin_rpc(
             addr,
             AdminRequest::SetKeysTtl {
-                pattern: body.pattern.clone(),
+                pattern: pattern.clone(),
                 ttl_secs: body.ttl_secs,
             },
             state.tls.as_ref(),
@@ -565,12 +620,19 @@ pub async fn set_keys_ttl(
 fn node_http_request(
     req: reqwest::RequestBuilder,
     state: &crate::api::AppState,
+    namespace: Option<String>,
 ) -> reqwest::RequestBuilder {
-    match (
+    let req = match (
         &state.cfg.http_client_auth.username,
         &state.cfg.http_client_auth.password,
     ) {
         (Some(user), Some(pass)) => req.basic_auth(user, Some(pass)),
         _ => req,
+    };
+    if let Some(ns) = namespace {
+        if let Ok(v) = HeaderValue::from_str(&ns) {
+            return req.header(NAMESPACE_HEADER, v);
+        }
     }
+    req
 }

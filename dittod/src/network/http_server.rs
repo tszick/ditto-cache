@@ -2,7 +2,7 @@ use crate::node::NodeHandle;
 use axum::{
     body::Body,
     extract::{Path, Query, State},
-    http::{header, Request, StatusCode},
+    http::{header, HeaderMap, Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -14,6 +14,17 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tracing::info;
 const MAX_BATCH_SET_ITEMS: usize = 5_000;
+
+const NAMESPACE_HEADER: &str = "x-ditto-namespace";
+
+fn namespace_from_headers(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(NAMESPACE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToString::to_string)
+}
 
 /// Start the HTTP REST server on `bind`.
 ///
@@ -144,8 +155,18 @@ async fn http_basic_auth(
 // Handlers
 // ---------------------------------------------------------------------------
 
-async fn handle_get(Path(key): Path<String>, State(node): State<Arc<NodeHandle>>) -> Response {
-    match node.handle_client(ClientRequest::Get { key }).await {
+async fn handle_get(
+    headers: HeaderMap,
+    Path(key): Path<String>,
+    State(node): State<Arc<NodeHandle>>,
+) -> Response {
+    match node
+        .handle_client(ClientRequest::Get {
+            key,
+            namespace: namespace_from_headers(&headers),
+        })
+        .await
+    {
         ClientResponse::Value { value, version, .. } => {
             let body = serde_json::json!({
                 "value":   String::from_utf8_lossy(&value),
@@ -181,6 +202,7 @@ struct BatchSetBody {
 }
 
 async fn handle_set(
+    headers: HeaderMap,
     Path(key): Path<String>,
     Query(q): Query<SetQuery>,
     State(node): State<Arc<NodeHandle>>,
@@ -190,6 +212,7 @@ async fn handle_set(
         key,
         value: Bytes::from(body.into_bytes()),
         ttl_secs: q.ttl,
+        namespace: namespace_from_headers(&headers),
     };
     match node.handle_client(req).await {
         ClientResponse::Ok { version } => {
@@ -201,6 +224,7 @@ async fn handle_set(
 }
 
 async fn handle_batch_set(
+    headers: HeaderMap,
     State(node): State<Arc<NodeHandle>>,
     Json(body): Json<BatchSetBody>,
 ) -> Response {
@@ -230,6 +254,7 @@ async fn handle_batch_set(
             key: item.key.clone(),
             value: Bytes::from(item.value.into_bytes()),
             ttl_secs: item.ttl_secs,
+            namespace: namespace_from_headers(&headers),
         };
         match node.handle_client(req).await {
             ClientResponse::Ok { .. } => succeeded += 1,
@@ -262,8 +287,18 @@ async fn handle_batch_set(
     .into_response()
 }
 
-async fn handle_delete(Path(key): Path<String>, State(node): State<Arc<NodeHandle>>) -> Response {
-    match node.handle_client(ClientRequest::Delete { key }).await {
+async fn handle_delete(
+    headers: HeaderMap,
+    Path(key): Path<String>,
+    State(node): State<Arc<NodeHandle>>,
+) -> Response {
+    match node
+        .handle_client(ClientRequest::Delete {
+            key,
+            namespace: namespace_from_headers(&headers),
+        })
+        .await
+    {
         ClientResponse::Deleted => StatusCode::NO_CONTENT.into_response(),
         ClientResponse::NotFound => StatusCode::NOT_FOUND.into_response(),
         ClientResponse::Error { code, message } => error_response(code, message),
@@ -277,12 +312,14 @@ struct DeleteByPatternBody {
 }
 
 async fn handle_delete_by_pattern(
+    headers: HeaderMap,
     State(node): State<Arc<NodeHandle>>,
     Json(body): Json<DeleteByPatternBody>,
 ) -> Response {
     match node
         .handle_client(ClientRequest::DeleteByPattern {
             pattern: body.pattern,
+            namespace: namespace_from_headers(&headers),
         })
         .await
     {
@@ -301,6 +338,7 @@ struct SetTtlByPatternBody {
 }
 
 async fn handle_set_ttl_by_pattern(
+    headers: HeaderMap,
     State(node): State<Arc<NodeHandle>>,
     Json(body): Json<SetTtlByPatternBody>,
 ) -> Response {
@@ -308,6 +346,7 @@ async fn handle_set_ttl_by_pattern(
         .handle_client(ClientRequest::SetTtlByPattern {
             pattern: body.pattern,
             ttl_secs: body.ttl_secs,
+            namespace: namespace_from_headers(&headers),
         })
         .await
     {
@@ -343,6 +382,7 @@ fn status_for_error(code: &ErrorCode) -> StatusCode {
         ErrorCode::KeyNotFound => StatusCode::NOT_FOUND,
         ErrorCode::WriteTimeout => StatusCode::GATEWAY_TIMEOUT,
         ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+        ErrorCode::NamespaceQuotaExceeded => StatusCode::TOO_MANY_REQUESTS,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }

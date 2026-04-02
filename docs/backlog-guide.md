@@ -178,6 +178,25 @@ Sprint 3 completion update (2026-04-02):
 - Add chaos test suite for partitions, delays, and crash/restart loops.
 - Publish operational runbooks and failure playbooks.
 
+Sprint 4 progress update (2026-04-02):
+
+- In progress:
+  - Tenant isolation phase 1 delivered:
+    - optional namespace-aware keyspace (`tenancy.enabled`, `tenancy.default_namespace`),
+    - optional per-namespace key quota (`tenancy.max_keys_per_namespace`),
+    - runtime observability counters (`namespace_quota_reject_total`) and status fields.
+  - mgmt/CLI namespace UX delivered:
+    - `dittoctl cache ... --namespace <tenant>` support,
+    - mgmt cache proxy forwards namespace via `X-Ditto-Namespace`,
+    - admin key operations scope correctly by namespace.
+  - chaos + runbook docs delivered:
+    - `docs/chaos-playbook.md`,
+    - `docs/operations-runbook.md`,
+    - helper script: `scripts/chaos-smoke.ps1`.
+  - CI dry-run path delivered:
+    - `.github/workflows/chaos-dry-run.yml` runs `chaos-smoke.ps1 -DryRun` on push/PR/manual trigger,
+    - no nightly schedule (environment-dependent real runs stay manual).
+
 ## Definition of Done (for each backlog item)
 
 - Feature is disabled by default and guardrailed by config/env.

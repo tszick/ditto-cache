@@ -107,6 +107,9 @@ dittoctl node set anti-entropy-full-reconcile-every <target> <number>
 dittoctl node set anti-entropy-full-reconcile-max-keys <target> <number>
 dittoctl node set mixed-version-probe-enabled <target> <true|false>
 dittoctl node set mixed-version-probe-interval-ms <target> <number>
+dittoctl node set tenancy-enabled <target> <true|false>
+dittoctl node set tenancy-default-namespace <target> <string>
+dittoctl node set tenancy-max-keys-per-namespace <target> <number>
 dittoctl node set circuit-breaker-enabled <target> <true|false>
 dittoctl node set circuit-breaker-failure-threshold <target> <number>
 dittoctl node set circuit-breaker-open-ms <target> <number>
@@ -150,27 +153,27 @@ Status output also includes resilience-runtime fields (`rate_limit_enabled`, `ra
 ### List keys or stats
 
 ```bash
-dittoctl cache list keys <target> [--pattern "user:*"]
+dittoctl cache list keys <target> [--pattern "user:*"] [--namespace <tenant>]
 dittoctl cache list stats <target>
 ```
 
 ### Get key/ttl view
 
 ```bash
-dittoctl cache get key <target> <key>
-dittoctl cache get ttl <target> <key>
+dittoctl cache get key <target> <key> [--namespace <tenant>]
+dittoctl cache get ttl <target> <key> [--namespace <tenant>]
 ```
 
 ### Set key
 
 ```bash
-dittoctl cache set <target> <key> <value> [--ttl <seconds>]
+dittoctl cache set <target> <key> <value> [--ttl <seconds>] [--namespace <tenant>]
 ```
 
 ### Delete key
 
 ```bash
-dittoctl cache delete <target> <key>
+dittoctl cache delete <target> <key> [--namespace <tenant>]
 ```
 
 ### Flush
@@ -184,18 +187,19 @@ dittoctl cache flush <target>
 ### Set compressed flag
 
 ```bash
-dittoctl cache set-compressed <target> <key> <true|false>
+dittoctl cache set-compressed <target> <key> <true|false> [--namespace <tenant>]
 ```
 
 ### Bulk TTL update by pattern
 
 ```bash
-dittoctl cache set-ttl <target> <pattern> [--ttl <seconds>]
+dittoctl cache set-ttl <target> <pattern> [--ttl <seconds>] [--namespace <tenant>]
 ```
 
 Behavior:
 - pattern uses glob wildcard (`*`)
 - if `--ttl` omitted (or `0`), TTL is removed from matched keys
+- `--namespace` scopes cache operations to one tenant namespace
 
 ## Cluster commands
 
@@ -219,10 +223,10 @@ dittoctl cluster get committed-index
 ```bash
 dittoctl cluster get status
 dittoctl node describe all
-dittoctl cache list keys local --pattern "session:*"
-dittoctl cache set local app:cfg "v1" --ttl 300
-dittoctl cache set-ttl local "session:*" --ttl 120
-dittoctl cache set-ttl local "session:*"
+dittoctl cache list keys local --pattern "session:*" --namespace tenant-a
+dittoctl cache set local app:cfg "v1" --ttl 300 --namespace tenant-a
+dittoctl cache set-ttl local "session:*" --ttl 120 --namespace tenant-a
+dittoctl cache set-ttl local "session:*" --namespace tenant-a
 ```
 
 ## Error handling notes

@@ -280,6 +280,9 @@ key     = "/etc/ditto/certs/node.key"
 | `DITTO_PERSISTENCE_BACKUP_ALLOWED` | platform gate for backup |
 | `DITTO_PERSISTENCE_EXPORT_ALLOWED` | platform gate for export |
 | `DITTO_PERSISTENCE_IMPORT_ALLOWED` | platform gate for import |
+| `DITTO_TENANCY_ENABLED` | `tenancy.enabled` |
+| `DITTO_TENANCY_DEFAULT_NAMESPACE` | `tenancy.default_namespace` |
+| `DITTO_TENANCY_MAX_KEYS_PER_NAMESPACE` | `tenancy.max_keys_per_namespace` |
 | `DITTO_RATE_LIMIT_ENABLED` | node request rate limiter enable flag |
 | `DITTO_RATE_LIMIT_REQUESTS_PER_SEC` | token bucket refill rate |
 | `DITTO_RATE_LIMIT_BURST` | token bucket burst capacity |
@@ -299,6 +302,13 @@ Persistence effective state:
 `persistence_enabled = PERSISTENCE_PLATFORM_ALLOWED && persistence_runtime_enabled`
 
 Default behavior is secure-by-default: all persistence platform gates are `false`, so backup/export/import are disabled until explicitly enabled.
+
+Tenancy behavior:
+
+- When `tenancy.enabled=true`, client keys are isolated by namespace internally (`namespace::key`).
+- HTTP clients can set namespace with header: `X-Ditto-Namespace: <tenant>`.
+- If namespace is omitted, `tenancy.default_namespace` is used.
+- Per-tenant quota is controlled by `tenancy.max_keys_per_namespace` (`0 = unlimited`).
 
 ### Management service — `~/.config/ditto/mgmt.toml`
 
@@ -361,9 +371,9 @@ dittoctl node set persistence-runtime-enabled local true  # requires platform al
 
 # Cache operations
 dittoctl cache list stats all
-dittoctl cache list keys local --pattern "user:*"
-dittoctl cache set local mykey "hello" --ttl 3600
-dittoctl cache get key local mykey
+dittoctl cache list keys local --pattern "user:*" --namespace tenant-a
+dittoctl cache set local mykey "hello" --ttl 3600 --namespace tenant-a
+dittoctl cache get key local mykey --namespace tenant-a
 dittoctl cache flush local
 
 # Generate a bcrypt password hash (for [http_auth] or [admin] config)
@@ -379,6 +389,9 @@ Full reference: [docs/admin-guide.md](docs/admin-guide.md)
 ```bash
 # Unit and integration tests
 cargo test --workspace
+
+# CI-equivalent chaos script sanity check (no Docker side effects)
+powershell -ExecutionPolicy Bypass -File .\scripts\chaos-smoke.ps1 -DryRun -Iterations 1
 
 # Quick smoke test (requires Docker cluster)
 docker compose -f ../ditto-docker/docker-compose.yml up -d --build
@@ -413,6 +426,8 @@ docker start ditto-node-3             # auto-syncs when restarted
 | [docs/architecture.md](docs/architecture.md) | Architecture, protocols, write/read flows, deployment sizing |
 | [docs/dittoctl-reference.md](docs/dittoctl-reference.md) | Supplementary CLI reference |
 | [docs/backlog-guide.md](docs/backlog-guide.md) | Product backlog + multi-sprint roadmap |
+| [docs/chaos-playbook.md](docs/chaos-playbook.md) | Chaos/fault validation scenarios (partition + restart) |
+| [docs/operations-runbook.md](docs/operations-runbook.md) | Incident response and tenant quota operations |
 
 ---
 

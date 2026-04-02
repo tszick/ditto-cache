@@ -310,6 +310,29 @@ pub async fn run(cmd: NodeCommand, cfg: &mut CtlConfig, client: &reqwest::Client
                 );
                 println!(
                     "  {:<22} {}",
+                    "tenancy-enabled",
+                    node["tenancy_enabled"]
+                        .as_bool()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "tenancy-default-ns",
+                    node["tenancy_default_namespace"].as_str().unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "tenancy-max-keys",
+                    node["tenancy_max_keys_per_namespace"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
                     "rate-limit",
                     node["rate_limit_enabled"]
                         .as_bool()
@@ -384,6 +407,15 @@ pub async fn run(cmd: NodeCommand, cfg: &mut CtlConfig, client: &reqwest::Client
                     "  {:<22} {}",
                     "read-repair-throttled",
                     node["read_repair_throttled_total"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "namespace-quota-rej",
+                    node["namespace_quota_reject_total"]
                         .as_u64()
                         .map(|v| v.to_string())
                         .as_deref()

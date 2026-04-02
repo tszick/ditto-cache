@@ -112,6 +112,7 @@ Auth/TLS:
 - Optional read-repair-on-miss mode can query primary on local GET miss and trigger async resync.
 - Optional anti-entropy loop can periodically trigger resync on lag threshold, sampled key-version mismatch, and bounded full keyspace reconcile mismatch.
 - Optional mixed-version probe checks peer `protocol-version` and surfaces compatibility risk via node stats counters.
+- Optional tenancy mode isolates keys by namespace and can enforce per-namespace key quotas.
 
 ## Security model summary
 
