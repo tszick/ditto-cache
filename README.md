@@ -23,6 +23,10 @@ No stale reads, ever.
 - **HTTP Basic Auth** — optional username/password protection on the HTTP REST port (7778) and management port (7781); passwords stored as bcrypt hashes
 - **Backup encryption** — optional AES-256-GCM encryption for backup files; encrypted files use a dedicated key separate from the TLS certificates
 - **Persistence policy gates** - backup/export/import are disabled by default and require both platform env allow + runtime admin enable
+- **Read-repair on miss (optional)** - follower miss can query primary and trigger async repair
+- **Anti-entropy reconciliation (optional)** - lag-threshold, key-sample mismatch, and bounded full keyspace reconcile triggers
+- **Mixed-version upgrade probe** - surfaces protocol-version drift counters during rolling upgrades
+- **Tenant isolation + quota (optional)** - namespace-scoped keyspace and per-namespace key limits
 - **LFU eviction** — least-frequently-used entries evicted when the memory limit is reached
 - **TTL support** — per-key or global default TTL with a background sweep
 - **Transparent LZ4 compression** — large values compressed automatically; decompressed on read; per-key override via `dittoctl`
@@ -392,6 +396,9 @@ cargo test --workspace
 
 # CI-equivalent chaos script sanity check (no Docker side effects)
 powershell -ExecutionPolicy Bypass -File .\scripts\chaos-smoke.ps1 -DryRun -Iterations 1
+
+# Real chaos smoke (restart + partition) on a running Docker cluster
+powershell -ExecutionPolicy Bypass -File .\scripts\chaos-smoke.ps1 -Iterations 1
 
 # Quick smoke test (requires Docker cluster)
 docker compose -f ../ditto-docker/docker-compose.yml up -d --build
