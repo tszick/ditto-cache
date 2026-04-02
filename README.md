@@ -159,6 +159,11 @@ open http://localhost:7781
 # Test with curl
 curl -X PUT http://localhost:7778/key/hello -d "world"
 curl http://localhost:7778/key/hello
+
+# Batch write (seed/load test helper)
+curl -X POST http://localhost:7778/keys/batch \
+  -H "Content-Type: application/json" \
+  -d '{"items":[{"key":"k1","value":"v1"},{"key":"k2","value":"v2","ttl_secs":60}]}'
 ```
 
 ### 3-node Docker cluster

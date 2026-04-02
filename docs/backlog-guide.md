@@ -127,6 +127,18 @@ Sprint 2 execution plan:
   - Risk: snapshot format drift over versions.
     - Mitigation: version header + compatibility checks from day one.
 
+Sprint 2 progress update (2026-04-02):
+
+- Completed:
+  - S2.1 Connection timeout hardening (configurable `frame_read_timeout_ms`, safer default, status visibility).
+  - S2.2 Gossip stability tuning (default `gossip_dead_ms=15000`, low-value guardrails and warnings).
+  - S2.3 Hot-key protection MVP (single-flight coalescing, waiter cap, runtime counters, status exposure).
+  - S2.4 Snapshot fast-restart MVP (startup restore option + admin restore command + status metadata).
+  - S2.5 targeted regression tests for restore policy gate and restore stats update.
+  - S2.5 benchmark playbook and load profile for idle-then-burst + cold-vs-restore restart comparison.
+- In progress:
+  - S2.5 final benchmark execution and result capture (latency/error baseline vs restore run).
+
 ### Sprint 3 (consistency + upgrades)
 
 - Add read-repair and anti-entropy background reconciliation.

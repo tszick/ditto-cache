@@ -95,6 +95,7 @@ Current key endpoints:
 - `GET /key/:key`
 - `PUT /key/:key?ttl=<seconds>`
 - `DELETE /key/:key`
+- `POST /keys/batch` with JSON `{ "items": [{ "key": "...", "value": "...", "ttl_secs": <number|null> }] }`
 - `POST /keys/delete-by-pattern` with JSON `{ "pattern": "..." }`
 - `POST /keys/ttl-by-pattern` with JSON `{ "pattern": "...", "ttl_secs": <number|null> }`
 

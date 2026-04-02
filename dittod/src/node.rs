@@ -1956,11 +1956,12 @@ fn dir_size_bytes(path: &str) -> u64 {
 mod tests {
     use super::{GetFlight, NodeHandle, TokenBucket};
     use crate::config::Config;
+    use crate::store::kv_store::ExportEntry;
     use crate::store::KvStore;
     use bytes::Bytes;
-    use ditto_protocol::ClientResponse;
+    use ditto_protocol::{AdminRequest, AdminResponse, ClientResponse};
     use std::sync::{atomic::Ordering, Arc};
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn test_node(mut cfg: Config) -> Arc<NodeHandle> {
         cfg.node.id = "test-node".into();
@@ -1979,6 +1980,17 @@ mod tests {
             None,
             "127.0.0.1".into(),
         )
+    }
+
+    fn temp_backup_dir(tag: &str) -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let mut path = std::env::temp_dir();
+        path.push(format!("ditto-{}-{}-{}", tag, std::process::id(), nanos));
+        std::fs::create_dir_all(&path).expect("create temp backup dir");
+        path.to_string_lossy().into_owned()
     }
 
     #[test]
@@ -2026,6 +2038,70 @@ mod tests {
         assert!(backup);
         assert!(!export);
         assert!(import);
+    }
+
+    #[tokio::test]
+    async fn restore_snapshot_is_blocked_when_import_gate_is_disabled() {
+        let backup_dir = temp_backup_dir("restore-gate");
+        let mut cfg = Config::default();
+        cfg.backup.path = backup_dir.clone();
+        cfg.persistence.platform_allowed = true;
+        cfg.persistence.runtime_enabled = true;
+        cfg.persistence.import_allowed = false;
+        let node = test_node(cfg);
+
+        let resp = Arc::clone(&node)
+            .handle_admin(AdminRequest::RestoreLatestSnapshot)
+            .await;
+        match resp {
+            AdminResponse::Error { message } => {
+                assert!(message.contains("Restore is disabled by persistence policy"));
+            }
+            other => panic!("expected AdminResponse::Error, got {:?}", other),
+        }
+
+        let _ = std::fs::remove_dir_all(backup_dir);
+    }
+
+    #[tokio::test]
+    async fn restore_snapshot_loads_entries_and_updates_stats() {
+        let backup_dir = temp_backup_dir("restore-success");
+        let mut cfg = Config::default();
+        cfg.backup.path = backup_dir.clone();
+        cfg.persistence.platform_allowed = true;
+        cfg.persistence.runtime_enabled = true;
+        cfg.persistence.import_allowed = true;
+        let node = test_node(cfg);
+
+        let snapshot_entries = vec![(
+            "snap:key".to_string(),
+            ExportEntry {
+                value: b"snap-value".to_vec(),
+                version: 42,
+                expires_at_ms: None,
+            },
+        )];
+        let data = bincode::serialize(&snapshot_entries).expect("serialize snapshot");
+        let file = std::path::Path::new(&backup_dir).join("test-node_backup_2099.01.01_00-00-00_UTC.bin");
+        std::fs::write(&file, data).expect("write snapshot file");
+
+        let resp = Arc::clone(&node)
+            .handle_admin(AdminRequest::RestoreLatestSnapshot)
+            .await;
+        match resp {
+            AdminResponse::RestoreResult { entries, .. } => assert_eq!(entries, 1),
+            other => panic!("expected AdminResponse::RestoreResult, got {:?}", other),
+        }
+
+        let restored = node.store.get("snap:key").expect("restored key missing");
+        assert_eq!(restored.value, Bytes::from_static(b"snap-value"));
+        assert_eq!(restored.version, 42);
+
+        let stats = node.stats().await;
+        assert_eq!(stats.snapshot_last_load_entries, 1);
+        assert!(stats.snapshot_last_load_path.is_some());
+
+        let _ = std::fs::remove_dir_all(backup_dir);
     }
 
     #[test]

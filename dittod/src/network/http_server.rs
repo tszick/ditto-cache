@@ -13,6 +13,7 @@ use ditto_protocol::{ClientRequest, ClientResponse, ErrorCode};
 use serde::Deserialize;
 use std::sync::Arc;
 use tracing::info;
+const MAX_BATCH_SET_ITEMS: usize = 5_000;
 
 /// Start the HTTP REST server on `bind`.
 ///
@@ -49,6 +50,7 @@ fn build_app(node: Arc<NodeHandle>) -> Router {
             get(handle_get).put(handle_set).delete(handle_delete),
         )
         .route("/keys/delete-by-pattern", post(handle_delete_by_pattern))
+        .route("/keys/batch", post(handle_batch_set))
         .route("/keys/ttl-by-pattern", post(handle_set_ttl_by_pattern))
         .route("/ping", get(handle_ping))
         .route("/stats", get(handle_stats))
@@ -166,6 +168,18 @@ struct SetQuery {
     ttl: Option<u64>,
 }
 
+#[derive(Deserialize)]
+struct BatchSetItem {
+    key: String,
+    value: String,
+    ttl_secs: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct BatchSetBody {
+    items: Vec<BatchSetItem>,
+}
+
 async fn handle_set(
     Path(key): Path<String>,
     Query(q): Query<SetQuery>,
@@ -184,6 +198,68 @@ async fn handle_set(
         ClientResponse::Error { code, message } => error_response(code, message),
         _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
+}
+
+async fn handle_batch_set(
+    State(node): State<Arc<NodeHandle>>,
+    Json(body): Json<BatchSetBody>,
+) -> Response {
+    if body.items.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "items_must_not_be_empty" })),
+        )
+            .into_response();
+    }
+    if body.items.len() > MAX_BATCH_SET_ITEMS {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "too_many_items",
+                "max_items": MAX_BATCH_SET_ITEMS
+            })),
+        )
+            .into_response();
+    }
+
+    let mut succeeded = 0usize;
+    let mut errors = Vec::new();
+
+    for (idx, item) in body.items.into_iter().enumerate() {
+        let req = ClientRequest::Set {
+            key: item.key.clone(),
+            value: Bytes::from(item.value.into_bytes()),
+            ttl_secs: item.ttl_secs,
+        };
+        match node.handle_client(req).await {
+            ClientResponse::Ok { .. } => succeeded += 1,
+            ClientResponse::Error { code, message } => {
+                errors.push(serde_json::json!({
+                    "index": idx,
+                    "key": item.key,
+                    "error": format!("{:?}", code),
+                    "message": message
+                }));
+            }
+            _ => {
+                errors.push(serde_json::json!({
+                    "index": idx,
+                    "key": item.key,
+                    "error": "InternalError",
+                    "message": "unexpected response"
+                }));
+            }
+        }
+    }
+
+    let failed = errors.len();
+    Json(serde_json::json!({
+        "received": succeeded + failed,
+        "succeeded": succeeded,
+        "failed": failed,
+        "errors": errors
+    }))
+    .into_response()
 }
 
 async fn handle_delete(Path(key): Path<String>, State(node): State<Arc<NodeHandle>>) -> Response {
