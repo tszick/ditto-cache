@@ -243,6 +243,7 @@ key     = "/etc/ditto/certs/node.key"
 | `DITTO_TLS_KEY` | `tls.key` |
 | `DITTO_BIND_ADDR` | `node.bind_addr` |
 | `DITTO_CLUSTER_BIND_ADDR` | `node.cluster_bind_addr` |
+| `DITTO_FRAME_READ_TIMEOUT_MS` | `node.frame_read_timeout_ms` |
 | `DITTO_HTTP_AUTH_USER` | `http_auth.username` |
 | `DITTO_HTTP_AUTH_PASSWORD_HASH` | `http_auth.password_hash` |
 | `DITTO_BACKUP_ENCRYPTION_KEY` | `backup.encryption_key` (hex-encoded 32-byte AES-256-GCM key) |

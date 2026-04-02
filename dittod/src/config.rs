@@ -73,6 +73,9 @@ pub struct NodeConfig {
     /// Maximum allowed incoming TCP message size in bytes. Default: 128 MiB.
     #[serde(default = "default_max_message_size")]
     pub max_message_size_bytes: u32,
+    /// Timeout for reading a single client frame header/payload on TCP (ms).
+    #[serde(default = "default_frame_read_timeout_ms")]
+    pub frame_read_timeout_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -321,6 +324,7 @@ fn default_true() -> bool { true }
 fn default_compression_threshold() -> u64 { 4096 }
 fn default_backup_schedule() -> String { "0 2 * * *".into() }
 fn default_max_message_size() -> u32 { 128 * 1024 * 1024 }
+fn default_frame_read_timeout_ms() -> u64 { 60_000 }
 fn default_backup_path()     -> String { "./backups".into() }
 fn default_backup_format()   -> String { "binary".into() }
 fn default_retain_days()     -> u64    { 30 }
@@ -367,6 +371,7 @@ impl Default for Config {
                 active:            true,
                 client_auth_token: None,
                 max_message_size_bytes: default_max_message_size(),
+                frame_read_timeout_ms: default_frame_read_timeout_ms(),
             },
             cluster: ClusterConfig {
                 seeds:     vec![],

@@ -153,6 +153,13 @@ async fn main() -> Result<()> {
     if let Ok(v) = std::env::var("DITTO_CLUSTER_BIND_ADDR") {
         config.node.cluster_bind_addr = v;
     }
+    if let Ok(v) = std::env::var("DITTO_FRAME_READ_TIMEOUT_MS")
+        .or_else(|_| std::env::var("FRAME_READ_TIMEOUT_MS"))
+    {
+        if let Ok(ms) = v.parse::<u64>() {
+            config.node.frame_read_timeout_ms = ms.max(1);
+        }
+    }
 
     // Strict security mode: cluster/admin traffic must use mTLS.
     if !config.tls.enabled {

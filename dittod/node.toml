@@ -7,6 +7,7 @@ http_port          = 7778
 cluster_port       = 7779
 gossip_port        = 7780
 active             = true
+frame_read_timeout_ms = 60000  # TCP client frame read timeout; protects idle clients from reconnect churn
 
 [cluster]
 seeds     = ["node-2:7779", "node-3:7779"]

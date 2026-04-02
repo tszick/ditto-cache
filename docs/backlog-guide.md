@@ -69,6 +69,64 @@ Deliverables:
 - Add snapshot write/load flow for fast restart.
 - Expand smoke/integration tests for load spikes and restart paths.
 
+Sprint 2 execution plan:
+
+- Objective:
+  - Keep latency and write success stable during client idle/reconnect churn and load spikes.
+  - Reduce false cluster degradation caused by aggressive timeout defaults.
+  - Deliver restart-time improvement with snapshot bootstrap.
+
+- In-scope workstreams:
+  - S2.1 Connection timeout hardening:
+    - Make TCP frame-read timeout configurable via env/config.
+    - Raise safe default from short idle-kick behavior to long-lived client-friendly value.
+    - Ensure status/config introspection shows effective timeout values.
+  - S2.2 Gossip stability tuning:
+    - Expose and document dead-node threshold tuning (`gossip_dead_ms`) for production presets.
+    - Add guardrails for too-low values and clear warnings in logs/docs.
+  - S2.3 Hot-key protection MVP:
+    - Add single-flight request coalescing for concurrent reads of same key.
+    - Add bounded waiter protection (prevent unbounded fan-in memory growth).
+    - Add counters for coalesced hits and fallback executions.
+  - S2.4 Snapshot fast-restart MVP:
+    - Add manual snapshot save/load flow (admin-triggered).
+    - On startup: optional snapshot restore, then normal replication catch-up.
+    - Add status fields for snapshot age/load duration.
+  - S2.5 Test and verification pack:
+    - k6 profile for idle-then-burst traffic.
+    - Restart scenario test: baseline cold start vs snapshot restore.
+    - Regression checks for quorum write path and timeout/error mapping.
+
+- Out of scope:
+  - Full anti-entropy reconciliation logic (Sprint 3).
+  - Tenant isolation/quotas (Sprint 4).
+  - Full chaos suite (Sprint 4).
+
+- Acceptance criteria:
+  - No periodic reconnect churn under idle clients with default config.
+  - No false OFFLINE flapping in nominal 3-node local cluster defaults.
+  - Coalescing reduces duplicate backend work for same-key burst reads.
+  - Snapshot restore measurably reduces restart warm-up time vs cold baseline.
+  - New metrics visible in node stats and documented in admin/CLI guides.
+
+- Implementation order (recommended):
+  1. S2.1 timeout hardening
+  2. S2.2 gossip tuning/guardrails
+  3. S2.5 targeted regression tests for above
+  4. S2.3 hot-key coalescing MVP
+  5. S2.4 snapshot fast-restart MVP
+  6. S2.5 final benchmark + docs pass
+
+- Risks and mitigations:
+  - Risk: longer frame timeout may keep dead sockets longer.
+    - Mitigation: retain heartbeat/ping behavior and socket error accounting.
+  - Risk: overly high gossip dead threshold delays true failure detection.
+    - Mitigation: publish environment-specific recommended ranges.
+  - Risk: coalescing lock contention under very hot keys.
+    - Mitigation: shard coalescing map and cap waiter counts.
+  - Risk: snapshot format drift over versions.
+    - Mitigation: version header + compatibility checks from day one.
+
 ### Sprint 3 (consistency + upgrades)
 
 - Add read-repair and anti-entropy background reconciliation.

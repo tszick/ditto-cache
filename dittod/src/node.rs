@@ -746,6 +746,7 @@ impl NodeHandle {
             ("http-port".into(),            cfg.node.http_port.to_string()),
             ("cluster-port".into(),         cfg.node.cluster_port.to_string()),
             ("gossip-port".into(),          cfg.node.gossip_port.to_string()),
+            ("frame-read-timeout-ms".into(),cfg.node.frame_read_timeout_ms.to_string()),
             ("max-memory".into(),           format!("{}mb", cfg.cache.max_memory_mb)),
             ("default-ttl".into(),          format!("{}s", cfg.cache.default_ttl_secs)),
             ("value-size-limit".into(),     if stats.value_size_limit_bytes == 0 { "unlimited".into() } else { format!("{}b", stats.value_size_limit_bytes) }),
