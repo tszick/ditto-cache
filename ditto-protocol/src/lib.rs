@@ -96,6 +96,10 @@ pub enum ErrorCode {
     ValueTooLarge,
     /// Cache is at the max-keys limit.
     KeyLimitReached,
+    /// Request throttled by node-level rate limiter.
+    RateLimited,
+    /// Request rejected because circuit breaker is open.
+    CircuitOpen,
     /// Invalid or missing authentication.
     AuthFailed,
 }

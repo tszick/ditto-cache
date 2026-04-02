@@ -251,13 +251,32 @@ async fn handle_stats(State(node): State<Arc<NodeHandle>>) -> Response {
 }
 
 fn error_response(code: ErrorCode, message: String) -> Response {
-    let status = match code {
-        ErrorCode::NodeInactive => StatusCode::SERVICE_UNAVAILABLE,
-        ErrorCode::NoQuorum     => StatusCode::SERVICE_UNAVAILABLE,
-        ErrorCode::KeyNotFound  => StatusCode::NOT_FOUND,
-        ErrorCode::WriteTimeout => StatusCode::GATEWAY_TIMEOUT,
-        _                       => StatusCode::INTERNAL_SERVER_ERROR,
-    };
+    let status = status_for_error(&code);
     let body = serde_json::json!({ "error": format!("{:?}", code), "message": message });
     (status, Json(body)).into_response()
+}
+
+fn status_for_error(code: &ErrorCode) -> StatusCode {
+    match code {
+        ErrorCode::NodeInactive => StatusCode::SERVICE_UNAVAILABLE,
+        ErrorCode::NoQuorum => StatusCode::SERVICE_UNAVAILABLE,
+        ErrorCode::CircuitOpen => StatusCode::SERVICE_UNAVAILABLE,
+        ErrorCode::KeyNotFound => StatusCode::NOT_FOUND,
+        ErrorCode::WriteTimeout => StatusCode::GATEWAY_TIMEOUT,
+        ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::status_for_error;
+    use axum::http::StatusCode;
+    use ditto_protocol::ErrorCode;
+
+    #[test]
+    fn status_mapping_for_rate_limit_and_circuit_open() {
+        assert_eq!(status_for_error(&ErrorCode::RateLimited), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(status_for_error(&ErrorCode::CircuitOpen), StatusCode::SERVICE_UNAVAILABLE);
+    }
 }

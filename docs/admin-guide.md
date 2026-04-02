@@ -138,6 +138,26 @@ Platform gates are disabled by default, so backup/export/import stay blocked unt
 `node status` includes the persistence fields (`persistence_platform_allowed`, `persistence_runtime_enabled`, `persistence_enabled`, plus per-feature flags).
 `node status` also includes rate-limit and circuit-breaker runtime fields (`rate_limit_enabled`, `rate_limited_requests_total`, `circuit_breaker_state`, and related counters).
 
+Example runtime tuning commands:
+
+```bash
+dittoctl node set rate-limit-enabled local true
+dittoctl node set rate-limit-requests-per-sec local 1500
+dittoctl node set rate-limit-burst local 3000
+dittoctl node set circuit-breaker-enabled local true
+dittoctl node set circuit-breaker-failure-threshold local 25
+dittoctl node set circuit-breaker-open-ms local 5000
+dittoctl node set circuit-breaker-half-open-max-requests local 5
+```
+
+Suggested baseline values:
+
+| Environment | rate-limit-enabled | requests-per-sec | burst | circuit-breaker-enabled | failure-threshold | open-ms |
+|---|---:|---:|---:|---:|---:|---:|
+| Dev | false | 1000 | 2000 | false | 20 | 5000 |
+| Staging | true | 500 | 1000 | true | 10 | 3000 |
+| Production (start point) | true | 1000 | 2000 | true | 20 | 5000 |
+
 ### Cache operations through mgmt
 
 ```bash

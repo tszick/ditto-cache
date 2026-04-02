@@ -261,7 +261,7 @@ impl NodeHandle {
         let failed = matches!(
             response,
             ClientResponse::Error {
-                code: ErrorCode::WriteTimeout | ErrorCode::NoQuorum | ErrorCode::InternalError,
+                code: ErrorCode::WriteTimeout | ErrorCode::NoQuorum,
                 ..
             }
         );
@@ -314,13 +314,13 @@ impl NodeHandle {
         }
         if !self.allow_by_rate_limit() {
             return ClientResponse::Error {
-                code: ErrorCode::InternalError,
+                code: ErrorCode::RateLimited,
                 message: "Request throttled by rate limiter".into(),
             };
         }
         if !self.allow_by_circuit_breaker() {
             return ClientResponse::Error {
-                code: ErrorCode::InternalError,
+                code: ErrorCode::CircuitOpen,
                 message: "Request rejected by circuit breaker".into(),
             };
         }
@@ -763,8 +763,13 @@ impl NodeHandle {
             ("persistence-export-enabled".into(), stats.persistence_export_enabled.to_string()),
             ("persistence-import-enabled".into(), stats.persistence_import_enabled.to_string()),
             ("rate-limit-enabled".into(), stats.rate_limit_enabled.to_string()),
+            ("rate-limit-requests-per-sec".into(), cfg.rate_limit.requests_per_sec.to_string()),
+            ("rate-limit-burst".into(), cfg.rate_limit.burst.to_string()),
             ("rate-limited-requests-total".into(), stats.rate_limited_requests_total.to_string()),
             ("circuit-breaker-enabled".into(), stats.circuit_breaker_enabled.to_string()),
+            ("circuit-breaker-failure-threshold".into(), cfg.circuit_breaker.failure_threshold.to_string()),
+            ("circuit-breaker-open-ms".into(), cfg.circuit_breaker.open_ms.to_string()),
+            ("circuit-breaker-half-open-max-requests".into(), cfg.circuit_breaker.half_open_max_requests.to_string()),
             ("circuit-breaker-state".into(), stats.circuit_breaker_state.clone()),
             ("circuit-breaker-open-total".into(), stats.circuit_breaker_open_total.to_string()),
             ("circuit-breaker-reject-total".into(), stats.circuit_breaker_reject_total.to_string()),
@@ -1078,6 +1083,65 @@ impl NodeHandle {
                         let val = value.trim().eq_ignore_ascii_case("true");
                         self.config.lock().unwrap().persistence.runtime_enabled = val;
                         tracing::info!("persistence-runtime-enabled → {}", val);
+                    }
+
+                    // rate limiter
+                    "rate-limit-enabled" => {
+                        let val = value.trim().eq_ignore_ascii_case("true");
+                        self.config.lock().unwrap().rate_limit.enabled = val;
+                        tracing::info!("rate-limit-enabled → {}", val);
+                    }
+                    "rate-limit-requests-per-sec" => {
+                        match value.trim().parse::<u64>() {
+                            Ok(v) if v > 0 => {
+                                self.config.lock().unwrap().rate_limit.requests_per_sec = v;
+                                tracing::info!("rate-limit-requests-per-sec → {}", v);
+                            }
+                            _ => tracing::warn!("SetProperty rate-limit-requests-per-sec: invalid value '{}'", value),
+                        }
+                    }
+                    "rate-limit-burst" => {
+                        match value.trim().parse::<u64>() {
+                            Ok(v) if v > 0 => {
+                                self.config.lock().unwrap().rate_limit.burst = v;
+                                tracing::info!("rate-limit-burst → {}", v);
+                            }
+                            _ => tracing::warn!("SetProperty rate-limit-burst: invalid value '{}'", value),
+                        }
+                    }
+
+                    // circuit breaker
+                    "circuit-breaker-enabled" => {
+                        let val = value.trim().eq_ignore_ascii_case("true");
+                        self.config.lock().unwrap().circuit_breaker.enabled = val;
+                        tracing::info!("circuit-breaker-enabled → {}", val);
+                    }
+                    "circuit-breaker-failure-threshold" => {
+                        match value.trim().parse::<u64>() {
+                            Ok(v) if v > 0 => {
+                                self.config.lock().unwrap().circuit_breaker.failure_threshold = v;
+                                tracing::info!("circuit-breaker-failure-threshold → {}", v);
+                            }
+                            _ => tracing::warn!("SetProperty circuit-breaker-failure-threshold: invalid value '{}'", value),
+                        }
+                    }
+                    "circuit-breaker-open-ms" => {
+                        match value.trim().parse::<u64>() {
+                            Ok(v) if v > 0 => {
+                                self.config.lock().unwrap().circuit_breaker.open_ms = v;
+                                tracing::info!("circuit-breaker-open-ms → {}", v);
+                            }
+                            _ => tracing::warn!("SetProperty circuit-breaker-open-ms: invalid value '{}'", value),
+                        }
+                    }
+                    "circuit-breaker-half-open-max-requests" => {
+                        match value.trim().parse::<u64>() {
+                            Ok(v) if v > 0 => {
+                                self.config.lock().unwrap().circuit_breaker.half_open_max_requests = v;
+                                tracing::info!("circuit-breaker-half-open-max-requests → {}", v);
+                            }
+                            _ => tracing::warn!("SetProperty circuit-breaker-half-open-max-requests: invalid value '{}'", value),
+                        }
                     }
 
                     other => tracing::warn!("SetProperty: unknown property '{}'", other),
@@ -1535,5 +1599,17 @@ mod tests {
         assert!(!bucket.try_take());
         std::thread::sleep(Duration::from_millis(600));
         assert!(bucket.try_take());
+    }
+
+    #[test]
+    fn token_bucket_burst_cap_under_load() {
+        let mut bucket = TokenBucket::new(10, 10);
+        let mut allowed = 0usize;
+        for _ in 0..100 {
+            if bucket.try_take() {
+                allowed += 1;
+            }
+        }
+        assert_eq!(allowed, 10);
     }
 }

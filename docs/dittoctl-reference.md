@@ -87,6 +87,18 @@ Effective policy is:
 
 `enabled = PERSISTENCE_PLATFORM_ALLOWED && persistence_runtime_enabled`
 
+Resilience runtime tuning:
+
+```bash
+dittoctl node set rate-limit-enabled <target> <true|false>
+dittoctl node set rate-limit-requests-per-sec <target> <number>
+dittoctl node set rate-limit-burst <target> <number>
+dittoctl node set circuit-breaker-enabled <target> <true|false>
+dittoctl node set circuit-breaker-failure-threshold <target> <number>
+dittoctl node set circuit-breaker-open-ms <target> <number>
+dittoctl node set circuit-breaker-half-open-max-requests <target> <number>
+```
+
 ### List sub-resources
 
 ```bash
@@ -196,3 +208,4 @@ dittoctl cache set-ttl local "session:*"
 - Transport/auth/TLS issues are surfaced from mgmt responses.
 - For mgmt HTTPS with self-signed certs in dev, trust the CA on host.
 - If mgmt is down, `dittoctl` cannot operate even if cache nodes are healthy.
+- HTTP API: rate-limited requests return `429`, open-circuit requests return `503`.
