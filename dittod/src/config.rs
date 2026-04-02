@@ -19,6 +19,10 @@ pub struct Config {
     #[serde(default)]
     pub persistence: PersistenceConfig,
     #[serde(default)]
+    pub rate_limit:  RateLimitConfig,
+    #[serde(default)]
+    pub circuit_breaker: CircuitBreakerConfig,
+    #[serde(default)]
     pub log:         LogConfig,
 }
 
@@ -200,6 +204,60 @@ pub struct PersistenceConfig {
     pub import_allowed:   bool,
 }
 
+/// Node-level request rate limiter (token bucket).
+///
+/// Applies to client requests handled by `dittod` (TCP + HTTP).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitConfig {
+    /// Enable request rate limiting.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Refill rate in requests per second.
+    #[serde(default = "default_rate_limit_rps")]
+    pub requests_per_sec: u64,
+    /// Maximum burst size (bucket capacity).
+    #[serde(default = "default_rate_limit_burst")]
+    pub burst: u64,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            requests_per_sec: default_rate_limit_rps(),
+            burst: default_rate_limit_burst(),
+        }
+    }
+}
+
+/// Node-level circuit breaker for client request handling.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CircuitBreakerConfig {
+    /// Enable circuit breaker protection.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Number of consecutive failures before opening the circuit.
+    #[serde(default = "default_cb_failure_threshold")]
+    pub failure_threshold: u64,
+    /// Time to stay open before probing in half-open state.
+    #[serde(default = "default_cb_open_ms")]
+    pub open_ms: u64,
+    /// Number of successful probe requests required to close from half-open.
+    #[serde(default = "default_cb_half_open_max_requests")]
+    pub half_open_max_requests: u64,
+}
+
+impl Default for CircuitBreakerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            failure_threshold: default_cb_failure_threshold(),
+            open_ms: default_cb_open_ms(),
+            half_open_max_requests: default_cb_half_open_max_requests(),
+        }
+    }
+}
+
 /// File logging configuration.
 ///
 /// When `enabled = true`, log records are written to rolling files in `path`
@@ -270,6 +328,11 @@ fn default_log_path()        -> String { "./logs".into() }
 fn default_log_rotation()    -> String { "daily".into() }
 fn default_log_retain_days() -> u64    { 30 }
 fn default_log_level()       -> String { "info".into() }
+fn default_rate_limit_rps() -> u64 { 1000 }
+fn default_rate_limit_burst() -> u64 { 2000 }
+fn default_cb_failure_threshold() -> u64 { 20 }
+fn default_cb_open_ms() -> u64 { 5000 }
+fn default_cb_half_open_max_requests() -> u64 { 5 }
 
 impl Config {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
@@ -327,6 +390,8 @@ impl Default for Config {
             http_auth:   HttpAuthConfig::default(),
             backup:      BackupConfig::default(),
             persistence: PersistenceConfig::default(),
+            rate_limit:  RateLimitConfig::default(),
+            circuit_breaker: CircuitBreakerConfig::default(),
             log:         LogConfig::default(),
         }
     }

@@ -250,6 +250,13 @@ key     = "/etc/ditto/certs/node.key"
 | `DITTO_PERSISTENCE_BACKUP_ALLOWED` | platform gate for backup |
 | `DITTO_PERSISTENCE_EXPORT_ALLOWED` | platform gate for export |
 | `DITTO_PERSISTENCE_IMPORT_ALLOWED` | platform gate for import |
+| `DITTO_RATE_LIMIT_ENABLED` | node request rate limiter enable flag |
+| `DITTO_RATE_LIMIT_REQUESTS_PER_SEC` | token bucket refill rate |
+| `DITTO_RATE_LIMIT_BURST` | token bucket burst capacity |
+| `DITTO_CIRCUIT_BREAKER_ENABLED` | circuit breaker enable flag |
+| `DITTO_CIRCUIT_BREAKER_FAILURE_THRESHOLD` | consecutive failure threshold to open |
+| `DITTO_CIRCUIT_BREAKER_OPEN_MS` | open-state timeout before half-open probes |
+| `DITTO_CIRCUIT_BREAKER_HALF_OPEN_MAX_REQUESTS` | successful half-open probes needed to close |
 
 Persistence effective state:
 
@@ -364,6 +371,7 @@ docker start ditto-node-3             # auto-syncs when restarted
 | [docs/architecture.md](docs/architecture.md) | Architecture, protocols, write/read flows, deployment sizing |
 | [docs/docker-setup.md](docs/docker-setup.md) | Docker test environment setup and operations |
 | [docs/dittoctl-reference.md](docs/dittoctl-reference.md) | Supplementary CLI reference |
+| [docs/backlog-guide.md](docs/backlog-guide.md) | Product backlog + multi-sprint roadmap |
 
 ---
 

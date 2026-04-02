@@ -268,6 +268,18 @@ pub struct NodeStats {
     pub persistence_export_enabled: bool,
     /// Effective import gate (`platform && runtime && import_allowed`).
     pub persistence_import_enabled: bool,
+    /// Node-level request limiter enabled.
+    pub rate_limit_enabled: bool,
+    /// Total client requests rejected by rate limiting since startup.
+    pub rate_limited_requests_total: u64,
+    /// Circuit breaker enabled.
+    pub circuit_breaker_enabled: bool,
+    /// Current circuit breaker state: "closed" | "open" | "half-open".
+    pub circuit_breaker_state: String,
+    /// Number of times the circuit transitioned to open.
+    pub circuit_breaker_open_total: u64,
+    /// Total client requests rejected because circuit is open/limited in half-open.
+    pub circuit_breaker_reject_total: u64,
 }
 
 // ---------------------------------------------------------------------------

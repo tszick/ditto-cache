@@ -136,6 +136,7 @@ Persistence is only effective when both conditions are true:
 
 Platform gates are disabled by default, so backup/export/import stay blocked until explicitly enabled.
 `node status` includes the persistence fields (`persistence_platform_allowed`, `persistence_runtime_enabled`, `persistence_enabled`, plus per-feature flags).
+`node status` also includes rate-limit and circuit-breaker runtime fields (`rate_limit_enabled`, `rate_limited_requests_total`, `circuit_breaker_state`, and related counters).
 
 ### Cache operations through mgmt
 

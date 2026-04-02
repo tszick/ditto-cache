@@ -186,6 +186,18 @@ pub async fn run(cmd: NodeCommand, cfg: &mut CtlConfig, client: &reqwest::Client
                     node["persistence_export_enabled"].as_bool().map(|v| v.to_string()).as_deref().unwrap_or("?"));
                 println!("  {:<22} {}", "persistence-import",
                     node["persistence_import_enabled"].as_bool().map(|v| v.to_string()).as_deref().unwrap_or("?"));
+                println!("  {:<22} {}", "rate-limit",
+                    node["rate_limit_enabled"].as_bool().map(|v| v.to_string()).as_deref().unwrap_or("?"));
+                println!("  {:<22} {}", "rate-limited-total",
+                    node["rate_limited_requests_total"].as_u64().map(|v| v.to_string()).as_deref().unwrap_or("?"));
+                println!("  {:<22} {}", "circuit-breaker",
+                    node["circuit_breaker_enabled"].as_bool().map(|v| v.to_string()).as_deref().unwrap_or("?"));
+                println!("  {:<22} {}", "circuit-state",
+                    node["circuit_breaker_state"].as_str().unwrap_or("?"));
+                println!("  {:<22} {}", "circuit-open-total",
+                    node["circuit_breaker_open_total"].as_u64().map(|v| v.to_string()).as_deref().unwrap_or("?"));
+                println!("  {:<22} {}", "circuit-reject-total",
+                    node["circuit_breaker_reject_total"].as_u64().map(|v| v.to_string()).as_deref().unwrap_or("?"));
             }
         }
     }

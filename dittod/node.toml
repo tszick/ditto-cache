@@ -40,6 +40,17 @@ backup_allowed   = false
 export_allowed   = false
 import_allowed   = false
 
+[rate_limit]
+enabled          = false
+requests_per_sec = 1000
+burst            = 2000
+
+[circuit_breaker]
+enabled                = false
+failure_threshold      = 20
+open_ms                = 5000
+half_open_max_requests = 5
+
 [log]
 enabled     = false
 path        = "./logs"       # directory for rolling log files (created if absent)

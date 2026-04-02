@@ -12,10 +12,10 @@ use ditto_protocol::{
 use std::{
     net::SocketAddr,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::{broadcast, Mutex as AsyncMutex};
 use tokio_rustls::TlsConnector;
@@ -25,6 +25,65 @@ use uuid::Uuid;
 /// DITTO-02: watch event payload broadcast to all TCP connections.
 /// `value = None` means the key was deleted.
 pub type WatchEventPayload = (String, Option<Bytes>, u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CircuitState {
+    Closed,
+    Open,
+    HalfOpen,
+}
+
+impl CircuitState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Closed => "closed",
+            Self::Open => "open",
+            Self::HalfOpen => "half-open",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct TokenBucket {
+    capacity: f64,
+    tokens: f64,
+    refill_per_sec: f64,
+    last_refill: Instant,
+}
+
+impl TokenBucket {
+    fn new(capacity: u64, refill_per_sec: u64) -> Self {
+        let cap = capacity.max(1) as f64;
+        let rps = refill_per_sec.max(1) as f64;
+        Self {
+            capacity: cap,
+            tokens: cap,
+            refill_per_sec: rps,
+            last_refill: Instant::now(),
+        }
+    }
+
+    fn try_take(&mut self) -> bool {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
+        self.last_refill = now;
+        self.tokens = (self.tokens + elapsed * self.refill_per_sec).min(self.capacity);
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CircuitRuntime {
+    state: CircuitState,
+    consecutive_failures: u64,
+    open_until_ms: u64,
+    half_open_successes: u64,
+}
 
 /// Shared state handle passed to every server task.
 pub struct NodeHandle {
@@ -45,6 +104,11 @@ pub struct NodeHandle {
     /// DITTO-02: broadcast channel for watch events.
     /// Each TCP connection subscribes and filters by its watched keys.
     pub watch_tx: broadcast::Sender<WatchEventPayload>,
+    rate_bucket: Mutex<TokenBucket>,
+    circuit: Mutex<CircuitRuntime>,
+    rate_limited_requests_total: AtomicU64,
+    circuit_breaker_open_total: AtomicU64,
+    circuit_breaker_reject_total: AtomicU64,
 }
 
 impl NodeHandle {
@@ -88,12 +152,154 @@ impl NodeHandle {
             started_at:    Instant::now(),
             tls_connector,
             watch_tx,
+            rate_bucket: Mutex::new(TokenBucket::new(
+                config.rate_limit.burst,
+                config.rate_limit.requests_per_sec,
+            )),
+            circuit: Mutex::new(CircuitRuntime {
+                state: CircuitState::Closed,
+                consecutive_failures: 0,
+                open_until_ms: 0,
+                half_open_successes: 0,
+            }),
+            rate_limited_requests_total: AtomicU64::new(0),
+            circuit_breaker_open_total: AtomicU64::new(0),
+            circuit_breaker_reject_total: AtomicU64::new(0),
         })
     }
 
     // -----------------------------------------------------------------------
     // Client request handler (used by both TCP and HTTP servers)
     // -----------------------------------------------------------------------
+
+    fn now_millis() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
+    fn allow_by_rate_limit(&self) -> bool {
+        let (enabled, burst, rps) = {
+            let cfg = self.config.lock().unwrap();
+            (
+                cfg.rate_limit.enabled,
+                cfg.rate_limit.burst.max(1),
+                cfg.rate_limit.requests_per_sec.max(1),
+            )
+        };
+        if !enabled {
+            return true;
+        }
+
+        let mut bucket = self.rate_bucket.lock().unwrap();
+        if (bucket.capacity as u64) != burst || (bucket.refill_per_sec as u64) != rps {
+            *bucket = TokenBucket::new(burst, rps);
+        }
+        let allowed = bucket.try_take();
+        if !allowed {
+            self.rate_limited_requests_total.fetch_add(1, Ordering::Relaxed);
+        }
+        allowed
+    }
+
+    fn allow_by_circuit_breaker(&self) -> bool {
+        let (enabled, open_ms, half_open_max_requests) = {
+            let cfg = self.config.lock().unwrap();
+            (
+                cfg.circuit_breaker.enabled,
+                cfg.circuit_breaker.open_ms.max(1),
+                cfg.circuit_breaker.half_open_max_requests.max(1),
+            )
+        };
+        if !enabled {
+            return true;
+        }
+
+        let now_ms = Self::now_millis();
+        let mut c = self.circuit.lock().unwrap();
+        match c.state {
+            CircuitState::Closed => true,
+            CircuitState::Open => {
+                if now_ms >= c.open_until_ms {
+                    c.state = CircuitState::HalfOpen;
+                    c.half_open_successes = 0;
+                    true
+                } else {
+                    self.circuit_breaker_reject_total.fetch_add(1, Ordering::Relaxed);
+                    false
+                }
+            }
+            CircuitState::HalfOpen => {
+                if c.half_open_successes >= half_open_max_requests {
+                    c.state = CircuitState::Closed;
+                    c.consecutive_failures = 0;
+                    c.half_open_successes = 0;
+                    true
+                } else {
+                    let _ = open_ms; // keep config parity and avoid stale assumptions
+                    true
+                }
+            }
+        }
+    }
+
+    fn record_circuit_result(&self, response: &ClientResponse) {
+        let (enabled, threshold, open_ms, half_open_max_requests) = {
+            let cfg = self.config.lock().unwrap();
+            (
+                cfg.circuit_breaker.enabled,
+                cfg.circuit_breaker.failure_threshold.max(1),
+                cfg.circuit_breaker.open_ms.max(1),
+                cfg.circuit_breaker.half_open_max_requests.max(1),
+            )
+        };
+        if !enabled {
+            return;
+        }
+
+        let failed = matches!(
+            response,
+            ClientResponse::Error {
+                code: ErrorCode::WriteTimeout | ErrorCode::NoQuorum | ErrorCode::InternalError,
+                ..
+            }
+        );
+        let now_ms = Self::now_millis();
+        let mut c = self.circuit.lock().unwrap();
+        match c.state {
+            CircuitState::Closed => {
+                if failed {
+                    c.consecutive_failures += 1;
+                    if c.consecutive_failures >= threshold {
+                        c.state = CircuitState::Open;
+                        c.open_until_ms = now_ms.saturating_add(open_ms);
+                        c.half_open_successes = 0;
+                        self.circuit_breaker_open_total.fetch_add(1, Ordering::Relaxed);
+                    }
+                } else {
+                    c.consecutive_failures = 0;
+                }
+            }
+            CircuitState::Open => {}
+            CircuitState::HalfOpen => {
+                if failed {
+                    c.state = CircuitState::Open;
+                    c.open_until_ms = now_ms.saturating_add(open_ms);
+                    c.half_open_successes = 0;
+                    c.consecutive_failures = threshold;
+                    self.circuit_breaker_open_total.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    c.half_open_successes += 1;
+                    if c.half_open_successes >= half_open_max_requests {
+                        c.state = CircuitState::Closed;
+                        c.consecutive_failures = 0;
+                        c.half_open_successes = 0;
+                    }
+                }
+            }
+        }
+    }
 
     /// Dispatch a client request to the appropriate handler.
     ///
@@ -106,8 +312,19 @@ impl NodeHandle {
                 message: "Node is inactive (maintenance mode)".into(),
             };
         }
-
-        match req {
+        if !self.allow_by_rate_limit() {
+            return ClientResponse::Error {
+                code: ErrorCode::InternalError,
+                message: "Request throttled by rate limiter".into(),
+            };
+        }
+        if !self.allow_by_circuit_breaker() {
+            return ClientResponse::Error {
+                code: ErrorCode::InternalError,
+                message: "Request rejected by circuit breaker".into(),
+            };
+        }
+        let response = match req {
             ClientRequest::Ping => ClientResponse::Pong,
             ClientRequest::Auth { .. } => ClientResponse::Error {
                 code: ErrorCode::InternalError,
@@ -162,7 +379,9 @@ impl NodeHandle {
                     message: "Watch/Unwatch must be handled at the connection level".into(),
                 }
             }
-        }
+        };
+        self.record_circuit_result(&response);
+        response
     }
 
     async fn delete_by_pattern(&self, pattern: String) -> ClientResponse {
@@ -543,6 +762,12 @@ impl NodeHandle {
             ("persistence-backup-enabled".into(), stats.persistence_backup_enabled.to_string()),
             ("persistence-export-enabled".into(), stats.persistence_export_enabled.to_string()),
             ("persistence-import-enabled".into(), stats.persistence_import_enabled.to_string()),
+            ("rate-limit-enabled".into(), stats.rate_limit_enabled.to_string()),
+            ("rate-limited-requests-total".into(), stats.rate_limited_requests_total.to_string()),
+            ("circuit-breaker-enabled".into(), stats.circuit_breaker_enabled.to_string()),
+            ("circuit-breaker-state".into(), stats.circuit_breaker_state.clone()),
+            ("circuit-breaker-open-total".into(), stats.circuit_breaker_open_total.to_string()),
+            ("circuit-breaker-reject-total".into(), stats.circuit_breaker_reject_total.to_string()),
         ]
     }
 
@@ -1193,6 +1418,13 @@ impl NodeHandle {
             persistence_export_enabled,
             persistence_import_enabled,
         ) = Self::persistence_states(&cfg);
+        let rate_limit_enabled = cfg.rate_limit.enabled;
+        let circuit_breaker_enabled = cfg.circuit_breaker.enabled;
+        let circuit_breaker_state = if circuit_breaker_enabled {
+            self.circuit.lock().unwrap().state.as_str().to_string()
+        } else {
+            "disabled".to_string()
+        };
         NodeStats {
             node_id:           self.id,
             status:            set.local_status(),
@@ -1217,6 +1449,12 @@ impl NodeHandle {
             persistence_backup_enabled,
             persistence_export_enabled,
             persistence_import_enabled,
+            rate_limit_enabled,
+            rate_limited_requests_total: self.rate_limited_requests_total.load(Ordering::Relaxed),
+            circuit_breaker_enabled,
+            circuit_breaker_state,
+            circuit_breaker_open_total: self.circuit_breaker_open_total.load(Ordering::Relaxed),
+            circuit_breaker_reject_total: self.circuit_breaker_reject_total.load(Ordering::Relaxed),
         }
     }
 }
@@ -1238,8 +1476,9 @@ fn dir_size_bytes(path: &str) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::NodeHandle;
+    use super::{NodeHandle, TokenBucket};
     use crate::config::Config;
+    use std::time::Duration;
 
     #[test]
     fn persistence_states_default_is_fully_disabled() {
@@ -1286,5 +1525,15 @@ mod tests {
         assert!(backup);
         assert!(!export);
         assert!(import);
+    }
+
+    #[test]
+    fn token_bucket_limits_and_refills() {
+        let mut bucket = TokenBucket::new(2, 2);
+        assert!(bucket.try_take());
+        assert!(bucket.try_take());
+        assert!(!bucket.try_take());
+        std::thread::sleep(Duration::from_millis(600));
+        assert!(bucket.try_take());
     }
 }

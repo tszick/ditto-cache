@@ -102,6 +102,51 @@ async fn main() -> Result<()> {
     {
         config.persistence.import_allowed = v;
     }
+    if let Some(v) = parse_bool_env("DITTO_RATE_LIMIT_ENABLED")
+        .or_else(|| parse_bool_env("RATE_LIMIT_ENABLED"))
+    {
+        config.rate_limit.enabled = v;
+    }
+    if let Ok(v) = std::env::var("DITTO_RATE_LIMIT_REQUESTS_PER_SEC")
+        .or_else(|_| std::env::var("RATE_LIMIT_REQUESTS_PER_SEC"))
+    {
+        if let Ok(n) = v.parse::<u64>() {
+            config.rate_limit.requests_per_sec = n.max(1);
+        }
+    }
+    if let Ok(v) = std::env::var("DITTO_RATE_LIMIT_BURST")
+        .or_else(|_| std::env::var("RATE_LIMIT_BURST"))
+    {
+        if let Ok(n) = v.parse::<u64>() {
+            config.rate_limit.burst = n.max(1);
+        }
+    }
+    if let Some(v) = parse_bool_env("DITTO_CIRCUIT_BREAKER_ENABLED")
+        .or_else(|| parse_bool_env("CIRCUIT_BREAKER_ENABLED"))
+    {
+        config.circuit_breaker.enabled = v;
+    }
+    if let Ok(v) = std::env::var("DITTO_CIRCUIT_BREAKER_FAILURE_THRESHOLD")
+        .or_else(|_| std::env::var("CIRCUIT_BREAKER_FAILURE_THRESHOLD"))
+    {
+        if let Ok(n) = v.parse::<u64>() {
+            config.circuit_breaker.failure_threshold = n.max(1);
+        }
+    }
+    if let Ok(v) = std::env::var("DITTO_CIRCUIT_BREAKER_OPEN_MS")
+        .or_else(|_| std::env::var("CIRCUIT_BREAKER_OPEN_MS"))
+    {
+        if let Ok(n) = v.parse::<u64>() {
+            config.circuit_breaker.open_ms = n.max(1);
+        }
+    }
+    if let Ok(v) = std::env::var("DITTO_CIRCUIT_BREAKER_HALF_OPEN_MAX_REQUESTS")
+        .or_else(|_| std::env::var("CIRCUIT_BREAKER_HALF_OPEN_MAX_REQUESTS"))
+    {
+        if let Ok(n) = v.parse::<u64>() {
+            config.circuit_breaker.half_open_max_requests = n.max(1);
+        }
+    }
     if let Ok(v) = std::env::var("DITTO_BIND_ADDR") {
         config.node.bind_addr = v;
     }

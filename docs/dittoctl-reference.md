@@ -109,6 +109,7 @@ dittoctl node status <target>
 
 `target` can be `local`, `all`, or a specific node address/name expected by mgmt.
 Status output includes persistence policy flags (`persistence_platform_allowed`, `persistence_runtime_enabled`, `persistence_enabled`, and per-feature states).
+Status output also includes resilience-runtime fields (`rate_limit_enabled`, `rate_limited_requests_total`, `circuit_breaker_enabled`, `circuit_breaker_state`, `circuit_breaker_open_total`, `circuit_breaker_reject_total`).
 
 ## Cache commands
 
