@@ -1,13 +1,15 @@
 [node]
-id                 = "node-1"
-bind_addr          = "0.0.0.0"    # client ports (7777, 7778): "0.0.0.0" | "localhost" | "<ip>"
-cluster_bind_addr  = "site-local" # cluster ports (7779, 7780): "site-local" | "0.0.0.0" | "localhost" | "<ip>"
-client_port        = 7777
-http_port          = 7778
-cluster_port       = 7779
-gossip_port        = 7780
-active             = true
-frame_read_timeout_ms = 60000  # TCP client frame read timeout; protects idle clients from reconnect churn
+id                   = "node-1"
+bind_addr            = "0.0.0.0"    # client ports (7777, 7778): "0.0.0.0" | "localhost" | "<ip>"
+cluster_bind_addr    = "site-local" # cluster ports (7779, 7780): "site-local" | "0.0.0.0" | "localhost" | "<ip>"
+client_port          = 7777
+http_port            = 7778
+cluster_port         = 7779
+gossip_port          = 7780
+active               = true
+max_message_size_bytes = 134217728  # 128 MiB; overridden by DITTO_MAX_MESSAGE_SIZE_BYTES
+frame_read_timeout_ms  = 60000      # TCP frame read timeout; overridden by DITTO_FRAME_READ_TIMEOUT_MS
+# client_auth_token   = "my-secret-token" # default is unset; overridden by DITTO_CLIENT_AUTH_TOKEN
 
 [cluster]
 seeds     = ["node-2:7779", "node-3:7779"]
@@ -17,23 +19,50 @@ max_nodes = 100
 max_memory_mb          = 512
 default_ttl_secs       = 0          # 0 = no TTL
 eviction_policy        = "lfu"
-value_size_limit_bytes = 104857600  # 100 MiB; 0 = unlimited (not recommended –
-                                    # disables per-value size cap; decompression
-                                    # is still capped at 512 MiB as a safety net)
+value_size_limit_bytes = 104857600  # 100 MiB; 0 = unlimited (not recommended)
 max_keys               = 100000     # 0 = unlimited
 
+[compression]
+enabled         = true
+threshold_bytes = 4096              # compress values larger than this (bytes)
+
 [replication]
-write_timeout_ms   = 500
-gossip_interval_ms = 200
-gossip_dead_ms     = 15000
+write_timeout_ms           = 500
+gossip_interval_ms         = 200
+gossip_dead_ms             = 15000
+version_check_interval_ms  = 30000
+read_repair_on_miss_enabled = false
+read_repair_min_interval_ms = 5000
+anti_entropy_enabled = false
+anti_entropy_interval_ms = 60000
+anti_entropy_lag_threshold = 32
+anti_entropy_key_sample_size = 64
+anti_entropy_full_reconcile_every = 10
+anti_entropy_full_reconcile_max_keys = 2000
+mixed_version_probe_enabled = true
+mixed_version_probe_interval_ms = 30000
+
+[tls]
+enabled = false
+ca_cert = "/etc/ditto/certs/ca.pem"    # overridden by DITTO_TLS_CA_CERT
+cert    = "/etc/ditto/certs/node.pem"  # overridden by DITTO_TLS_CERT
+key     = "/etc/ditto/certs/node.key"  # overridden by DITTO_TLS_KEY
+
+# Optional: HTTP Basic Auth on REST port 7778.
+# Generate hash with: dittoctl hash-password
+[http_auth]
+username = "ditto" # overridden by DITTO_HTTP_AUTH_USER
+# password_hash = "$2b$12$..." # default is unset; overridden by DITTO_HTTP_AUTH_PASSWORD_HASH
 
 [backup]
-enabled     = false
-schedule    = "0 2 * * *"   # daily at 02:00 UTC  (cron: min hour dom month dow)
-path        = "./backups"
-format      = "binary"       # binary | json
-retain_days = 30
-restore_on_start = false     # load newest local snapshot on startup before recovery
+enabled          = false
+schedule         = "0 2 * * *"  # daily at 02:00 UTC (cron: min hour dom month dow)
+path             = "./backups"
+format           = "binary"      # binary | json
+retain_days      = 30
+restore_on_start = false         # load newest local snapshot on startup before recovery
+# encryption_key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+# default is unset; overridden by DITTO_BACKUP_ENCRYPTION_KEY
 
 [persistence]
 platform_allowed = false
@@ -59,8 +88,7 @@ half_open_max_requests = 5
 
 [log]
 enabled     = false
-path        = "./logs"       # directory for rolling log files (created if absent)
-rotation    = "daily"        # hourly | daily | never
-retain_days = 30             # delete files older than N days (0 = keep forever)
-level       = "info"         # trace | debug | info | warn | error
-                             # overridden by RUST_LOG env var when set
+path        = "./logs" # directory for rolling log files (created if absent)
+rotation    = "daily"  # hourly | daily | never
+retain_days = 30       # delete files older than N days (0 = keep forever)
+level       = "info"   # trace | debug | info | warn | error; overridden by RUST_LOG

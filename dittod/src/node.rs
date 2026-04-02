@@ -29,6 +29,7 @@ use uuid::Uuid;
 /// DITTO-02: watch event payload broadcast to all TCP connections.
 /// `value = None` means the key was deleted.
 pub type WatchEventPayload = (String, Option<Bytes>, u64);
+const PROTOCOL_VERSION: u16 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CircuitState {
@@ -132,6 +133,22 @@ pub struct NodeHandle {
     get_flights: AsyncMutex<HashMap<String, Arc<GetFlight>>>,
     hot_key_coalesced_hits_total: AtomicU64,
     hot_key_fallback_exec_total: AtomicU64,
+    read_repair_trigger_total: AtomicU64,
+    read_repair_success_total: AtomicU64,
+    read_repair_throttled_total: AtomicU64,
+    last_read_repair_trigger_ms: AtomicU64,
+    anti_entropy_runs_total: AtomicU64,
+    anti_entropy_repair_trigger_total: AtomicU64,
+    anti_entropy_last_detected_lag: AtomicU64,
+    anti_entropy_key_checks_total: AtomicU64,
+    anti_entropy_key_mismatch_total: AtomicU64,
+    anti_entropy_full_reconcile_runs_total: AtomicU64,
+    anti_entropy_full_reconcile_key_checks_total: AtomicU64,
+    anti_entropy_full_reconcile_mismatch_total: AtomicU64,
+    mixed_version_probe_runs_total: AtomicU64,
+    mixed_version_peers_detected_total: AtomicU64,
+    mixed_version_probe_errors_total: AtomicU64,
+    mixed_version_last_detected_peer_count: AtomicU64,
     snapshot_last_load_path: Mutex<Option<String>>,
     snapshot_last_load_duration_ms: AtomicU64,
     snapshot_last_load_entries: AtomicU64,
@@ -191,6 +208,22 @@ impl NodeHandle {
             get_flights: AsyncMutex::new(HashMap::new()),
             hot_key_coalesced_hits_total: AtomicU64::new(0),
             hot_key_fallback_exec_total: AtomicU64::new(0),
+            read_repair_trigger_total: AtomicU64::new(0),
+            read_repair_success_total: AtomicU64::new(0),
+            read_repair_throttled_total: AtomicU64::new(0),
+            last_read_repair_trigger_ms: AtomicU64::new(0),
+            anti_entropy_runs_total: AtomicU64::new(0),
+            anti_entropy_repair_trigger_total: AtomicU64::new(0),
+            anti_entropy_last_detected_lag: AtomicU64::new(0),
+            anti_entropy_key_checks_total: AtomicU64::new(0),
+            anti_entropy_key_mismatch_total: AtomicU64::new(0),
+            anti_entropy_full_reconcile_runs_total: AtomicU64::new(0),
+            anti_entropy_full_reconcile_key_checks_total: AtomicU64::new(0),
+            anti_entropy_full_reconcile_mismatch_total: AtomicU64::new(0),
+            mixed_version_probe_runs_total: AtomicU64::new(0),
+            mixed_version_peers_detected_total: AtomicU64::new(0),
+            mixed_version_probe_errors_total: AtomicU64::new(0),
+            mixed_version_last_detected_peer_count: AtomicU64::new(0),
             snapshot_last_load_path: Mutex::new(None),
             snapshot_last_load_duration_ms: AtomicU64::new(0),
             snapshot_last_load_entries: AtomicU64::new(0),
@@ -432,11 +465,69 @@ impl NodeHandle {
         }
     }
 
+    async fn maybe_read_repair_on_miss(self: &Arc<Self>, key: String) -> Option<ClientResponse> {
+        let (enabled, min_interval_ms) = {
+            let cfg = self.config.lock().unwrap();
+            (
+                cfg.replication.read_repair_on_miss_enabled,
+                cfg.replication.read_repair_min_interval_ms.max(1),
+            )
+        };
+        if !enabled {
+            return None;
+        }
+
+        let (status, am_primary) = {
+            let set = self.active_set.lock().await;
+            (set.local_status(), set.is_primary())
+        };
+        if status != NodeStatus::Active || am_primary {
+            return None;
+        }
+
+        let now_ms = Self::now_millis();
+        let last_ms = self.last_read_repair_trigger_ms.load(Ordering::Relaxed);
+        if now_ms < last_ms.saturating_add(min_interval_ms) {
+            self.read_repair_throttled_total
+                .fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        self.last_read_repair_trigger_ms
+            .store(now_ms, Ordering::Relaxed);
+        self.read_repair_trigger_total
+            .fetch_add(1, Ordering::Relaxed);
+
+        match self
+            .forward_request_to_primary(ClientRequest::Get { key: key.clone() })
+            .await
+        {
+            v @ ClientResponse::Value { .. } => {
+                self.read_repair_success_total
+                    .fetch_add(1, Ordering::Relaxed);
+                tracing::warn!(
+                    "Read-repair: key '{}' found on primary but missing locally; scheduling resync",
+                    sanitize_for_log(&key),
+                );
+                tokio::spawn(Arc::clone(self).run_resync());
+                Some(v)
+            }
+            ClientResponse::NotFound => Some(ClientResponse::NotFound),
+            other => {
+                tracing::warn!(
+                    "Read-repair: primary query for '{}' returned non-repairable response: {:?}",
+                    sanitize_for_log(&key),
+                    other
+                );
+                None
+            }
+        }
+    }
+
     /// Dispatch a client request to the appropriate handler.
     ///
     /// Returns `NodeInactive` immediately when the node is in maintenance mode.
     /// Reads are served locally; writes are coordinated or forwarded to the primary.
-    pub async fn handle_client(&self, req: ClientRequest) -> ClientResponse {
+    pub async fn handle_client(self: &Arc<Self>, req: ClientRequest) -> ClientResponse {
         if !self.active.load(Ordering::Relaxed) {
             return ClientResponse::Error {
                 code: ErrorCode::NodeInactive,
@@ -462,7 +553,14 @@ impl NodeHandle {
                 message: "Authentication is already complete or invalid in this context".into(),
             },
 
-            ClientRequest::Get { key } => self.handle_get_with_single_flight(key).await,
+            ClientRequest::Get { key } => {
+                let local = self.handle_get_with_single_flight(key.clone()).await;
+                if matches!(local, ClientResponse::NotFound) {
+                    self.maybe_read_repair_on_miss(key).await.unwrap_or(local)
+                } else {
+                    local
+                }
+            }
 
             ClientRequest::Set {
                 key,
@@ -626,12 +724,7 @@ impl NodeHandle {
         }
     }
 
-    async fn forward_to_primary(
-        &self,
-        key: String,
-        value: Option<Bytes>,
-        ttl_secs: Option<u64>,
-    ) -> ClientResponse {
+    async fn forward_request_to_primary(&self, request: ClientRequest) -> ClientResponse {
         let (primary_id, primary_addr) = {
             let set = self.active_set.lock().await;
             let primary_id = match set.primary_id() {
@@ -661,18 +754,8 @@ impl NodeHandle {
             }
         };
 
-        let req = if let Some(v) = value {
-            ClientRequest::Set {
-                key,
-                value: v,
-                ttl_secs,
-            }
-        } else {
-            ClientRequest::Delete { key }
-        };
-
         let forward = ClusterMessage::Forward {
-            request: req,
+            request,
             origin_node: self.id,
         };
 
@@ -709,6 +792,24 @@ impl NodeHandle {
         }
 
         resp
+    }
+
+    async fn forward_to_primary(
+        &self,
+        key: String,
+        value: Option<Bytes>,
+        ttl_secs: Option<u64>,
+    ) -> ClientResponse {
+        let req = if let Some(v) = value {
+            ClientRequest::Set {
+                key,
+                value: v,
+                ttl_secs,
+            }
+        } else {
+            ClientRequest::Delete { key }
+        };
+        self.forward_request_to_primary(req).await
     }
 
     fn apply_locally(
@@ -904,6 +1005,7 @@ impl NodeHandle {
         vec![
             // --- read-only ---
             ("id".into(), cfg.node.id.clone()),
+            ("protocol-version".into(), PROTOCOL_VERSION.to_string()),
             ("committed-index".into(), stats.committed_index.to_string()),
             ("uptime".into(), format!("{}s", stats.uptime_secs)),
             // --- read-write ---
@@ -969,6 +1071,112 @@ impl NodeHandle {
             (
                 "version-check-interval".into(),
                 format!("{}ms", cfg.replication.version_check_interval_ms),
+            ),
+            (
+                "anti-entropy-enabled".into(),
+                cfg.replication.anti_entropy_enabled.to_string(),
+            ),
+            (
+                "anti-entropy-interval-ms".into(),
+                cfg.replication.anti_entropy_interval_ms.to_string(),
+            ),
+            (
+                "anti-entropy-lag-threshold".into(),
+                cfg.replication.anti_entropy_lag_threshold.to_string(),
+            ),
+            (
+                "anti-entropy-key-sample-size".into(),
+                cfg.replication.anti_entropy_key_sample_size.to_string(),
+            ),
+            (
+                "anti-entropy-full-reconcile-every".into(),
+                cfg.replication
+                    .anti_entropy_full_reconcile_every
+                    .to_string(),
+            ),
+            (
+                "anti-entropy-full-reconcile-max-keys".into(),
+                cfg.replication
+                    .anti_entropy_full_reconcile_max_keys
+                    .to_string(),
+            ),
+            (
+                "anti-entropy-runs-total".into(),
+                stats.anti_entropy_runs_total.to_string(),
+            ),
+            (
+                "anti-entropy-repair-trigger-total".into(),
+                stats.anti_entropy_repair_trigger_total.to_string(),
+            ),
+            (
+                "anti-entropy-last-detected-lag".into(),
+                stats.anti_entropy_last_detected_lag.to_string(),
+            ),
+            (
+                "anti-entropy-key-checks-total".into(),
+                stats.anti_entropy_key_checks_total.to_string(),
+            ),
+            (
+                "anti-entropy-key-mismatch-total".into(),
+                stats.anti_entropy_key_mismatch_total.to_string(),
+            ),
+            (
+                "anti-entropy-full-reconcile-runs-total".into(),
+                stats.anti_entropy_full_reconcile_runs_total.to_string(),
+            ),
+            (
+                "anti-entropy-full-reconcile-key-checks-total".into(),
+                stats
+                    .anti_entropy_full_reconcile_key_checks_total
+                    .to_string(),
+            ),
+            (
+                "anti-entropy-full-reconcile-mismatch-total".into(),
+                stats.anti_entropy_full_reconcile_mismatch_total.to_string(),
+            ),
+            (
+                "mixed-version-probe-enabled".into(),
+                cfg.replication.mixed_version_probe_enabled.to_string(),
+            ),
+            (
+                "mixed-version-probe-interval-ms".into(),
+                cfg.replication.mixed_version_probe_interval_ms.to_string(),
+            ),
+            (
+                "mixed-version-probe-runs-total".into(),
+                stats.mixed_version_probe_runs_total.to_string(),
+            ),
+            (
+                "mixed-version-peers-detected-total".into(),
+                stats.mixed_version_peers_detected_total.to_string(),
+            ),
+            (
+                "mixed-version-probe-errors-total".into(),
+                stats.mixed_version_probe_errors_total.to_string(),
+            ),
+            (
+                "mixed-version-last-detected-peer-count".into(),
+                stats.mixed_version_last_detected_peer_count.to_string(),
+            ),
+            (
+                "read-repair-on-miss-enabled".into(),
+                cfg.replication.read_repair_on_miss_enabled.to_string(),
+            ),
+            (
+                "read-repair-min-interval-ms".into(),
+                cfg.replication.read_repair_min_interval_ms.to_string(),
+            ),
+            (
+                "read-repair-trigger-total".into(),
+                stats.read_repair_trigger_total.to_string(),
+            ),
+            (
+                "read-repair-success-total".into(),
+                stats.read_repair_success_total.to_string(),
+            ),
+            (
+                "read-repair-throttled-total".into(),
+                stats.read_repair_throttled_total.to_string(),
             ),
             (
                 "persistence-platform-allowed".into(),
@@ -1412,8 +1620,96 @@ impl NodeHandle {
                             Err(_) => tracing::warn!("SetProperty version-check-interval: invalid value '{}'", value),
                         }
                     }
+                    "read-repair-on-miss-enabled" => {
+                        let val = value.trim().eq_ignore_ascii_case("true");
+                        self.config.lock().unwrap().replication.read_repair_on_miss_enabled = val;
+                        tracing::info!("read-repair-on-miss-enabled -> {}", val);
+                    }
+                    "read-repair-min-interval-ms" => {
+                        match value.trim().parse::<u64>() {
+                            Ok(ms) if ms > 0 => {
+                                self.config.lock().unwrap().replication.read_repair_min_interval_ms = ms;
+                                tracing::info!("read-repair-min-interval-ms -> {}", ms);
+                            }
+                            _ => tracing::warn!(
+                                "SetProperty read-repair-min-interval-ms: invalid value '{}'",
+                                value
+                            ),
+                        }
+                    }
 
                     // ── persistence runtime gate ───────────────────────────────
+                    "anti-entropy-enabled" => {
+                        let val = value.trim().eq_ignore_ascii_case("true");
+                        self.config.lock().unwrap().replication.anti_entropy_enabled = val;
+                        tracing::info!("anti-entropy-enabled -> {}", val);
+                    }
+                    "anti-entropy-interval-ms" => match value.trim().parse::<u64>() {
+                        Ok(ms) if ms > 0 => {
+                            self.config.lock().unwrap().replication.anti_entropy_interval_ms = ms;
+                            tracing::info!("anti-entropy-interval-ms -> {}", ms);
+                        }
+                        _ => tracing::warn!(
+                            "SetProperty anti-entropy-interval-ms: invalid value '{}'",
+                            value
+                        ),
+                    },
+                    "anti-entropy-lag-threshold" => match value.trim().parse::<u64>() {
+                        Ok(v) if v > 0 => {
+                            self.config.lock().unwrap().replication.anti_entropy_lag_threshold = v;
+                            tracing::info!("anti-entropy-lag-threshold -> {}", v);
+                        }
+                        _ => tracing::warn!(
+                            "SetProperty anti-entropy-lag-threshold: invalid value '{}'",
+                            value
+                        ),
+                    },
+                    "anti-entropy-key-sample-size" => match value.trim().parse::<usize>() {
+                        Ok(v) => {
+                            self.config.lock().unwrap().replication.anti_entropy_key_sample_size = v;
+                            tracing::info!("anti-entropy-key-sample-size -> {}", v);
+                        }
+                        _ => tracing::warn!(
+                            "SetProperty anti-entropy-key-sample-size: invalid value '{}'",
+                            value
+                        ),
+                    },
+                    "anti-entropy-full-reconcile-every" => match value.trim().parse::<u64>() {
+                        Ok(v) => {
+                            self.config.lock().unwrap().replication.anti_entropy_full_reconcile_every = v;
+                            tracing::info!("anti-entropy-full-reconcile-every -> {}", v);
+                        }
+                        _ => tracing::warn!(
+                            "SetProperty anti-entropy-full-reconcile-every: invalid value '{}'",
+                            value
+                        ),
+                    },
+                    "anti-entropy-full-reconcile-max-keys" => match value.trim().parse::<usize>()
+                    {
+                        Ok(v) => {
+                            self.config.lock().unwrap().replication.anti_entropy_full_reconcile_max_keys = v;
+                            tracing::info!("anti-entropy-full-reconcile-max-keys -> {}", v);
+                        }
+                        _ => tracing::warn!(
+                            "SetProperty anti-entropy-full-reconcile-max-keys: invalid value '{}'",
+                            value
+                        ),
+                    },
+                    "mixed-version-probe-enabled" => {
+                        let val = value.trim().eq_ignore_ascii_case("true");
+                        self.config.lock().unwrap().replication.mixed_version_probe_enabled = val;
+                        tracing::info!("mixed-version-probe-enabled -> {}", val);
+                    }
+                    "mixed-version-probe-interval-ms" => match value.trim().parse::<u64>() {
+                        Ok(ms) if ms > 0 => {
+                            self.config.lock().unwrap().replication.mixed_version_probe_interval_ms = ms;
+                            tracing::info!("mixed-version-probe-interval-ms -> {}", ms);
+                        }
+                        _ => tracing::warn!(
+                            "SetProperty mixed-version-probe-interval-ms: invalid value '{}'",
+                            value
+                        ),
+                    },
                     "persistence-runtime-enabled" | "persistence-enabled" => {
                         let val = value.trim().eq_ignore_ascii_case("true");
                         self.config.lock().unwrap().persistence.runtime_enabled = val;
@@ -1868,6 +2164,344 @@ impl NodeHandle {
         });
     }
 
+    async fn admin_request_to_addr(
+        &self,
+        addr: SocketAddr,
+        req: AdminRequest,
+    ) -> Option<AdminResponse> {
+        let msg = ClusterMessage::Admin(req);
+        match send_cluster(addr, &msg, self.tls_connector.as_ref()).await {
+            Ok(Some(ClusterMessage::AdminResponse(resp))) => Some(resp),
+            _ => None,
+        }
+    }
+
+    fn should_run_full_reconcile(run_no: u64, every: u64) -> bool {
+        every > 0 && run_no > 0 && run_no.is_multiple_of(every)
+    }
+
+    fn classify_mixed_version_response(resp: Option<AdminResponse>) -> (bool, bool) {
+        match resp {
+            Some(AdminResponse::Properties(entries)) => {
+                let expected = PROTOCOL_VERSION.to_string();
+                let peer_version = entries
+                    .into_iter()
+                    .find(|(k, _)| k == "protocol-version")
+                    .map(|(_, v)| v);
+                match peer_version {
+                    Some(v) if v.trim() == expected => (false, false),
+                    Some(_) => (true, false),
+                    None => (true, false),
+                }
+            }
+            _ => (false, true),
+        }
+    }
+
+    async fn anti_entropy_full_reconcile_once(
+        &self,
+        primary_addr: SocketAddr,
+        max_keys: usize,
+    ) -> Option<(u64, u64)> {
+        let primary_keys = match self
+            .admin_request_to_addr(primary_addr, AdminRequest::ListKeys { pattern: None })
+            .await
+        {
+            Some(AdminResponse::Keys(mut keys)) => {
+                keys.sort_unstable();
+                keys
+            }
+            _ => return None,
+        };
+        let mut local_keys = self.store.keys(None);
+        local_keys.sort_unstable();
+
+        let mut i = 0usize;
+        let mut j = 0usize;
+        let mut checked = 0u64;
+        let mut mismatches = 0u64;
+
+        while i < local_keys.len() || j < primary_keys.len() {
+            if max_keys > 0 && checked >= max_keys as u64 {
+                break;
+            }
+
+            match (local_keys.get(i), primary_keys.get(j)) {
+                (Some(lk), Some(pk)) if lk == pk => {
+                    checked = checked.saturating_add(1);
+                    let local_version = self.store.get(lk).map(|e| e.version);
+                    let primary_version = match self
+                        .admin_request_to_addr(
+                            primary_addr,
+                            AdminRequest::GetKeyInfo { key: lk.clone() },
+                        )
+                        .await
+                    {
+                        Some(AdminResponse::KeyInfo { version, .. }) => Some(version),
+                        Some(AdminResponse::NotFound) => None,
+                        _ => None,
+                    };
+                    if local_version != primary_version {
+                        mismatches = mismatches.saturating_add(1);
+                    }
+                    i += 1;
+                    j += 1;
+                }
+                (Some(lk), Some(pk)) => {
+                    checked = checked.saturating_add(1);
+                    if lk < pk {
+                        mismatches = mismatches.saturating_add(1);
+                        i += 1;
+                    } else {
+                        mismatches = mismatches.saturating_add(1);
+                        j += 1;
+                    }
+                }
+                (Some(_), None) => {
+                    checked = checked.saturating_add(1);
+                    mismatches = mismatches.saturating_add(1);
+                    i += 1;
+                }
+                (None, Some(_)) => {
+                    checked = checked.saturating_add(1);
+                    mismatches = mismatches.saturating_add(1);
+                    j += 1;
+                }
+                (None, None) => break,
+            }
+        }
+
+        Some((checked, mismatches))
+    }
+
+    /// Spawn a periodic anti-entropy task.
+    ///
+    /// 1) lag-threshold check against primary index
+    /// 2) optional key/version sample reconciliation against primary
+    /// 3) optional bounded full keyspace reconciliation against primary
+    pub fn start_anti_entropy(self: Arc<Self>) {
+        tokio::spawn(async move {
+            loop {
+                let (
+                    enabled,
+                    interval_ms,
+                    lag_threshold,
+                    key_sample_size,
+                    full_reconcile_every,
+                    full_reconcile_max_keys,
+                ) = {
+                    let cfg = self.config.lock().unwrap();
+                    (
+                        cfg.replication.anti_entropy_enabled,
+                        cfg.replication.anti_entropy_interval_ms.max(1),
+                        cfg.replication.anti_entropy_lag_threshold.max(1),
+                        cfg.replication.anti_entropy_key_sample_size,
+                        cfg.replication.anti_entropy_full_reconcile_every,
+                        cfg.replication.anti_entropy_full_reconcile_max_keys,
+                    )
+                };
+
+                if !enabled {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    continue;
+                }
+
+                tokio::time::sleep(Duration::from_millis(interval_ms)).await;
+                let run_no = self
+                    .anti_entropy_runs_total
+                    .fetch_add(1, Ordering::Relaxed)
+                    .saturating_add(1);
+
+                // Only check when Active and not the primary.
+                let (status, am_primary, our_index, primary_index, primary_addr) = {
+                    let set = self.active_set.lock().await;
+                    let status = set.local_status();
+                    let am_primary = set.is_primary();
+                    let our_index = set
+                        .all_nodes()
+                        .iter()
+                        .find(|n| n.id == set.local_id())
+                        .map(|n| n.last_applied)
+                        .unwrap_or(0);
+                    let primary = {
+                        let all = set.all_nodes();
+                        set.primary_id()
+                            .and_then(|pid| all.into_iter().find(|n| n.id == pid))
+                            .map(|n| (n.last_applied, SocketAddr::new(n.addr.ip(), n.cluster_port)))
+                    };
+                    let (primary_index, primary_addr) =
+                        primary.unwrap_or((0, "0.0.0.0:0".parse().unwrap()));
+                    (status, am_primary, our_index, primary_index, primary_addr)
+                };
+
+                if status != NodeStatus::Active || am_primary || primary_addr.port() == 0 {
+                    continue;
+                }
+
+                let lag = primary_index.saturating_sub(our_index);
+                self.anti_entropy_last_detected_lag
+                    .store(lag, Ordering::Relaxed);
+                if lag >= lag_threshold {
+                    self.anti_entropy_repair_trigger_total
+                        .fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(
+                        "Anti-entropy: lag={} (threshold={}) detected; triggering resync.",
+                        lag,
+                        lag_threshold
+                    );
+                    Arc::clone(&self).run_resync().await;
+                    continue;
+                }
+
+                if Self::should_run_full_reconcile(run_no, full_reconcile_every) {
+                    self.anti_entropy_full_reconcile_runs_total
+                        .fetch_add(1, Ordering::Relaxed);
+                    if let Some((checked, mismatches)) = self
+                        .anti_entropy_full_reconcile_once(primary_addr, full_reconcile_max_keys)
+                        .await
+                    {
+                        self.anti_entropy_full_reconcile_key_checks_total
+                            .fetch_add(checked, Ordering::Relaxed);
+                        if mismatches > 0 {
+                            self.anti_entropy_full_reconcile_mismatch_total
+                                .fetch_add(mismatches, Ordering::Relaxed);
+                            self.anti_entropy_repair_trigger_total
+                                .fetch_add(1, Ordering::Relaxed);
+                            tracing::warn!(
+                                "Anti-entropy: full reconcile found {} mismatches (checked={}, run_no={}); triggering resync.",
+                                mismatches,
+                                checked,
+                                run_no
+                            );
+                            Arc::clone(&self).run_resync().await;
+                            continue;
+                        }
+                    }
+                }
+
+                if key_sample_size == 0 {
+                    continue;
+                }
+
+                let keys = match self
+                    .admin_request_to_addr(primary_addr, AdminRequest::ListKeys { pattern: None })
+                    .await
+                {
+                    Some(AdminResponse::Keys(keys)) => keys,
+                    _ => continue,
+                };
+
+                let mut checked = 0u64;
+                let mut mismatches = 0u64;
+                for key in keys.into_iter().take(key_sample_size) {
+                    checked = checked.saturating_add(1);
+                    let local_version = self.store.get(&key).map(|e| e.version);
+                    let primary_version = match self
+                        .admin_request_to_addr(
+                            primary_addr,
+                            AdminRequest::GetKeyInfo { key: key.clone() },
+                        )
+                        .await
+                    {
+                        Some(AdminResponse::KeyInfo { version, .. }) => Some(version),
+                        Some(AdminResponse::NotFound) => None,
+                        _ => continue,
+                    };
+                    if local_version != primary_version {
+                        mismatches = mismatches.saturating_add(1);
+                    }
+                }
+
+                self.anti_entropy_key_checks_total
+                    .fetch_add(checked, Ordering::Relaxed);
+                if mismatches > 0 {
+                    self.anti_entropy_key_mismatch_total
+                        .fetch_add(mismatches, Ordering::Relaxed);
+                    self.anti_entropy_repair_trigger_total
+                        .fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(
+                        "Anti-entropy: detected {} key-version mismatches in sample (checked={}); triggering resync.",
+                        mismatches,
+                        checked
+                    );
+                    Arc::clone(&self).run_resync().await;
+                }
+            }
+        });
+    }
+
+    /// Periodic rolling-upgrade compatibility probe.
+    ///
+    /// Queries peer nodes for `protocol-version` via admin RPC and tracks mixed
+    /// version observations without affecting write/read paths.
+    pub fn start_mixed_version_probe(self: Arc<Self>) {
+        tokio::spawn(async move {
+            loop {
+                let (enabled, interval_ms) = {
+                    let cfg = self.config.lock().unwrap();
+                    (
+                        cfg.replication.mixed_version_probe_enabled,
+                        cfg.replication.mixed_version_probe_interval_ms.max(1),
+                    )
+                };
+
+                if !enabled {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    continue;
+                }
+
+                tokio::time::sleep(Duration::from_millis(interval_ms)).await;
+                self.mixed_version_probe_runs_total
+                    .fetch_add(1, Ordering::Relaxed);
+
+                let peers: Vec<SocketAddr> = {
+                    let set = self.active_set.lock().await;
+                    set.all_nodes()
+                        .into_iter()
+                        .filter(|n| n.id != set.local_id())
+                        .map(|n| SocketAddr::new(n.addr.ip(), n.cluster_port))
+                        .collect()
+                };
+
+                let mut detected = 0u64;
+                let mut errors = 0u64;
+                for addr in peers {
+                    let resp = self
+                        .admin_request_to_addr(
+                            addr,
+                            AdminRequest::GetProperty {
+                                name: "protocol-version".into(),
+                            },
+                        )
+                        .await;
+                    let (is_mixed, is_error) = Self::classify_mixed_version_response(resp);
+                    if is_mixed {
+                        detected = detected.saturating_add(1);
+                    }
+                    if is_error {
+                        errors = errors.saturating_add(1);
+                    }
+                }
+
+                self.mixed_version_last_detected_peer_count
+                    .store(detected, Ordering::Relaxed);
+                if detected > 0 {
+                    self.mixed_version_peers_detected_total
+                        .fetch_add(detected, Ordering::Relaxed);
+                    tracing::warn!(
+                        "Mixed-version probe: detected {} peer(s) not matching protocol-version={}.",
+                        detected,
+                        PROTOCOL_VERSION
+                    );
+                }
+                if errors > 0 {
+                    self.mixed_version_probe_errors_total
+                        .fetch_add(errors, Ordering::Relaxed);
+                }
+            }
+        });
+    }
+
     /// Collect a point-in-time [`NodeStats`] snapshot.
     ///
     /// Acquires short-lived locks on the store, active-set, write-log, and config.
@@ -1890,6 +2524,7 @@ impl NodeHandle {
         let rate_limit_enabled = cfg.rate_limit.enabled;
         let circuit_breaker_enabled = cfg.circuit_breaker.enabled;
         let hot_key_enabled = cfg.hot_key.enabled;
+        let read_repair_enabled = cfg.replication.read_repair_on_miss_enabled;
         let circuit_breaker_state = if circuit_breaker_enabled {
             self.circuit.lock().unwrap().state.as_str().to_string()
         } else {
@@ -1928,8 +2563,46 @@ impl NodeHandle {
             rate_limited_requests_total: self.rate_limited_requests_total.load(Ordering::Relaxed),
             circuit_breaker_enabled,
             hot_key_enabled,
+            read_repair_enabled,
             hot_key_coalesced_hits_total: self.hot_key_coalesced_hits_total.load(Ordering::Relaxed),
             hot_key_fallback_exec_total: self.hot_key_fallback_exec_total.load(Ordering::Relaxed),
+            read_repair_trigger_total: self.read_repair_trigger_total.load(Ordering::Relaxed),
+            read_repair_success_total: self.read_repair_success_total.load(Ordering::Relaxed),
+            read_repair_throttled_total: self.read_repair_throttled_total.load(Ordering::Relaxed),
+            anti_entropy_runs_total: self.anti_entropy_runs_total.load(Ordering::Relaxed),
+            anti_entropy_repair_trigger_total: self
+                .anti_entropy_repair_trigger_total
+                .load(Ordering::Relaxed),
+            anti_entropy_last_detected_lag: self
+                .anti_entropy_last_detected_lag
+                .load(Ordering::Relaxed),
+            anti_entropy_key_checks_total: self
+                .anti_entropy_key_checks_total
+                .load(Ordering::Relaxed),
+            anti_entropy_key_mismatch_total: self
+                .anti_entropy_key_mismatch_total
+                .load(Ordering::Relaxed),
+            anti_entropy_full_reconcile_runs_total: self
+                .anti_entropy_full_reconcile_runs_total
+                .load(Ordering::Relaxed),
+            anti_entropy_full_reconcile_key_checks_total: self
+                .anti_entropy_full_reconcile_key_checks_total
+                .load(Ordering::Relaxed),
+            anti_entropy_full_reconcile_mismatch_total: self
+                .anti_entropy_full_reconcile_mismatch_total
+                .load(Ordering::Relaxed),
+            mixed_version_probe_runs_total: self
+                .mixed_version_probe_runs_total
+                .load(Ordering::Relaxed),
+            mixed_version_peers_detected_total: self
+                .mixed_version_peers_detected_total
+                .load(Ordering::Relaxed),
+            mixed_version_probe_errors_total: self
+                .mixed_version_probe_errors_total
+                .load(Ordering::Relaxed),
+            mixed_version_last_detected_peer_count: self
+                .mixed_version_last_detected_peer_count
+                .load(Ordering::Relaxed),
             circuit_breaker_state,
             circuit_breaker_open_total: self.circuit_breaker_open_total.load(Ordering::Relaxed),
             circuit_breaker_reject_total: self.circuit_breaker_reject_total.load(Ordering::Relaxed),
@@ -1954,7 +2627,7 @@ fn dir_size_bytes(path: &str) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{GetFlight, NodeHandle, TokenBucket};
+    use super::{GetFlight, NodeHandle, TokenBucket, PROTOCOL_VERSION};
     use crate::config::Config;
     use crate::store::kv_store::ExportEntry;
     use crate::store::KvStore;
@@ -2040,6 +2713,53 @@ mod tests {
         assert!(import);
     }
 
+    #[test]
+    fn anti_entropy_full_reconcile_schedule_helper() {
+        assert!(!NodeHandle::should_run_full_reconcile(0, 10));
+        assert!(!NodeHandle::should_run_full_reconcile(9, 10));
+        assert!(NodeHandle::should_run_full_reconcile(10, 10));
+        assert!(NodeHandle::should_run_full_reconcile(20, 10));
+        assert!(!NodeHandle::should_run_full_reconcile(20, 0));
+    }
+
+    #[test]
+    fn mixed_version_response_classifier() {
+        let ok = Some(AdminResponse::Properties(vec![(
+            "protocol-version".into(),
+            PROTOCOL_VERSION.to_string(),
+        )]));
+        assert_eq!(
+            NodeHandle::classify_mixed_version_response(ok),
+            (false, false)
+        );
+
+        let mismatch = Some(AdminResponse::Properties(vec![(
+            "protocol-version".into(),
+            (PROTOCOL_VERSION + 1).to_string(),
+        )]));
+        assert_eq!(
+            NodeHandle::classify_mixed_version_response(mismatch),
+            (true, false)
+        );
+
+        let missing = Some(AdminResponse::Properties(vec![(
+            "other".into(),
+            "x".into(),
+        )]));
+        assert_eq!(
+            NodeHandle::classify_mixed_version_response(missing),
+            (true, false)
+        );
+
+        let error = Some(AdminResponse::Error {
+            message: "boom".into(),
+        });
+        assert_eq!(
+            NodeHandle::classify_mixed_version_response(error),
+            (false, true)
+        );
+    }
+
     #[tokio::test]
     async fn restore_snapshot_is_blocked_when_import_gate_is_disabled() {
         let backup_dir = temp_backup_dir("restore-gate");
@@ -2082,7 +2802,8 @@ mod tests {
             },
         )];
         let data = bincode::serialize(&snapshot_entries).expect("serialize snapshot");
-        let file = std::path::Path::new(&backup_dir).join("test-node_backup_2099.01.01_00-00-00_UTC.bin");
+        let file =
+            std::path::Path::new(&backup_dir).join("test-node_backup_2099.01.01_00-00-00_UTC.bin");
         std::fs::write(&file, data).expect("write snapshot file");
 
         let resp = Arc::clone(&node)

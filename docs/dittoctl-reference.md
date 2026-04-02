@@ -97,6 +97,16 @@ dittoctl node set rate-limit-requests-per-sec <target> <number>
 dittoctl node set rate-limit-burst <target> <number>
 dittoctl node set hot-key-enabled <target> <true|false>
 dittoctl node set hot-key-max-waiters <target> <number>
+dittoctl node set read-repair-on-miss-enabled <target> <true|false>
+dittoctl node set read-repair-min-interval-ms <target> <number>
+dittoctl node set anti-entropy-enabled <target> <true|false>
+dittoctl node set anti-entropy-interval-ms <target> <number>
+dittoctl node set anti-entropy-lag-threshold <target> <number>
+dittoctl node set anti-entropy-key-sample-size <target> <number>
+dittoctl node set anti-entropy-full-reconcile-every <target> <number>
+dittoctl node set anti-entropy-full-reconcile-max-keys <target> <number>
+dittoctl node set mixed-version-probe-enabled <target> <true|false>
+dittoctl node set mixed-version-probe-interval-ms <target> <number>
 dittoctl node set circuit-breaker-enabled <target> <true|false>
 dittoctl node set circuit-breaker-failure-threshold <target> <number>
 dittoctl node set circuit-breaker-open-ms <target> <number>
@@ -133,7 +143,7 @@ dittoctl node status <target>
 
 `target` can be `local`, `all`, or a specific node address/name expected by mgmt.
 Status output includes persistence policy flags (`persistence_platform_allowed`, `persistence_runtime_enabled`, `persistence_enabled`, and per-feature states).
-Status output also includes resilience-runtime fields (`rate_limit_enabled`, `rate_limited_requests_total`, `hot_key_enabled`, `hot_key_coalesced_hits_total`, `hot_key_fallback_exec_total`, `circuit_breaker_enabled`, `circuit_breaker_state`, `circuit_breaker_open_total`, `circuit_breaker_reject_total`) and snapshot restore metadata (`snapshot_last_load_path`, `snapshot_last_load_duration_ms`, `snapshot_last_load_entries`).
+Status output also includes resilience-runtime fields (`rate_limit_enabled`, `rate_limited_requests_total`, `hot_key_enabled`, `hot_key_coalesced_hits_total`, `hot_key_fallback_exec_total`, `read_repair_enabled`, `read_repair_trigger_total`, `read_repair_success_total`, `read_repair_throttled_total`, `anti_entropy_runs_total`, `anti_entropy_repair_trigger_total`, `anti_entropy_last_detected_lag`, `anti_entropy_key_checks_total`, `anti_entropy_key_mismatch_total`, `circuit_breaker_enabled`, `circuit_breaker_state`, `circuit_breaker_open_total`, `circuit_breaker_reject_total`) and snapshot restore metadata (`snapshot_last_load_path`, `snapshot_last_load_duration_ms`, `snapshot_last_load_entries`).
 
 ## Cache commands
 

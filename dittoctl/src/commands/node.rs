@@ -355,6 +355,150 @@ pub async fn run(cmd: NodeCommand, cfg: &mut CtlConfig, client: &reqwest::Client
                 );
                 println!(
                     "  {:<22} {}",
+                    "read-repair",
+                    node["read_repair_enabled"]
+                        .as_bool()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "read-repair-triggered",
+                    node["read_repair_trigger_total"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "read-repair-success",
+                    node["read_repair_success_total"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "read-repair-throttled",
+                    node["read_repair_throttled_total"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "anti-entropy-runs",
+                    node["anti_entropy_runs_total"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "anti-entropy-repair",
+                    node["anti_entropy_repair_trigger_total"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "anti-entropy-last-lag",
+                    node["anti_entropy_last_detected_lag"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "anti-entropy-key-checks",
+                    node["anti_entropy_key_checks_total"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "anti-entropy-mismatch",
+                    node["anti_entropy_key_mismatch_total"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "anti-entropy-full-runs",
+                    node["anti_entropy_full_reconcile_runs_total"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "anti-entropy-full-checks",
+                    node["anti_entropy_full_reconcile_key_checks_total"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "anti-entropy-full-miss",
+                    node["anti_entropy_full_reconcile_mismatch_total"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "mixed-version-runs",
+                    node["mixed_version_probe_runs_total"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "mixed-version-peers",
+                    node["mixed_version_peers_detected_total"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "mixed-version-errors",
+                    node["mixed_version_probe_errors_total"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "mixed-version-last",
+                    node["mixed_version_last_detected_peer_count"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
                     "circuit-breaker",
                     node["circuit_breaker_enabled"]
                         .as_bool()

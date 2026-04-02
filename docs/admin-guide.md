@@ -139,6 +139,10 @@ Platform gates are disabled by default, so backup/export/import stay blocked unt
 `node status` also includes rate-limit and circuit-breaker runtime fields (`rate_limit_enabled`, `rate_limited_requests_total`, `circuit_breaker_state`, and related counters).
 `node describe` includes replication tuning properties (`write-timeout-ms`, `gossip-interval-ms`, `gossip-dead-ms`) and `frame-read-timeout-ms`.
 `node status` now also includes hot-key coalescing fields (`hot_key_enabled`, `hot_key_coalesced_hits_total`, `hot_key_fallback_exec_total`).
+`node status` includes read-repair counters (`read_repair_enabled`, `read_repair_trigger_total`, `read_repair_success_total`, `read_repair_throttled_total`).
+`node status` includes anti-entropy counters (`anti_entropy_runs_total`, `anti_entropy_repair_trigger_total`, `anti_entropy_last_detected_lag`, `anti_entropy_key_checks_total`, `anti_entropy_key_mismatch_total`).
+`node status` includes full anti-entropy reconcile counters (`anti_entropy_full_reconcile_runs_total`, `anti_entropy_full_reconcile_key_checks_total`, `anti_entropy_full_reconcile_mismatch_total`).
+`node status` includes mixed-version probe counters (`mixed_version_probe_runs_total`, `mixed_version_peers_detected_total`, `mixed_version_probe_errors_total`, `mixed_version_last_detected_peer_count`).
 `node status` includes snapshot restore metadata (`snapshot_last_load_path`, `snapshot_last_load_duration_ms`, `snapshot_last_load_entries`).
 
 Recommended gossip baseline:
@@ -153,6 +157,16 @@ dittoctl node set rate-limit-requests-per-sec local 1500
 dittoctl node set rate-limit-burst local 3000
 dittoctl node set hot-key-enabled local true
 dittoctl node set hot-key-max-waiters local 128
+dittoctl node set read-repair-on-miss-enabled local true
+dittoctl node set read-repair-min-interval-ms local 5000
+dittoctl node set anti-entropy-enabled local true
+dittoctl node set anti-entropy-interval-ms local 60000
+dittoctl node set anti-entropy-lag-threshold local 32
+dittoctl node set anti-entropy-key-sample-size local 64
+dittoctl node set anti-entropy-full-reconcile-every local 10
+dittoctl node set anti-entropy-full-reconcile-max-keys local 2000
+dittoctl node set mixed-version-probe-enabled local true
+dittoctl node set mixed-version-probe-interval-ms local 30000
 dittoctl node set circuit-breaker-enabled local true
 dittoctl node set circuit-breaker-failure-threshold local 25
 dittoctl node set circuit-breaker-open-ms local 5000

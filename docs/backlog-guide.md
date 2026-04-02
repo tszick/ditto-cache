@@ -28,12 +28,12 @@ This document tracks the next major development themes for the distributed cache
 4. Read-repair + anti-entropy
 - What: periodic drift detection and automatic key/version reconciliation.
 - Why: keeps replicas aligned after transient failures.
-- Status: planned.
+- Status: delivered (Sprint 3).
 
 5. Rolling-upgrade compatibility mode
 - What: protocol/version negotiation for mixed-version clusters.
 - Why: lower-risk, near-zero-downtime upgrades.
-- Status: planned.
+- Status: delivered (Sprint 3 hooks).
 
 6. Snapshot + fast restart
 - What: startup warm state from snapshot, then catch-up deltas.
@@ -138,6 +138,33 @@ Sprint 2 progress update (2026-04-02):
   - S2.5 benchmark playbook and load profile for idle-then-burst + cold-vs-restore restart comparison.
 - In progress:
   - S2.5 final benchmark execution and result capture (latency/error baseline vs restore run).
+
+Sprint 3 kickoff update (2026-04-02):
+
+- Implemented:
+  - Read-repair on miss MVP (default OFF):
+    - Non-primary local GET miss can query primary and, on hit, trigger async `run_resync`.
+    - Runtime controls: `read-repair-on-miss-enabled`, `read-repair-min-interval-ms`.
+    - Env overrides: `DITTO_READ_REPAIR_ON_MISS_ENABLED`, `DITTO_READ_REPAIR_MIN_INTERVAL_MS`.
+    - Observability counters in status: trigger/success/throttled totals.
+- Next:
+  - Anti-entropy periodic reconciliation strategy (lag-threshold + key-version sample mismatch trigger done; next step is full shard/keyspace reconciliation).
+  - Rolling-upgrade protocol compatibility negotiation.
+
+Sprint 3 completion update (2026-04-02):
+
+- Completed:
+  - Read-repair on miss runtime controls + counters fully integrated in stats/mgmt/CLI.
+  - Anti-entropy background reconciliation extended with:
+    - lag-threshold repair trigger,
+    - key-version sample mismatch trigger,
+    - bounded full keyspace reconcile (`anti_entropy_full_reconcile_every`, `anti_entropy_full_reconcile_max_keys`) with counters.
+  - Rolling-upgrade compatibility hooks:
+    - node `protocol-version` property exposure,
+    - periodic mixed-version probe against peers with runtime controls and counters.
+  - Validation coverage:
+    - unit tests for mixed-version response classification and full-reconcile scheduling helper,
+    - workspace test suite passes with new stats fields and controls.
 
 ### Sprint 3 (consistency + upgrades)
 

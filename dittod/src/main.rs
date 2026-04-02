@@ -70,6 +70,11 @@ async fn main() -> Result<()> {
     if let Ok(v) = std::env::var("DITTO_ACTIVE") {
         config.node.active = v.trim().eq_ignore_ascii_case("true");
     }
+    if let Ok(v) = std::env::var("DITTO_CLIENT_AUTH_TOKEN") {
+        if !v.is_empty() {
+            config.node.client_auth_token = Some(v);
+        }
+    }
     if let Ok(v) = std::env::var("DITTO_SEEDS") {
         config.cluster.seeds = v
             .split(',')
@@ -97,6 +102,70 @@ async fn main() -> Result<()> {
     if let Ok(v) = std::env::var("DITTO_GOSSIP_DEAD_MS") {
         if let Ok(ms) = v.parse::<u64>() {
             config.replication.gossip_dead_ms = ms;
+        }
+    }
+    if let Some(v) = parse_bool_env("DITTO_READ_REPAIR_ON_MISS_ENABLED")
+        .or_else(|| parse_bool_env("READ_REPAIR_ON_MISS_ENABLED"))
+    {
+        config.replication.read_repair_on_miss_enabled = v;
+    }
+    if let Ok(v) = std::env::var("DITTO_READ_REPAIR_MIN_INTERVAL_MS")
+        .or_else(|_| std::env::var("READ_REPAIR_MIN_INTERVAL_MS"))
+    {
+        if let Ok(ms) = v.parse::<u64>() {
+            config.replication.read_repair_min_interval_ms = ms.max(1);
+        }
+    }
+    if let Some(v) = parse_bool_env("DITTO_ANTI_ENTROPY_ENABLED")
+        .or_else(|| parse_bool_env("ANTI_ENTROPY_ENABLED"))
+    {
+        config.replication.anti_entropy_enabled = v;
+    }
+    if let Ok(v) = std::env::var("DITTO_ANTI_ENTROPY_INTERVAL_MS")
+        .or_else(|_| std::env::var("ANTI_ENTROPY_INTERVAL_MS"))
+    {
+        if let Ok(ms) = v.parse::<u64>() {
+            config.replication.anti_entropy_interval_ms = ms.max(1);
+        }
+    }
+    if let Ok(v) = std::env::var("DITTO_ANTI_ENTROPY_LAG_THRESHOLD")
+        .or_else(|_| std::env::var("ANTI_ENTROPY_LAG_THRESHOLD"))
+    {
+        if let Ok(n) = v.parse::<u64>() {
+            config.replication.anti_entropy_lag_threshold = n.max(1);
+        }
+    }
+    if let Ok(v) = std::env::var("DITTO_ANTI_ENTROPY_KEY_SAMPLE_SIZE")
+        .or_else(|_| std::env::var("ANTI_ENTROPY_KEY_SAMPLE_SIZE"))
+    {
+        if let Ok(n) = v.parse::<usize>() {
+            config.replication.anti_entropy_key_sample_size = n;
+        }
+    }
+    if let Ok(v) = std::env::var("DITTO_ANTI_ENTROPY_FULL_RECONCILE_EVERY")
+        .or_else(|_| std::env::var("ANTI_ENTROPY_FULL_RECONCILE_EVERY"))
+    {
+        if let Ok(n) = v.parse::<u64>() {
+            config.replication.anti_entropy_full_reconcile_every = n;
+        }
+    }
+    if let Ok(v) = std::env::var("DITTO_ANTI_ENTROPY_FULL_RECONCILE_MAX_KEYS")
+        .or_else(|_| std::env::var("ANTI_ENTROPY_FULL_RECONCILE_MAX_KEYS"))
+    {
+        if let Ok(n) = v.parse::<usize>() {
+            config.replication.anti_entropy_full_reconcile_max_keys = n;
+        }
+    }
+    if let Some(v) = parse_bool_env("DITTO_MIXED_VERSION_PROBE_ENABLED")
+        .or_else(|| parse_bool_env("MIXED_VERSION_PROBE_ENABLED"))
+    {
+        config.replication.mixed_version_probe_enabled = v;
+    }
+    if let Ok(v) = std::env::var("DITTO_MIXED_VERSION_PROBE_INTERVAL_MS")
+        .or_else(|_| std::env::var("MIXED_VERSION_PROBE_INTERVAL_MS"))
+    {
+        if let Ok(ms) = v.parse::<u64>() {
+            config.replication.mixed_version_probe_interval_ms = ms.max(1);
         }
     }
     if let Ok(v) = std::env::var("DITTO_HTTP_AUTH_USER") {
@@ -363,6 +432,12 @@ async fn main() -> Result<()> {
     // Background version check: periodically compare our log index against the
     // primary and trigger a resync if we are lagging behind.
     node.clone().start_version_check();
+    // Background anti-entropy reconciliation (optional): lag-threshold based
+    // periodic repair trigger.
+    node.clone().start_anti_entropy();
+    // Rolling-upgrade compatibility probe (non-intrusive): periodically checks
+    // peer protocol-version property and reports mixed-version clusters.
+    node.clone().start_mixed_version_probe();
 
     // Start servers concurrently.
     // Client-facing ports use bind_addr; cluster/gossip ports use cluster_bind_addr.

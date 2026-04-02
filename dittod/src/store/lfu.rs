@@ -87,10 +87,6 @@ impl LfuTracker {
         Some(candidate)
     }
 
-    pub fn len(&self) -> usize {
-        self.freq.len()
-    }
-
     pub fn is_empty(&self) -> bool {
         self.freq.is_empty()
     }

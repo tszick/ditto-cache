@@ -109,6 +109,9 @@ Auth/TLS:
 - Writes are coordinated by the current primary.
 - Every active node applies committed entries; reads are served locally.
 - Nodes falling behind can move to syncing mode and catch up.
+- Optional read-repair-on-miss mode can query primary on local GET miss and trigger async resync.
+- Optional anti-entropy loop can periodically trigger resync on lag threshold, sampled key-version mismatch, and bounded full keyspace reconcile mismatch.
+- Optional mixed-version probe checks peer `protocol-version` and surfaces compatibility risk via node stats counters.
 
 ## Security model summary
 

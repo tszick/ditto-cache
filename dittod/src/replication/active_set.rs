@@ -13,8 +13,6 @@ use uuid::Uuid;
 /// but can be overridden by a `ForcePrimary` admin command.
 pub struct ActiveSet {
     local_id: Uuid,
-    local_addr: SocketAddr,
-    cluster_port: u16,
     nodes: HashMap<Uuid, NodeState>,
     dead_after: Duration,
     max_nodes: usize,
@@ -38,8 +36,6 @@ impl ActiveSet {
     ) -> Self {
         let mut set = Self {
             local_id,
-            local_addr,
-            cluster_port,
             nodes: HashMap::new(),
             dead_after: Duration::from_millis(dead_after_ms),
             max_nodes,
@@ -171,14 +167,6 @@ impl ActiveSet {
             .get(&self.local_id)
             .map(|s| s.info.status.clone())
             .unwrap_or(NodeStatus::Offline)
-    }
-
-    pub fn node_count(&self) -> usize {
-        self.nodes.len()
-    }
-
-    pub fn max_nodes_reached(&self) -> bool {
-        self.nodes.len() >= self.max_nodes
     }
 
     /// The minimum `last_applied` index across all active nodes.

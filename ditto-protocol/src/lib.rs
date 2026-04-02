@@ -367,10 +367,42 @@ pub struct NodeStats {
     pub circuit_breaker_enabled: bool,
     /// Hot-key GET coalescing enabled.
     pub hot_key_enabled: bool,
+    /// Read-repair on local miss enabled.
+    pub read_repair_enabled: bool,
     /// Total GET requests served via in-flight coalescing wait path.
     pub hot_key_coalesced_hits_total: u64,
     /// Total GET requests that bypassed coalescing (waiter cap / fallback).
     pub hot_key_fallback_exec_total: u64,
+    /// Total read-repair attempts triggered on local misses.
+    pub read_repair_trigger_total: u64,
+    /// Total read-repair attempts where primary had the value.
+    pub read_repair_success_total: u64,
+    /// Total read-repair attempts skipped due to min-interval throttling.
+    pub read_repair_throttled_total: u64,
+    /// Total anti-entropy loop iterations.
+    pub anti_entropy_runs_total: u64,
+    /// Total anti-entropy triggered repair attempts.
+    pub anti_entropy_repair_trigger_total: u64,
+    /// Last lag value detected by anti-entropy (in log entries).
+    pub anti_entropy_last_detected_lag: u64,
+    /// Total key-version comparisons performed by anti-entropy sampling.
+    pub anti_entropy_key_checks_total: u64,
+    /// Total sampled key-version mismatches detected by anti-entropy.
+    pub anti_entropy_key_mismatch_total: u64,
+    /// Total bounded full keyspace reconcile runs.
+    pub anti_entropy_full_reconcile_runs_total: u64,
+    /// Total key comparisons performed by full keyspace reconcile.
+    pub anti_entropy_full_reconcile_key_checks_total: u64,
+    /// Total mismatches detected by full keyspace reconcile.
+    pub anti_entropy_full_reconcile_mismatch_total: u64,
+    /// Total mixed-version probe loop iterations.
+    pub mixed_version_probe_runs_total: u64,
+    /// Cumulative count of peers detected with a mismatching protocol version.
+    pub mixed_version_peers_detected_total: u64,
+    /// Total mixed-version probe errors (RPC/property failures).
+    pub mixed_version_probe_errors_total: u64,
+    /// Last observed number of mismatching peers.
+    pub mixed_version_last_detected_peer_count: u64,
     /// Current circuit breaker state: "closed" | "open" | "half-open".
     pub circuit_breaker_state: String,
     /// Number of times the circuit transitioned to open.

@@ -345,6 +345,38 @@ pub struct ReplicationConfig {
     /// against the primary's. 0 = disabled. Default: 30 000 ms.
     #[serde(default = "default_version_check_interval_ms")]
     pub version_check_interval_ms: u64,
+    /// Enable read-repair on local GET misses:
+    /// if a non-primary misses a key locally, it queries the primary once and
+    /// triggers an async resync when the primary has the value.
+    #[serde(default)]
+    pub read_repair_on_miss_enabled: bool,
+    /// Minimum spacing between read-repair triggers on this node (ms).
+    #[serde(default = "default_read_repair_min_interval_ms")]
+    pub read_repair_min_interval_ms: u64,
+    /// Enable periodic anti-entropy reconciliation.
+    #[serde(default)]
+    pub anti_entropy_enabled: bool,
+    /// Interval of anti-entropy checks in milliseconds.
+    #[serde(default = "default_anti_entropy_interval_ms")]
+    pub anti_entropy_interval_ms: u64,
+    /// Minimum lag (entries) before anti-entropy triggers a repair action.
+    #[serde(default = "default_anti_entropy_lag_threshold")]
+    pub anti_entropy_lag_threshold: u64,
+    /// Max number of keys sampled from primary each anti-entropy run (0 = disabled key sampling).
+    #[serde(default = "default_anti_entropy_key_sample_size")]
+    pub anti_entropy_key_sample_size: usize,
+    /// Run full keyspace reconciliation every N anti-entropy runs (0 = disabled).
+    #[serde(default = "default_anti_entropy_full_reconcile_every")]
+    pub anti_entropy_full_reconcile_every: u64,
+    /// Max keys inspected during one full keyspace reconcile run (0 = unlimited).
+    #[serde(default = "default_anti_entropy_full_reconcile_max_keys")]
+    pub anti_entropy_full_reconcile_max_keys: usize,
+    /// Enable periodic mixed-version probe against peers.
+    #[serde(default = "default_true")]
+    pub mixed_version_probe_enabled: bool,
+    /// Interval of mixed-version probe in milliseconds.
+    #[serde(default = "default_mixed_version_probe_interval_ms")]
+    pub mixed_version_probe_interval_ms: u64,
 }
 
 fn default_cluster_bind_addr() -> String {
@@ -354,6 +386,27 @@ fn default_max_nodes() -> usize {
     100
 }
 fn default_version_check_interval_ms() -> u64 {
+    30_000
+}
+fn default_read_repair_min_interval_ms() -> u64 {
+    5_000
+}
+fn default_anti_entropy_interval_ms() -> u64 {
+    60_000
+}
+fn default_anti_entropy_lag_threshold() -> u64 {
+    32
+}
+fn default_anti_entropy_key_sample_size() -> usize {
+    64
+}
+fn default_anti_entropy_full_reconcile_every() -> u64 {
+    10
+}
+fn default_anti_entropy_full_reconcile_max_keys() -> usize {
+    2000
+}
+fn default_mixed_version_probe_interval_ms() -> u64 {
     30_000
 }
 fn default_eviction_policy() -> String {
@@ -472,6 +525,17 @@ impl Default for Config {
                 gossip_interval_ms: 200,
                 gossip_dead_ms: default_gossip_dead_ms(),
                 version_check_interval_ms: 30_000,
+                read_repair_on_miss_enabled: false,
+                read_repair_min_interval_ms: default_read_repair_min_interval_ms(),
+                anti_entropy_enabled: false,
+                anti_entropy_interval_ms: default_anti_entropy_interval_ms(),
+                anti_entropy_lag_threshold: default_anti_entropy_lag_threshold(),
+                anti_entropy_key_sample_size: default_anti_entropy_key_sample_size(),
+                anti_entropy_full_reconcile_every: default_anti_entropy_full_reconcile_every(),
+                anti_entropy_full_reconcile_max_keys: default_anti_entropy_full_reconcile_max_keys(
+                ),
+                mixed_version_probe_enabled: true,
+                mixed_version_probe_interval_ms: default_mixed_version_probe_interval_ms(),
             },
             compression: CompressionConfig::default(),
             tls: TlsConfig::default(),

@@ -170,11 +170,11 @@ curl -X POST http://localhost:7778/keys/batch \
 
 ```bash
 # Generate TLS certificates (first time only)
-bash docker/gen-certs.sh   # Linux/macOS
-# Windows: & "C:\Program Files\Git\usr\bin\bash.exe" docker/gen-certs.sh
+bash ../ditto-docker/gen-certs.sh   # Linux/macOS
+# Windows: & "C:\Program Files\Git\usr\bin\bash.exe" ../ditto-docker/gen-certs.sh
 
 # Start all four containers (3 nodes + mgmt)
-docker compose -f docker/docker-compose.yml up --build
+docker compose -f ../ditto-docker/docker-compose.yml up --build
 
 # Web dashboard (mgmt uses HTTPS when tls_cert/tls_key are set)
 open https://localhost:7781   # self-signed cert — accept in browser
@@ -183,7 +183,7 @@ open https://localhost:7781   # self-signed cert — accept in browser
 ./target/release/dittoctl cluster list nodes
 ```
 
-See [docs/docker-setup.md](docs/docker-setup.md) for the full guide.
+Docker deployment files are in the sibling project: `../ditto-docker/`.
 
 ---
 
@@ -220,6 +220,17 @@ threshold_bytes = 4096
 write_timeout_ms   = 500
 gossip_interval_ms = 200
 gossip_dead_ms     = 15000
+version_check_interval_ms = 30000
+read_repair_on_miss_enabled = false
+read_repair_min_interval_ms = 5000
+anti_entropy_enabled = false
+anti_entropy_interval_ms = 60000
+anti_entropy_lag_threshold = 32
+anti_entropy_key_sample_size = 64
+anti_entropy_full_reconcile_every = 10
+anti_entropy_full_reconcile_max_keys = 2000
+mixed_version_probe_enabled = true
+mixed_version_probe_interval_ms = 30000
 
 [tls]
 enabled = false
@@ -240,9 +251,20 @@ key     = "/etc/ditto/certs/node.key"
 |----------|-------------|
 | `DITTO_NODE_ID` | `node.id` |
 | `DITTO_ACTIVE` | `node.active` |
+| `DITTO_CLIENT_AUTH_TOKEN` | `node.client_auth_token` |
 | `DITTO_SEEDS` | `cluster.seeds` (comma-separated) |
 | `DITTO_MAX_MEMORY_MB` | `cache.max_memory_mb` |
 | `DITTO_GOSSIP_DEAD_MS` | `replication.gossip_dead_ms` |
+| `DITTO_READ_REPAIR_ON_MISS_ENABLED` | `replication.read_repair_on_miss_enabled` |
+| `DITTO_READ_REPAIR_MIN_INTERVAL_MS` | `replication.read_repair_min_interval_ms` |
+| `DITTO_ANTI_ENTROPY_ENABLED` | `replication.anti_entropy_enabled` |
+| `DITTO_ANTI_ENTROPY_INTERVAL_MS` | `replication.anti_entropy_interval_ms` |
+| `DITTO_ANTI_ENTROPY_LAG_THRESHOLD` | `replication.anti_entropy_lag_threshold` |
+| `DITTO_ANTI_ENTROPY_KEY_SAMPLE_SIZE` | `replication.anti_entropy_key_sample_size` |
+| `DITTO_ANTI_ENTROPY_FULL_RECONCILE_EVERY` | `replication.anti_entropy_full_reconcile_every` |
+| `DITTO_ANTI_ENTROPY_FULL_RECONCILE_MAX_KEYS` | `replication.anti_entropy_full_reconcile_max_keys` |
+| `DITTO_MIXED_VERSION_PROBE_ENABLED` | `replication.mixed_version_probe_enabled` |
+| `DITTO_MIXED_VERSION_PROBE_INTERVAL_MS` | `replication.mixed_version_probe_interval_ms` |
 | `DITTO_TLS_ENABLED` | `tls.enabled` |
 | `DITTO_TLS_CA_CERT` | `tls.ca_cert` |
 | `DITTO_TLS_CERT` | `tls.cert` |
@@ -359,14 +381,20 @@ Full reference: [docs/admin-guide.md](docs/admin-guide.md)
 cargo test --workspace
 
 # Quick smoke test (requires Docker cluster)
-docker compose -f docker/docker-compose.yml up -d --build
+docker compose -f ../ditto-docker/docker-compose.yml up -d --build
 sleep 15
 # Nodes serve HTTPS when TLS is enabled; use --cacert or -k for self-signed certs.
-# HTTP Basic Auth is enabled in the default docker-compose.yml — add -u ditto:password.
+# HTTP Basic Auth is enabled in the default compose — add -u ditto:password.
 # /ping is always auth-free (health check exempt).
 curl -sfk -u ditto:qwe123asd -X PUT https://localhost:7778/key/test -d "hello"
 curl -sfk -u ditto:qwe123asd https://localhost:7788/key/test    # same value from node-2
 curl -sfk -u ditto:qwe123asd https://localhost:7798/key/test    # same value from node-3
+
+# Windows note:
+# If host curl fails with schannel (SEC_E_NO_CREDENTIALS), run smoke curl inside containers:
+docker exec ditto-node-1 sh -lc "curl -sfk -u ditto:qwe123asd -X PUT https://localhost:7778/key/test -d 'hello'"
+docker exec ditto-node-2 sh -lc "curl -sfk -u ditto:qwe123asd https://localhost:7778/key/test"
+docker exec ditto-node-3 sh -lc "curl -sfk -u ditto:qwe123asd https://localhost:7778/key/test"
 
 # Fault tolerance test
 docker stop ditto-node-3
@@ -383,7 +411,6 @@ docker start ditto-node-3             # auto-syncs when restarted
 |----------|-------------|
 | [docs/admin-guide.md](docs/admin-guide.md) | Full `dittoctl` reference + web dashboard guide |
 | [docs/architecture.md](docs/architecture.md) | Architecture, protocols, write/read flows, deployment sizing |
-| [docs/docker-setup.md](docs/docker-setup.md) | Docker test environment setup and operations |
 | [docs/dittoctl-reference.md](docs/dittoctl-reference.md) | Supplementary CLI reference |
 | [docs/backlog-guide.md](docs/backlog-guide.md) | Product backlog + multi-sprint roadmap |
 
@@ -413,7 +440,7 @@ openssl rand -hex 32
 
 ```bash
 # Generate test certificates (includes localhost SAN for the mgmt cert)
-bash docker/gen-certs.sh
+bash ../ditto-docker/gen-certs.sh
 ```
 
 See [docs/architecture.md#security](docs/architecture.md#security) for details.
