@@ -9,6 +9,7 @@
 //! | POST | `/api/nodes/:target/property/:name` | Update a property |
 //! | POST | `/api/nodes/:target/set-active` | Activate / deactivate a node |
 //! | POST | `/api/nodes/:target/backup` | Trigger immediate backup |
+//! | POST | `/api/nodes/:target/restore-snapshot` | Restore latest snapshot |
 
 use crate::api::SharedState;
 use crate::node_client::{admin_rpc, resolve_target};
@@ -40,6 +41,9 @@ pub struct NodeInfo {
     pub memory_max_bytes: Option<u64>,
     pub uptime_secs: Option<u64>,
     pub backup_dir_bytes: Option<u64>,
+    pub snapshot_last_load_path: Option<String>,
+    pub snapshot_last_load_duration_ms: Option<u64>,
+    pub snapshot_last_load_entries: Option<u64>,
     pub persistence_enabled: Option<bool>,
     pub persistence_backup_enabled: Option<bool>,
     pub persistence_export_enabled: Option<bool>,
@@ -78,6 +82,9 @@ fn build_node_info(
             memory_max_bytes: Some(s.memory_max_bytes),
             uptime_secs: Some(s.uptime_secs),
             backup_dir_bytes: Some(s.backup_dir_bytes),
+            snapshot_last_load_path: s.snapshot_last_load_path,
+            snapshot_last_load_duration_ms: Some(s.snapshot_last_load_duration_ms),
+            snapshot_last_load_entries: Some(s.snapshot_last_load_entries),
             persistence_enabled: Some(s.persistence_enabled),
             persistence_backup_enabled: Some(s.persistence_backup_enabled),
             persistence_export_enabled: Some(s.persistence_export_enabled),
@@ -109,6 +116,9 @@ fn build_node_info(
             memory_max_bytes: None,
             uptime_secs: None,
             backup_dir_bytes: None,
+            snapshot_last_load_path: None,
+            snapshot_last_load_duration_ms: None,
+            snapshot_last_load_entries: None,
             persistence_enabled: None,
             persistence_backup_enabled: None,
             persistence_export_enabled: None,
@@ -421,6 +431,67 @@ pub async fn backup_node(
                 results.push(serde_json::json!({ "addr": addr.to_string(), "ok": false, "error": e.to_string() })),
             _ =>
                 results.push(serde_json::json!({ "addr": addr.to_string(), "ok": false, "error": "unexpected response" })),
+        }
+    }
+    Json(results)
+}
+
+/// `POST /api/nodes/:target/restore-snapshot` — Restore latest local snapshot on a node.
+pub async fn restore_snapshot(
+    State(state): State<SharedState>,
+    Path(target): Path<String>,
+) -> impl IntoResponse {
+    let addrs = if target == "all" {
+        state.cluster_addrs().await
+    } else {
+        resolve_target(
+            &target,
+            state.cfg.connection.cluster_port,
+            &state.cfg.connection.seeds,
+        )
+        .await
+    };
+
+    let mut results = Vec::new();
+    for addr in addrs {
+        match admin_rpc(
+            addr,
+            AdminRequest::RestoreLatestSnapshot,
+            state.tls.as_ref(),
+        )
+        .await
+        {
+            Ok(AdminResponse::RestoreResult {
+                path,
+                entries,
+                duration_ms,
+            }) => results.push(serde_json::json!({
+                "addr": addr.to_string(),
+                "ok": true,
+                "path": path,
+                "entries": entries,
+                "duration_ms": duration_ms
+            })),
+            Ok(AdminResponse::NotFound) => results.push(serde_json::json!({
+                "addr": addr.to_string(),
+                "ok": false,
+                "error": "no snapshot found"
+            })),
+            Ok(AdminResponse::Error { message }) => results.push(serde_json::json!({
+                "addr": addr.to_string(),
+                "ok": false,
+                "error": message
+            })),
+            Err(e) => results.push(serde_json::json!({
+                "addr": addr.to_string(),
+                "ok": false,
+                "error": e.to_string()
+            })),
+            _ => results.push(serde_json::json!({
+                "addr": addr.to_string(),
+                "ok": false,
+                "error": "unexpected response"
+            })),
         }
     }
     Json(results)

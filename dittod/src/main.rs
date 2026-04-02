@@ -108,6 +108,11 @@ async fn main() -> Result<()> {
     if let Ok(v) = std::env::var("DITTO_BACKUP_ENCRYPTION_KEY") {
         config.backup.encryption_key = Some(v);
     }
+    if let Some(v) = parse_bool_env("DITTO_SNAPSHOT_RESTORE_ON_START")
+        .or_else(|| parse_bool_env("SNAPSHOT_RESTORE_ON_START"))
+    {
+        config.backup.restore_on_start = v;
+    }
     if let Some(v) = parse_bool_env("DITTO_PERSISTENCE_PLATFORM_ALLOWED")
         .or_else(|| parse_bool_env("PERSISTENCE_PLATFORM_ALLOWED"))
     {
@@ -282,6 +287,31 @@ async fn main() -> Result<()> {
         tls_connector,
         resolved_cluster_bind.clone(),
     );
+
+    if config.backup.restore_on_start {
+        match backup::restore_latest_snapshot(&*node, &config.backup) {
+            Ok(Some(loaded)) => {
+                node.record_snapshot_restore(
+                    loaded.path.clone(),
+                    loaded.entries as u64,
+                    loaded.duration_ms,
+                );
+                info!(
+                    "Startup snapshot restore completed: path={} entries={} duration_ms={}",
+                    loaded.path, loaded.entries, loaded.duration_ms
+                );
+            }
+            Ok(None) => {
+                info!("Startup snapshot restore enabled, but no snapshot file found.");
+            }
+            Err(e) => {
+                warn!(
+                    "Startup snapshot restore failed: {} (continuing without restore)",
+                    e
+                );
+            }
+        }
+    }
 
     // Gossip engine
     let gossip_addr: SocketAddr =

@@ -25,6 +25,8 @@ pub enum NodeCommand {
     },
     /// Trigger an immediate backup on a node.
     Backup { target: String },
+    /// Restore the latest local snapshot on a node.
+    RestoreSnapshot { target: String },
     /// Show node health status (id, memory, heartbeat, uptime, backup storage).
     Status { target: String },
 }
@@ -178,6 +180,30 @@ pub async fn run(cmd: NodeCommand, cfg: &mut CtlConfig, client: &reqwest::Client
             }
         }
 
+        NodeCommand::RestoreSnapshot { target } => {
+            let url = format!("{}/api/nodes/{}/restore-snapshot", base, enc(&target));
+            let data = mgmt_post(client, &url, serde_json::json!({})).await?;
+            let results = data.as_array().cloned().unwrap_or_default();
+            for r in results {
+                let addr = r["addr"].as_str().unwrap_or("?");
+                if r["ok"].as_bool().unwrap_or(false) {
+                    println!(
+                        "  {} <- snapshot restored: {} (entries={}, {}ms)",
+                        addr,
+                        r["path"].as_str().unwrap_or("?"),
+                        r["entries"].as_u64().unwrap_or(0),
+                        r["duration_ms"].as_u64().unwrap_or(0)
+                    );
+                } else {
+                    eprintln!(
+                        "  Error from {}: {}",
+                        addr,
+                        r["error"].as_str().unwrap_or("unknown")
+                    );
+                }
+            }
+        }
+
         NodeCommand::Status { target } => {
             let url = format!("{}/api/nodes/{}/status", base, enc(&target));
             let data = mgmt_get(client, &url).await?;
@@ -222,6 +248,29 @@ pub async fn run(cmd: NodeCommand, cfg: &mut CtlConfig, client: &reqwest::Client
                     "  {:<22} {} bytes",
                     "backup-storage",
                     node["backup_dir_bytes"].as_u64().unwrap_or(0)
+                );
+                println!(
+                    "  {:<22} {}",
+                    "snapshot-load-path",
+                    node["snapshot_last_load_path"].as_str().unwrap_or("-")
+                );
+                println!(
+                    "  {:<22} {}ms",
+                    "snapshot-load-ms",
+                    node["snapshot_last_load_duration_ms"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("0")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "snapshot-load-entries",
+                    node["snapshot_last_load_entries"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("0")
                 );
                 println!(
                     "  {:<22} {}",

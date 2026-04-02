@@ -132,6 +132,9 @@ pub struct NodeHandle {
     get_flights: AsyncMutex<HashMap<String, Arc<GetFlight>>>,
     hot_key_coalesced_hits_total: AtomicU64,
     hot_key_fallback_exec_total: AtomicU64,
+    snapshot_last_load_path: Mutex<Option<String>>,
+    snapshot_last_load_duration_ms: AtomicU64,
+    snapshot_last_load_entries: AtomicU64,
 }
 
 impl NodeHandle {
@@ -188,7 +191,18 @@ impl NodeHandle {
             get_flights: AsyncMutex::new(HashMap::new()),
             hot_key_coalesced_hits_total: AtomicU64::new(0),
             hot_key_fallback_exec_total: AtomicU64::new(0),
+            snapshot_last_load_path: Mutex::new(None),
+            snapshot_last_load_duration_ms: AtomicU64::new(0),
+            snapshot_last_load_entries: AtomicU64::new(0),
         })
+    }
+
+    pub fn record_snapshot_restore(&self, path: String, entries: u64, duration_ms: u64) {
+        *self.snapshot_last_load_path.lock().unwrap() = Some(path);
+        self.snapshot_last_load_entries
+            .store(entries, Ordering::Relaxed);
+        self.snapshot_last_load_duration_ms
+            .store(duration_ms, Ordering::Relaxed);
     }
 
     // -----------------------------------------------------------------------
@@ -993,6 +1007,22 @@ impl NodeHandle {
                 stats.persistence_import_enabled.to_string(),
             ),
             (
+                "snapshot-restore-on-start".into(),
+                cfg.backup.restore_on_start.to_string(),
+            ),
+            (
+                "snapshot-last-load-path".into(),
+                stats.snapshot_last_load_path.clone().unwrap_or_default(),
+            ),
+            (
+                "snapshot-last-load-duration-ms".into(),
+                stats.snapshot_last_load_duration_ms.to_string(),
+            ),
+            (
+                "snapshot-last-load-entries".into(),
+                stats.snapshot_last_load_entries.to_string(),
+            ),
+            (
                 "rate-limit-enabled".into(),
                 stats.rate_limit_enabled.to_string(),
             ),
@@ -1157,6 +1187,36 @@ impl NodeHandle {
                             bytes: 0, // actual size logged server-side
                         }
                     }
+                    Err(e) => AdminResponse::Error {
+                        message: e.to_string(),
+                    },
+                }
+            }
+            AdminRequest::RestoreLatestSnapshot => {
+                let (import_enabled, cfg) = {
+                    let cfg_guard = self.config.lock().unwrap();
+                    let (_, _, _, _, _, import_enabled) = Self::persistence_states(&cfg_guard);
+                    (import_enabled, cfg_guard.backup.clone())
+                };
+                if !import_enabled {
+                    return AdminResponse::Error {
+                        message: "Restore is disabled by persistence policy. Require DITTO_PERSISTENCE_PLATFORM_ALLOWED=true, DITTO_PERSISTENCE_IMPORT_ALLOWED=true and runtime property persistence-runtime-enabled=true.".into(),
+                    };
+                }
+                match crate::backup::restore_latest_snapshot(&*self, &cfg) {
+                    Ok(Some(loaded)) => {
+                        self.record_snapshot_restore(
+                            loaded.path.clone(),
+                            loaded.entries as u64,
+                            loaded.duration_ms,
+                        );
+                        AdminResponse::RestoreResult {
+                            path: loaded.path,
+                            entries: loaded.entries as u64,
+                            duration_ms: loaded.duration_ms,
+                        }
+                    }
+                    Ok(None) => AdminResponse::NotFound,
                     Err(e) => AdminResponse::Error {
                         message: e.to_string(),
                     },
@@ -1818,6 +1878,7 @@ impl NodeHandle {
         let log = self.write_log.lock().await;
         let cfg = self.config.lock().unwrap();
         let backup_dir_bytes = dir_size_bytes(&cfg.backup.path);
+        let snapshot_last_load_path = self.snapshot_last_load_path.lock().unwrap().clone();
         let (
             persistence_platform_allowed,
             persistence_runtime_enabled,
@@ -1852,6 +1913,11 @@ impl NodeHandle {
             compression_threshold_bytes: s.compression_threshold_bytes,
             node_name: cfg.node.id.clone(),
             backup_dir_bytes,
+            snapshot_last_load_path,
+            snapshot_last_load_duration_ms: self
+                .snapshot_last_load_duration_ms
+                .load(Ordering::Relaxed),
+            snapshot_last_load_entries: self.snapshot_last_load_entries.load(Ordering::Relaxed),
             persistence_platform_allowed,
             persistence_runtime_enabled,
             persistence_enabled,

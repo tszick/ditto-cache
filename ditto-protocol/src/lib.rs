@@ -267,6 +267,7 @@ pub enum AdminRequest {
     ClusterStatus,
     /// Trigger an immediate backup on this node (inactivate → export → activate).
     BackupNow,
+    RestoreLatestSnapshot,
     /// Set TTL for all keys matching a glob pattern. `ttl_secs = None` removes TTL.
     SetKeysTtl {
         pattern: String,
@@ -297,6 +298,11 @@ pub enum AdminResponse {
     BackupResult {
         path: String,
         bytes: u64,
+    },
+    RestoreResult {
+        path: String,
+        entries: u64,
+        duration_ms: u64,
     },
     /// Response to SetKeysTtl: number of keys whose TTL was updated.
     TtlUpdated {
@@ -335,6 +341,12 @@ pub struct NodeStats {
     /// Total bytes occupied by backup files in the configured backup directory.
     /// Computed at query time; 0 if the directory is empty or does not exist.
     pub backup_dir_bytes: u64,
+    /// Last restored snapshot path (if startup restore has run successfully).
+    pub snapshot_last_load_path: Option<String>,
+    /// Duration of the last snapshot load in milliseconds.
+    pub snapshot_last_load_duration_ms: u64,
+    /// Number of entries restored by the last snapshot load.
+    pub snapshot_last_load_entries: u64,
     /// Platform-level persistence gate (env/config controlled).
     pub persistence_platform_allowed: bool,
     /// Runtime persistence gate (admin controlled).

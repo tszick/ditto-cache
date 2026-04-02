@@ -33,6 +33,7 @@ schedule    = "0 2 * * *"   # daily at 02:00 UTC  (cron: min hour dom month dow)
 path        = "./backups"
 format      = "binary"       # binary | json
 retain_days = 30
+restore_on_start = false     # load newest local snapshot on startup before recovery
 
 [persistence]
 platform_allowed = false

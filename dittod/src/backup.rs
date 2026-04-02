@@ -1,4 +1,4 @@
-use crate::{config::BackupConfig, node::NodeHandle};
+use crate::{config::BackupConfig, node::NodeHandle, store::kv_store::ExportEntry};
 use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
@@ -18,6 +18,12 @@ const MAGIC: &[u8; 4] = b"DENC";
 const VERSION: u8 = 0x01;
 /// AES-256-GCM nonce length (96 bits).
 const NONCE_LEN: usize = 12;
+
+pub struct SnapshotLoadResult {
+    pub path: String,
+    pub entries: usize,
+    pub duration_ms: u64,
+}
 
 /// Run a single backup cycle:
 ///   1. Inactivate the node (if currently Active)
@@ -67,6 +73,76 @@ pub async fn run_backup(node: Arc<NodeHandle>, cfg: &BackupConfig) -> anyhow::Re
     rotate_old_backups(&cfg.path, &node_id, cfg.retain_days);
 
     Ok(path)
+}
+
+/// Load the newest snapshot file for this node from backup path and restore it
+/// into the in-memory store. Returns `Ok(None)` when no snapshot exists.
+pub fn restore_latest_snapshot(
+    node: &NodeHandle,
+    cfg: &BackupConfig,
+) -> anyhow::Result<Option<SnapshotLoadResult>> {
+    let started = std::time::Instant::now();
+    let node_id = node.config.lock().unwrap().node.id.clone();
+    let dir = PathBuf::from(&cfg.path);
+    if !dir.exists() {
+        return Ok(None);
+    }
+
+    let mut newest: Option<(PathBuf, SystemTime)> = None;
+    for entry in fs::read_dir(&dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(v) => v,
+            None => continue,
+        };
+        if !name.starts_with(&format!("{}_backup_", node_id)) {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        match &newest {
+            Some((_, ts)) if *ts >= modified => {}
+            _ => newest = Some((path.clone(), modified)),
+        }
+    }
+
+    let Some((path, _)) = newest else {
+        return Ok(None);
+    };
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| anyhow::anyhow!("snapshot filename is not valid UTF-8"))?
+        .to_string();
+    let data = fs::read(&path)?;
+    let raw = if filename.ends_with(".enc") {
+        let key = cfg.encryption_key.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("encrypted snapshot found but backup.encryption_key is missing")
+        })?;
+        decrypt_data(key, &data)?
+    } else {
+        data
+    };
+
+    let entries: Vec<(String, ExportEntry)> = if filename.contains(".json") {
+        serde_json::from_slice(&raw)?
+    } else {
+        bincode::deserialize(&raw)?
+    };
+    let count = entries.len();
+    node.store.restore(entries);
+
+    Ok(Some(SnapshotLoadResult {
+        path: path.to_string_lossy().into_owned(),
+        entries: count,
+        duration_ms: started.elapsed().as_millis() as u64,
+    }))
 }
 
 async fn write_snapshot(node: &NodeHandle, cfg: &BackupConfig) -> anyhow::Result<String> {

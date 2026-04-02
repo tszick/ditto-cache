@@ -139,6 +139,7 @@ Platform gates are disabled by default, so backup/export/import stay blocked unt
 `node status` also includes rate-limit and circuit-breaker runtime fields (`rate_limit_enabled`, `rate_limited_requests_total`, `circuit_breaker_state`, and related counters).
 `node describe` includes replication tuning properties (`write-timeout-ms`, `gossip-interval-ms`, `gossip-dead-ms`) and `frame-read-timeout-ms`.
 `node status` now also includes hot-key coalescing fields (`hot_key_enabled`, `hot_key_coalesced_hits_total`, `hot_key_fallback_exec_total`).
+`node status` includes snapshot restore metadata (`snapshot_last_load_path`, `snapshot_last_load_duration_ms`, `snapshot_last_load_entries`).
 
 Recommended gossip baseline:
 - Start with `gossip_interval_ms=200` and `gossip_dead_ms=15000`.
@@ -188,11 +189,13 @@ dittoctl cache set-ttl local "session:*"
 
 ```bash
 dittoctl node backup local
+dittoctl node restore-snapshot local
 dittoctl cache flush local
 ```
 
 `cache flush all` requires interactive confirmation.
 `node backup` is rejected when persistence backup is disabled by policy.
+`node restore-snapshot` is rejected when persistence import is disabled by policy.
 
 ## Security checklist
 

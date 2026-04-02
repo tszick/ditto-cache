@@ -248,6 +248,7 @@ key     = "/etc/ditto/certs/node.key"
 | `DITTO_HTTP_AUTH_USER` | `http_auth.username` |
 | `DITTO_HTTP_AUTH_PASSWORD_HASH` | `http_auth.password_hash` |
 | `DITTO_BACKUP_ENCRYPTION_KEY` | `backup.encryption_key` (hex-encoded 32-byte AES-256-GCM key) |
+| `DITTO_SNAPSHOT_RESTORE_ON_START` | `backup.restore_on_start` |
 | `DITTO_PERSISTENCE_PLATFORM_ALLOWED` | global platform gate for persistence features |
 | `DITTO_PERSISTENCE_BACKUP_ALLOWED` | platform gate for backup |
 | `DITTO_PERSISTENCE_EXPORT_ALLOWED` | platform gate for export |

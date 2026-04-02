@@ -170,6 +170,9 @@ pub struct BackupConfig {
     /// Delete backup files older than this many days (0 = never delete).
     #[serde(default = "default_retain_days")]
     pub retain_days: u64,
+    /// Attempt to restore the most recent snapshot file at startup.
+    #[serde(default)]
+    pub restore_on_start: bool,
     /// Hex-encoded 32-byte AES-256-GCM key for backup file encryption.
     /// When set, backup files are encrypted and get an `.enc` suffix.
     /// Generate with: `openssl rand -hex 32`
@@ -186,6 +189,7 @@ impl Default for BackupConfig {
             path: default_backup_path(),
             format: default_backup_format(),
             retain_days: default_retain_days(),
+            restore_on_start: false,
             encryption_key: None,
         }
     }

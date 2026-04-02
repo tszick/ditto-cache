@@ -85,6 +85,10 @@ pub fn build_router(state: SharedState) -> Router {
         )
         .route("/api/nodes/:target/set-active", post(nodes::set_active))
         .route("/api/nodes/:target/backup", post(nodes::backup_node))
+        .route(
+            "/api/nodes/:target/restore-snapshot",
+            post(nodes::restore_snapshot),
+        )
         // Cluster endpoints
         .route("/api/cluster", get(cluster::cluster_status))
         .route("/api/cluster/primary", get(cluster::cluster_primary))
