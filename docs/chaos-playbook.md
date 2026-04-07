@@ -31,6 +31,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\chaos-smoke.ps1 -DryRun
 What it validates:
 
 - restart loop: stop/start `ditto-node-2` while writes continue,
+- timing fault: pause/unpause `ditto-node-3` while writes continue,
 - replication visibility across nodes after restart,
 - optional network partition + reconnect catch-up for `ditto-node-2`.
 
@@ -64,6 +65,19 @@ docker exec ditto-node-3 sh -lc "curl -sfk -u ditto:qwe123asd https://localhost:
 ```
 
 Expected: value is available on node-3 after restart.
+
+## 4) Timing-Fault (Pause/Unpause) Scenario
+
+```bash
+docker pause ditto-node-3
+sleep 6
+docker exec ditto-node-1 sh -lc "curl -sfk -u ditto:qwe123asd -X PUT https://localhost:7778/key/chaos:delay -d 'ok'"
+docker unpause ditto-node-3
+sleep 5
+docker exec ditto-node-3 sh -lc "curl -sfk -u ditto:qwe123asd https://localhost:7778/key/chaos:delay"
+```
+
+Expected: node-3 returns the written value after unpause/catch-up.
 
 ## Failure Signals to Capture
 

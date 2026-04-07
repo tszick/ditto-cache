@@ -397,7 +397,7 @@ cargo test --workspace
 # CI-equivalent chaos script sanity check (no Docker side effects)
 powershell -ExecutionPolicy Bypass -File .\scripts\chaos-smoke.ps1 -DryRun -Iterations 1
 
-# Real chaos smoke (restart + partition) on a running Docker cluster
+# Real chaos smoke (restart + delay + partition) on a running Docker cluster
 powershell -ExecutionPolicy Bypass -File .\scripts\chaos-smoke.ps1 -Iterations 1
 
 # Quick smoke test (requires Docker cluster)
@@ -433,7 +433,7 @@ docker start ditto-node-3             # auto-syncs when restarted
 | [docs/architecture.md](docs/architecture.md) | Architecture, protocols, write/read flows, deployment sizing |
 | [docs/dittoctl-reference.md](docs/dittoctl-reference.md) | Supplementary CLI reference |
 | [docs/backlog-guide.md](docs/backlog-guide.md) | Product backlog + multi-sprint roadmap |
-| [docs/chaos-playbook.md](docs/chaos-playbook.md) | Chaos/fault validation scenarios (partition + restart) |
+| [docs/chaos-playbook.md](docs/chaos-playbook.md) | Chaos/fault validation scenarios (partition + delay + restart) |
 | [docs/operations-runbook.md](docs/operations-runbook.md) | Incident response and tenant quota operations |
 
 ---

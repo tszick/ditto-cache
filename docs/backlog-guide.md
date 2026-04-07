@@ -13,7 +13,7 @@ This document tracks the next major development themes for the distributed cache
 1. Multi-tenant isolation (`namespace` + per-tenant quotas)
 - What: isolate keys, limits, and memory budgets per tenant.
 - Why: prevents noisy-neighbor issues and supports safer shared clusters.
-- Status: planned.
+- Status: delivered (Sprint 4).
 
 2. Rate limit + circuit breaker
 - What: request throttling and fail-fast protection on repeated failures.
@@ -48,7 +48,7 @@ This document tracks the next major development themes for the distributed cache
 8. Chaos/Jepsen-style resilience tests
 - What: automated partition, node-failure, and timing-fault scenarios.
 - Why: validates safety and recovery behavior before production incidents.
-- Status: planned.
+- Status: delivered (Sprint 4).
 
 ## Roadmap (4 sprints)
 
@@ -136,8 +136,27 @@ Sprint 2 progress update (2026-04-02):
   - S2.4 Snapshot fast-restart MVP (startup restore option + admin restore command + status metadata).
   - S2.5 targeted regression tests for restore policy gate and restore stats update.
   - S2.5 benchmark playbook and load profile for idle-then-burst + cold-vs-restore restart comparison.
-- In progress:
   - S2.5 final benchmark execution and result capture (latency/error baseline vs restore run).
+
+Sprint 2 benchmark result capture (2026-04-07):
+
+- Environment:
+  - local Docker 3-node cluster + `ditto-mgmt` (`ditto-docker/docker-compose.yml`),
+  - profile: `ditto-docker/load/k6/scripts/ditto-idle-burst.js`,
+  - run parameters: `IDLE_DURATION=30s`, `BURST_DURATION=45s`, `BURST_RPS=10`.
+- Baseline (cold restart path):
+  - `node-1` cold restart to `/ping` healthy: `2981 ms`,
+  - k6 result: `http_req_failed=0.00%`,
+  - k6 latency: `avg=648.6ms`, `p90=1.64s`, `p95=2.22s`, `max=3.36s`.
+- Restore run:
+  - snapshot backup + restore completed on `node-1`,
+  - restore result: `entries=200`, `snapshot_last_load_entries=200`,
+  - restore duration fields reported `0 ms` on this small local dataset,
+  - k6 result: `http_req_failed=0.00%`,
+  - k6 latency: `avg=266.33ms`, `p90=290.65ms`, `p95=301.63ms`, `max=455.22ms`.
+- Outcome:
+  - Sprint 2 benchmark execution and result capture completed.
+  - Idle-then-burst profile remained error-free in the restore run and showed materially lower tail latency than the captured baseline run.
 
 Sprint 3 kickoff update (2026-04-02):
 
@@ -196,6 +215,22 @@ Sprint 4 progress update (2026-04-02):
   - CI dry-run path delivered:
     - `.github/workflows/chaos-dry-run.yml` runs `chaos-smoke.ps1 -DryRun` on push/PR/manual trigger,
     - no nightly schedule (environment-dependent real runs stay manual).
+
+Sprint 4 completion update (2026-04-07):
+
+- Completed:
+  - Tenant isolation and quota controls finalized:
+    - namespace-aware keyspace isolation,
+    - per-namespace key quota enforcement,
+    - node/mgmt/CLI observability fields and counters.
+  - Chaos suite expanded to cover all target classes:
+    - crash/restart loop scenario,
+    - network partition/reconnect scenario,
+    - timing-fault pause/unpause scenario.
+  - Operational documentation finalized:
+    - `docs/operations-runbook.md` incident playbooks,
+    - `docs/chaos-playbook.md` automated + manual scenarios,
+    - README test and CI guidance aligned with Sprint 4 scope.
 
 ## Definition of Done (for each backlog item)
 
