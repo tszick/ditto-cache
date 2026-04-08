@@ -168,6 +168,33 @@ curl http://localhost:7778/key/hello
 curl -X POST http://localhost:7778/keys/batch \
   -H "Content-Type: application/json" \
   -d '{"items":[{"key":"k1","value":"v1"},{"key":"k2","value":"v2","ttl_secs":60}]}'
+
+# Operator health summary
+curl http://localhost:7778/health/summary
+```
+
+Example response:
+
+```json
+{
+  "availability": "ready",
+  "node_id": "d4f4f23c-1260-4f8f-94fe-7ea1b9b4b8b1",
+  "status": "Active",
+  "is_primary": true,
+  "committed_index": 42,
+  "key_count": 128,
+  "memory_used_bytes": 1048576,
+  "memory_max_bytes": 536870912,
+  "uptime_secs": 3600,
+  "rate_limit_enabled": true,
+  "rate_limited_requests_total": 0,
+  "circuit_breaker_enabled": true,
+  "circuit_breaker_state": "closed",
+  "anti_entropy_last_detected_lag": 0,
+  "mixed_version_last_detected_peer_count": 0,
+  "persistence_enabled": true,
+  "tenancy_enabled": false
+}
 ```
 
 ### 3-node Docker cluster
