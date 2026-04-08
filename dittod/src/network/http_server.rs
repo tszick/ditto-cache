@@ -57,7 +57,7 @@ pub async fn start(
 fn build_app(node: Arc<NodeHandle>) -> Router {
     Router::new()
         .route(
-            "/key/:key",
+            "/key/{key}",
             get(handle_get).put(handle_set).delete(handle_delete),
         )
         .route("/keys/delete-by-pattern", post(handle_delete_by_pattern))
@@ -65,6 +65,7 @@ fn build_app(node: Arc<NodeHandle>) -> Router {
         .route("/keys/ttl-by-pattern", post(handle_set_ttl_by_pattern))
         .route("/ping", get(handle_ping))
         .route("/stats", get(handle_stats))
+        .route("/health/summary", get(handle_health_summary))
         .layer(middleware::from_fn_with_state(
             Arc::clone(&node),
             http_basic_auth,
@@ -368,6 +369,55 @@ async fn handle_stats(State(node): State<Arc<NodeHandle>>) -> Response {
     Json(stats).into_response()
 }
 
+async fn handle_health_summary(State(node): State<Arc<NodeHandle>>) -> Response {
+    let stats = node.stats().await;
+    let availability = availability_for_stats(&stats.status, &stats.circuit_breaker_state);
+
+    let body = serde_json::json!({
+        "availability": availability,
+        "node_id": stats.node_id,
+        "status": format!("{:?}", stats.status),
+        "is_primary": stats.is_primary,
+        "committed_index": stats.committed_index,
+        "key_count": stats.key_count,
+        "memory_used_bytes": stats.memory_used_bytes,
+        "memory_max_bytes": stats.memory_max_bytes,
+        "uptime_secs": stats.uptime_secs,
+        "rate_limit_enabled": stats.rate_limit_enabled,
+        "rate_limited_requests_total": stats.rate_limited_requests_total,
+        "circuit_breaker_enabled": stats.circuit_breaker_enabled,
+        "circuit_breaker_state": stats.circuit_breaker_state,
+        "circuit_breaker_open_total": stats.circuit_breaker_open_total,
+        "circuit_breaker_reject_total": stats.circuit_breaker_reject_total,
+        "read_repair_enabled": stats.read_repair_enabled,
+        "read_repair_trigger_total": stats.read_repair_trigger_total,
+        "read_repair_throttled_total": stats.read_repair_throttled_total,
+        "anti_entropy_last_detected_lag": stats.anti_entropy_last_detected_lag,
+        "anti_entropy_repair_trigger_total": stats.anti_entropy_repair_trigger_total,
+        "mixed_version_last_detected_peer_count": stats.mixed_version_last_detected_peer_count,
+        "namespace_quota_reject_total": stats.namespace_quota_reject_total,
+        "persistence_enabled": stats.persistence_enabled,
+        "tenancy_enabled": stats.tenancy_enabled,
+    });
+
+    Json(body).into_response()
+}
+
+fn availability_for_stats(status: &ditto_protocol::NodeStatus, circuit_breaker_state: &str) -> &'static str {
+    use ditto_protocol::NodeStatus;
+    match status {
+        NodeStatus::Active => {
+            if circuit_breaker_state.eq_ignore_ascii_case("open") {
+                "degraded"
+            } else {
+                "ready"
+            }
+        }
+        NodeStatus::Syncing => "syncing",
+        NodeStatus::Offline | NodeStatus::Inactive => "unavailable",
+    }
+}
+
 fn error_response(code: ErrorCode, message: String) -> Response {
     let status = status_for_error(&code);
     let body = serde_json::json!({ "error": format!("{:?}", code), "message": message });
@@ -389,9 +439,9 @@ fn status_for_error(code: &ErrorCode) -> StatusCode {
 
 #[cfg(test)]
 mod tests {
-    use super::status_for_error;
+    use super::{availability_for_stats, status_for_error};
     use axum::http::StatusCode;
-    use ditto_protocol::ErrorCode;
+    use ditto_protocol::{ErrorCode, NodeStatus};
 
     #[test]
     fn status_mapping_for_rate_limit_and_circuit_open() {
@@ -402,6 +452,26 @@ mod tests {
         assert_eq!(
             status_for_error(&ErrorCode::CircuitOpen),
             StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn health_summary_availability_mapping() {
+        assert_eq!(
+            availability_for_stats(&NodeStatus::Active, "closed"),
+            "ready"
+        );
+        assert_eq!(
+            availability_for_stats(&NodeStatus::Active, "open"),
+            "degraded"
+        );
+        assert_eq!(
+            availability_for_stats(&NodeStatus::Syncing, "closed"),
+            "syncing"
+        );
+        assert_eq!(
+            availability_for_stats(&NodeStatus::Inactive, "closed"),
+            "unavailable"
         );
     }
 }
