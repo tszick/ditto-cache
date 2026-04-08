@@ -250,6 +250,25 @@ Next session plan (2026-04-08):
   - update `ditto-client/docs/client-developer-guide.md` after dependency/parity changes,
   - update client README sections where behavior/capabilities change.
 
+Next session plan (2026-04-09):
+
+- `ditto-cache` namespace quota observability 2.0:
+  - extend `/health/summary` with top namespace pressure indicators (`top_quota_usage`, reject trend),
+  - align mgmt/CLI output with the new quota-pressure fields,
+  - add tests for empty/partial/full quota telemetry scenarios.
+- `ditto-client` strict-mode parity pass:
+  - define strict-mode request validation rules shared across Node/Java/Python/Go,
+  - implement and test equivalent validation behavior for core APIs (`set/get/delete/list`).
+- `ditto-docker` parity regression pack:
+  - add reproducible parity tests for auth, quota reject, circuit-breaker, rate-limit and unknown-error mappings,
+  - ensure outputs are machine-checkable and CI-friendly across all client lanes.
+- `ditto-cache` `dittoctl doctor` quick diagnostics:
+  - add a first-pass `doctor` command that summarizes node health, cluster peer status, and quota pressure,
+  - return non-zero exit when critical checks fail.
+- `ditto-client` release automation prep:
+  - draft version-bump + changelog generation flow,
+  - add a dry-run workflow to verify multi-language client release steps.
+
 ## Definition of Done (for each backlog item)
 
 - Feature is disabled by default and guardrailed by config/env.
