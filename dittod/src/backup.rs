@@ -4,7 +4,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use ditto_protocol::NodeStatus;
-use rand::RngCore;
+use rand::RngExt;
 use std::{
     fs,
     path::PathBuf,
@@ -210,7 +210,7 @@ fn encrypt_data(key_hex: &str, plaintext: &[u8]) -> anyhow::Result<Vec<u8>> {
         .map_err(|e| anyhow::anyhow!("AES-256-GCM key init failed: {}", e))?;
 
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    rand::rng().fill(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let ciphertext = cipher

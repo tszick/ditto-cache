@@ -26,6 +26,6 @@ tracing        = { workspace = true }
 axum           = { workspace = true }
 reqwest        = { workspace = true }
 base64         = { workspace = true }
-bcrypt         = "0.15"
+bcrypt         = "0.19"
 axum-server    = { workspace = true }
-dirs           = "5"
+dirs           = "6"
