@@ -232,6 +232,24 @@ Sprint 4 completion update (2026-04-07):
     - `docs/chaos-playbook.md` automated + manual scenarios,
     - README test and CI guidance aligned with Sprint 4 scope.
 
+Next session plan (2026-04-08):
+
+- `ditto-cache` dependency upgrade pass:
+  - update outdated Rust dependencies (`axum`, `bcrypt`, `cron`, `dashmap`, `lz4_flex`, `rand`, `dirs`),
+  - run `cargo test --workspace`,
+  - fix compile/test regressions introduced by major-version bumps.
+- `ditto-client` dependency upgrade pass:
+  - Node client: update `@types/node` and `typescript`,
+  - Java client: update `jackson-databind`,
+  - Python/Go clients: verify current state (stdlib-focused, no runtime third-party deps expected).
+- Client functional parity alignment:
+  - confirm minimum parity contract across Node/Java/Python/Go for core APIs,
+  - decide strategy for `watch/unwatch` + auto-reconnect parity,
+  - define and implement consistent namespace support exposure in client APIs.
+- Documentation sync:
+  - update `ditto-client/docs/client-developer-guide.md` after dependency/parity changes,
+  - update client README sections where behavior/capabilities change.
+
 ## Definition of Done (for each backlog item)
 
 - Feature is disabled by default and guardrailed by config/env.
