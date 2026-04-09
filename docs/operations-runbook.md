@@ -18,8 +18,15 @@ Check first:
 - no sustained spikes in:
   - `rate_limited_requests_total`
   - `circuit_breaker_reject_total`
+  - `client_request_latency_gt_500ms_total`
+  - `client_latency_p95_estimate_ms` / `client_latency_p99_estimate_ms`
+  - source skew in `client_requests_tcp_total` vs `client_requests_http_total`
+  - `client_error_total` (especially `client_error_throttle_total` / `client_error_availability_total`)
+  - `client_errors_http_total` / `client_errors_tcp_total` rapid growth on one ingress path
   - `anti_entropy_repair_trigger_total`
   - `namespace_quota_reject_total` (when tenancy is enabled).
+- snapshot restore freshness (`snapshot_last_load_age_secs`) is within expected operational window after restart events.
+- snapshot restore failures do not trend up (`snapshot_restore_failure_total`, `snapshot_restore_policy_block_total`).
 
 ## 2) Common Incident Playbooks
 
@@ -110,3 +117,28 @@ After change:
 - Mitigation applied
 - Metrics before/after
 - Follow-up action items
+
+## 6) Alert Presets (Latency/Error Burn-Rate)
+
+Suggested starter thresholds for local/dev-like environments:
+
+- Warning:
+  - `client_latency_p95_estimate_ms > 100` for 10m, or
+  - `client_error_total` growth > 1% of `client_requests_total` over 10m.
+- Critical:
+  - `client_latency_p99_estimate_ms > 500` for 5m, or
+  - `client_error_total` growth > 5% of `client_requests_total` over 5m.
+- Source-specific anomaly:
+  - `client_errors_http_total` (or `client_errors_tcp_total`) contributes > 80% of new errors over 10m while request share for that source is < 60%.
+- Snapshot freshness:
+  - Warning: `snapshot_last_load_age_secs > 86_400` (24h) on nodes expected to restart from snapshots daily.
+  - Critical: `snapshot_last_load_age_secs > 604_800` (7d) on snapshot-based restart environments.
+- Snapshot restore failures:
+  - Warning: `snapshot_restore_failure_total` increases by >= 1 in 30m.
+  - Critical: `snapshot_restore_policy_block_total` increases by >= 1 in 30m (misconfiguration/regression signal).
+
+Tuning notes:
+
+1. Raise latency thresholds for low-power local machines.
+2. Keep error burn-rate thresholds strict; they detect regressions earlier than absolute counters.
+3. Recalibrate after major traffic-pattern changes (new client rollout, quota policy changes, restore events).

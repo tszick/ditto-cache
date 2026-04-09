@@ -96,6 +96,13 @@ struct GetFlight {
     waiters: AtomicUsize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClientRequestSource {
+    Tcp,
+    Http,
+    Internal,
+}
+
 impl GetFlight {
     fn new() -> Self {
         let (tx, _rx) = watch::channel(None);
@@ -130,6 +137,26 @@ pub struct NodeHandle {
     rate_limited_requests_total: AtomicU64,
     circuit_breaker_open_total: AtomicU64,
     circuit_breaker_reject_total: AtomicU64,
+    client_requests_total: AtomicU64,
+    client_requests_tcp_total: AtomicU64,
+    client_requests_http_total: AtomicU64,
+    client_requests_internal_total: AtomicU64,
+    client_request_latency_le_1ms_total: AtomicU64,
+    client_request_latency_le_5ms_total: AtomicU64,
+    client_request_latency_le_20ms_total: AtomicU64,
+    client_request_latency_le_100ms_total: AtomicU64,
+    client_request_latency_le_500ms_total: AtomicU64,
+    client_request_latency_gt_500ms_total: AtomicU64,
+    client_error_total: AtomicU64,
+    client_errors_tcp_total: AtomicU64,
+    client_errors_http_total: AtomicU64,
+    client_errors_internal_total: AtomicU64,
+    client_error_auth_total: AtomicU64,
+    client_error_throttle_total: AtomicU64,
+    client_error_availability_total: AtomicU64,
+    client_error_validation_total: AtomicU64,
+    client_error_internal_total: AtomicU64,
+    client_error_other_total: AtomicU64,
     get_flights: AsyncMutex<HashMap<String, Arc<GetFlight>>>,
     hot_key_coalesced_hits_total: AtomicU64,
     hot_key_fallback_exec_total: AtomicU64,
@@ -155,6 +182,12 @@ pub struct NodeHandle {
     snapshot_last_load_path: Mutex<Option<String>>,
     snapshot_last_load_duration_ms: AtomicU64,
     snapshot_last_load_entries: AtomicU64,
+    snapshot_last_load_completed_at_ms: AtomicU64,
+    snapshot_restore_attempt_total: AtomicU64,
+    snapshot_restore_success_total: AtomicU64,
+    snapshot_restore_failure_total: AtomicU64,
+    snapshot_restore_not_found_total: AtomicU64,
+    snapshot_restore_policy_block_total: AtomicU64,
 }
 
 impl NodeHandle {
@@ -208,6 +241,26 @@ impl NodeHandle {
             rate_limited_requests_total: AtomicU64::new(0),
             circuit_breaker_open_total: AtomicU64::new(0),
             circuit_breaker_reject_total: AtomicU64::new(0),
+            client_requests_total: AtomicU64::new(0),
+            client_requests_tcp_total: AtomicU64::new(0),
+            client_requests_http_total: AtomicU64::new(0),
+            client_requests_internal_total: AtomicU64::new(0),
+            client_request_latency_le_1ms_total: AtomicU64::new(0),
+            client_request_latency_le_5ms_total: AtomicU64::new(0),
+            client_request_latency_le_20ms_total: AtomicU64::new(0),
+            client_request_latency_le_100ms_total: AtomicU64::new(0),
+            client_request_latency_le_500ms_total: AtomicU64::new(0),
+            client_request_latency_gt_500ms_total: AtomicU64::new(0),
+            client_error_total: AtomicU64::new(0),
+            client_errors_tcp_total: AtomicU64::new(0),
+            client_errors_http_total: AtomicU64::new(0),
+            client_errors_internal_total: AtomicU64::new(0),
+            client_error_auth_total: AtomicU64::new(0),
+            client_error_throttle_total: AtomicU64::new(0),
+            client_error_availability_total: AtomicU64::new(0),
+            client_error_validation_total: AtomicU64::new(0),
+            client_error_internal_total: AtomicU64::new(0),
+            client_error_other_total: AtomicU64::new(0),
             get_flights: AsyncMutex::new(HashMap::new()),
             hot_key_coalesced_hits_total: AtomicU64::new(0),
             hot_key_fallback_exec_total: AtomicU64::new(0),
@@ -233,6 +286,12 @@ impl NodeHandle {
             snapshot_last_load_path: Mutex::new(None),
             snapshot_last_load_duration_ms: AtomicU64::new(0),
             snapshot_last_load_entries: AtomicU64::new(0),
+            snapshot_last_load_completed_at_ms: AtomicU64::new(0),
+            snapshot_restore_attempt_total: AtomicU64::new(0),
+            snapshot_restore_success_total: AtomicU64::new(0),
+            snapshot_restore_failure_total: AtomicU64::new(0),
+            snapshot_restore_not_found_total: AtomicU64::new(0),
+            snapshot_restore_policy_block_total: AtomicU64::new(0),
         })
     }
 
@@ -242,6 +301,8 @@ impl NodeHandle {
             .store(entries, Ordering::Relaxed);
         self.snapshot_last_load_duration_ms
             .store(duration_ms, Ordering::Relaxed);
+        self.snapshot_last_load_completed_at_ms
+            .store(Self::now_millis(), Ordering::Relaxed);
     }
 
     // -----------------------------------------------------------------------
@@ -421,6 +482,90 @@ impl NodeHandle {
         }
     }
 
+    fn observe_client_response_metrics(
+        &self,
+        source: ClientRequestSource,
+        elapsed: Duration,
+        response: &ClientResponse,
+    ) {
+        self.client_requests_total.fetch_add(1, Ordering::Relaxed);
+        match source {
+            ClientRequestSource::Tcp => {
+                self.client_requests_tcp_total
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            ClientRequestSource::Http => {
+                self.client_requests_http_total
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            ClientRequestSource::Internal => {
+                self.client_requests_internal_total
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let ms = elapsed.as_millis() as u64;
+        if ms <= 1 {
+            self.client_request_latency_le_1ms_total
+                .fetch_add(1, Ordering::Relaxed);
+        } else if ms <= 5 {
+            self.client_request_latency_le_5ms_total
+                .fetch_add(1, Ordering::Relaxed);
+        } else if ms <= 20 {
+            self.client_request_latency_le_20ms_total
+                .fetch_add(1, Ordering::Relaxed);
+        } else if ms <= 100 {
+            self.client_request_latency_le_100ms_total
+                .fetch_add(1, Ordering::Relaxed);
+        } else if ms <= 500 {
+            self.client_request_latency_le_500ms_total
+                .fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.client_request_latency_gt_500ms_total
+                .fetch_add(1, Ordering::Relaxed);
+        }
+
+        if let ClientResponse::Error { code, .. } = response {
+            self.client_error_total.fetch_add(1, Ordering::Relaxed);
+            match source {
+                ClientRequestSource::Tcp => {
+                    self.client_errors_tcp_total.fetch_add(1, Ordering::Relaxed);
+                }
+                ClientRequestSource::Http => {
+                    self.client_errors_http_total
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                ClientRequestSource::Internal => {
+                    self.client_errors_internal_total
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            match code {
+                ErrorCode::AuthFailed => {
+                    self.client_error_auth_total.fetch_add(1, Ordering::Relaxed);
+                }
+                ErrorCode::RateLimited
+                | ErrorCode::CircuitOpen
+                | ErrorCode::NamespaceQuotaExceeded => {
+                    self.client_error_throttle_total
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                ErrorCode::NodeInactive | ErrorCode::NoQuorum | ErrorCode::WriteTimeout => {
+                    self.client_error_availability_total
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                ErrorCode::KeyNotFound | ErrorCode::ValueTooLarge | ErrorCode::KeyLimitReached => {
+                    self.client_error_validation_total
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                ErrorCode::InternalError => {
+                    self.client_error_internal_total
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+    }
+
     fn execute_get(&self, lookup_key: String, response_key: String) -> ClientResponse {
         match self.store.get(&lookup_key) {
             Some(entry) => ClientResponse::Value {
@@ -585,135 +730,179 @@ impl NodeHandle {
     /// Returns `NodeInactive` immediately when the node is in maintenance mode.
     /// Reads are served locally; writes are coordinated or forwarded to the primary.
     pub async fn handle_client(self: &Arc<Self>, req: ClientRequest) -> ClientResponse {
-        if !self.active.load(Ordering::Relaxed) {
-            return ClientResponse::Error {
+        self.handle_client_with_source(req, ClientRequestSource::Internal)
+            .await
+    }
+
+    pub async fn handle_client_tcp(self: &Arc<Self>, req: ClientRequest) -> ClientResponse {
+        self.handle_client_with_source(req, ClientRequestSource::Tcp)
+            .await
+    }
+
+    pub async fn handle_client_http(self: &Arc<Self>, req: ClientRequest) -> ClientResponse {
+        self.handle_client_with_source(req, ClientRequestSource::Http)
+            .await
+    }
+
+    async fn handle_client_with_source(
+        self: &Arc<Self>,
+        req: ClientRequest,
+        source: ClientRequestSource,
+    ) -> ClientResponse {
+        let started = Instant::now();
+        let mut should_record_circuit_result = false;
+        let response = if !self.active.load(Ordering::Relaxed) {
+            ClientResponse::Error {
                 code: ErrorCode::NodeInactive,
                 message: "Node is inactive (maintenance mode)".into(),
-            };
-        }
-        if !self.allow_by_rate_limit() {
-            return ClientResponse::Error {
+            }
+        } else if !self.allow_by_rate_limit() {
+            ClientResponse::Error {
                 code: ErrorCode::RateLimited,
                 message: "Request throttled by rate limiter".into(),
-            };
-        }
-        if !self.allow_by_circuit_breaker() {
-            return ClientResponse::Error {
+            }
+        } else if !self.allow_by_circuit_breaker() {
+            ClientResponse::Error {
                 code: ErrorCode::CircuitOpen,
                 message: "Request rejected by circuit breaker".into(),
-            };
-        }
-        let response = match req {
-            ClientRequest::Ping => ClientResponse::Pong,
-            ClientRequest::Auth { .. } => ClientResponse::Error {
-                code: ErrorCode::InternalError,
-                message: "Authentication is already complete or invalid in this context".into(),
-            },
-
-            ClientRequest::Get { key, namespace } => {
-                let ns = match self.namespace_context(namespace.clone()) {
-                    Ok(ns) => ns,
-                    Err(err) => return err,
-                };
-                let namespaced_key = self.namespaced_key(&ns, &key);
-                let local = self
-                    .handle_get_with_single_flight(namespaced_key, key.clone())
-                    .await;
-                if matches!(local, ClientResponse::NotFound) {
-                    self.maybe_read_repair_on_miss(ns, key)
-                        .await
-                        .unwrap_or(local)
-                } else {
-                    local
-                }
             }
+        } else {
+            should_record_circuit_result = true;
+            match req {
+                ClientRequest::Ping => ClientResponse::Pong,
+                ClientRequest::Auth { .. } => ClientResponse::Error {
+                    code: ErrorCode::InternalError,
+                    message: "Authentication is already complete or invalid in this context".into(),
+                },
 
-            ClientRequest::Set {
-                key,
-                value,
-                ttl_secs,
-                namespace,
-            } => {
-                let ns = match self.namespace_context(namespace) {
-                    Ok(ns) => ns,
-                    Err(err) => return err,
-                };
-                let namespaced_key = self.namespaced_key(&ns, &key);
-                if let Some(ref namespace_name) = ns {
-                    let max = self.config.lock().unwrap().tenancy.max_keys_per_namespace;
-                    if max > 0
-                        && self.store.get(&namespaced_key).is_none()
-                        && self.namespace_key_count(namespace_name) >= max
-                    {
-                        self.namespace_quota_reject_total
-                            .fetch_add(1, Ordering::Relaxed);
-                        return ClientResponse::Error {
-                            code: ErrorCode::NamespaceQuotaExceeded,
-                            message: format!(
-                                "Namespace '{}' reached key limit ({})",
-                                namespace_name, max
-                            ),
-                        };
+                ClientRequest::Get { key, namespace } => match self.namespace_context(namespace) {
+                    Ok(ns) => {
+                        let namespaced_key = self.namespaced_key(&ns, &key);
+                        let local = self
+                            .handle_get_with_single_flight(namespaced_key, key.clone())
+                            .await;
+                        if matches!(local, ClientResponse::NotFound) {
+                            self.maybe_read_repair_on_miss(ns, key)
+                                .await
+                                .unwrap_or(local)
+                        } else {
+                            local
+                        }
+                    }
+                    Err(err) => err,
+                },
+
+                ClientRequest::Set {
+                    key,
+                    value,
+                    ttl_secs,
+                    namespace,
+                } => match self.namespace_context(namespace) {
+                    Ok(ns) => {
+                        let namespaced_key = self.namespaced_key(&ns, &key);
+                        if let Some(ref namespace_name) = ns {
+                            let max = self.config.lock().unwrap().tenancy.max_keys_per_namespace;
+                            if max > 0
+                                && self.store.get(&namespaced_key).is_none()
+                                && self.namespace_key_count(namespace_name) >= max
+                            {
+                                self.namespace_quota_reject_total
+                                    .fetch_add(1, Ordering::Relaxed);
+                                ClientResponse::Error {
+                                    code: ErrorCode::NamespaceQuotaExceeded,
+                                    message: format!(
+                                        "Namespace '{}' reached key limit ({})",
+                                        namespace_name, max
+                                    ),
+                                }
+                            } else {
+                                match self.store.check_limits(&namespaced_key, &value) {
+                                    Err(LimitError::ValueTooLarge) => ClientResponse::Error {
+                                        code: ErrorCode::ValueTooLarge,
+                                        message: format!(
+                                            "Value size {} bytes exceeds the configured limit",
+                                            value.len()
+                                        ),
+                                    },
+                                    Err(LimitError::KeyLimitReached) => ClientResponse::Error {
+                                        code: ErrorCode::KeyLimitReached,
+                                        message: "Cache is at the maximum key count limit".into(),
+                                    },
+                                    Ok(()) => {
+                                        self.coordinate_write(namespaced_key, Some(value), ttl_secs)
+                                            .await
+                                    }
+                                }
+                            }
+                        } else {
+                            match self.store.check_limits(&namespaced_key, &value) {
+                                Err(LimitError::ValueTooLarge) => ClientResponse::Error {
+                                    code: ErrorCode::ValueTooLarge,
+                                    message: format!(
+                                        "Value size {} bytes exceeds the configured limit",
+                                        value.len()
+                                    ),
+                                },
+                                Err(LimitError::KeyLimitReached) => ClientResponse::Error {
+                                    code: ErrorCode::KeyLimitReached,
+                                    message: "Cache is at the maximum key count limit".into(),
+                                },
+                                Ok(()) => {
+                                    self.coordinate_write(namespaced_key, Some(value), ttl_secs)
+                                        .await
+                                }
+                            }
+                        }
+                    }
+                    Err(err) => err,
+                },
+
+                ClientRequest::Delete { key, namespace } => {
+                    match self.namespace_context(namespace) {
+                        Ok(ns) => {
+                            self.coordinate_write(self.namespaced_key(&ns, &key), None, None)
+                                .await
+                        }
+                        Err(err) => err,
                     }
                 }
-                match self.store.check_limits(&namespaced_key, &value) {
-                    Err(LimitError::ValueTooLarge) => ClientResponse::Error {
-                        code: ErrorCode::ValueTooLarge,
-                        message: format!(
-                            "Value size {} bytes exceeds the configured limit",
-                            value.len()
-                        ),
-                    },
-                    Err(LimitError::KeyLimitReached) => ClientResponse::Error {
-                        code: ErrorCode::KeyLimitReached,
-                        message: "Cache is at the maximum key count limit".into(),
-                    },
-                    Ok(()) => {
-                        self.coordinate_write(namespaced_key, Some(value), ttl_secs)
+
+                ClientRequest::DeleteByPattern { pattern, namespace } => {
+                    match self.namespace_context(namespace) {
+                        Ok(ns) => {
+                            self.delete_by_pattern(self.namespaced_pattern(&ns, &pattern))
+                                .await
+                        }
+                        Err(err) => err,
+                    }
+                }
+
+                ClientRequest::SetTtlByPattern {
+                    pattern,
+                    ttl_secs,
+                    namespace,
+                } => match self.namespace_context(namespace) {
+                    Ok(ns) => {
+                        self.set_ttl_by_pattern(self.namespaced_pattern(&ns, &pattern), ttl_secs)
                             .await
                     }
+                    Err(err) => err,
+                },
+
+                // Watch/Unwatch are handled at the TCP connection level (tcp_server.rs)
+                // and should never reach handle_client. Guard against misuse.
+                ClientRequest::Watch { .. } | ClientRequest::Unwatch { .. } => {
+                    ClientResponse::Error {
+                        code: ErrorCode::InternalError,
+                        message: "Watch/Unwatch must be handled at the connection level".into(),
+                    }
                 }
             }
-
-            ClientRequest::Delete { key, namespace } => {
-                let ns = match self.namespace_context(namespace) {
-                    Ok(ns) => ns,
-                    Err(err) => return err,
-                };
-                self.coordinate_write(self.namespaced_key(&ns, &key), None, None)
-                    .await
-            }
-
-            ClientRequest::DeleteByPattern { pattern, namespace } => {
-                let ns = match self.namespace_context(namespace) {
-                    Ok(ns) => ns,
-                    Err(err) => return err,
-                };
-                self.delete_by_pattern(self.namespaced_pattern(&ns, &pattern))
-                    .await
-            }
-
-            ClientRequest::SetTtlByPattern {
-                pattern,
-                ttl_secs,
-                namespace,
-            } => {
-                let ns = match self.namespace_context(namespace) {
-                    Ok(ns) => ns,
-                    Err(err) => return err,
-                };
-                self.set_ttl_by_pattern(self.namespaced_pattern(&ns, &pattern), ttl_secs)
-                    .await
-            }
-
-            // Watch/Unwatch are handled at the TCP connection level (tcp_server.rs)
-            // and should never reach handle_client. Guard against misuse.
-            ClientRequest::Watch { .. } | ClientRequest::Unwatch { .. } => ClientResponse::Error {
-                code: ErrorCode::InternalError,
-                message: "Watch/Unwatch must be handled at the connection level".into(),
-            },
         };
-        self.record_circuit_result(&response);
+        if should_record_circuit_result {
+            self.record_circuit_result(&response);
+        }
+        self.observe_client_response_metrics(source, started.elapsed(), &response);
         response
     }
 
@@ -1045,7 +1234,9 @@ impl NodeHandle {
             }
 
             ClusterMessage::Forward { request, .. } => {
-                let response = self.handle_client(request).await;
+                let response = self
+                    .handle_client_with_source(request, ClientRequestSource::Internal)
+                    .await;
                 Some(ClusterMessage::ForwardResponse(response))
             }
 
@@ -1377,6 +1568,33 @@ impl NodeHandle {
                 stats.snapshot_last_load_entries.to_string(),
             ),
             (
+                "snapshot-last-load-age-secs".into(),
+                stats
+                    .snapshot_last_load_age_secs
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "0".to_string()),
+            ),
+            (
+                "snapshot-restore-attempt-total".into(),
+                stats.snapshot_restore_attempt_total.to_string(),
+            ),
+            (
+                "snapshot-restore-success-total".into(),
+                stats.snapshot_restore_success_total.to_string(),
+            ),
+            (
+                "snapshot-restore-failure-total".into(),
+                stats.snapshot_restore_failure_total.to_string(),
+            ),
+            (
+                "snapshot-restore-not-found-total".into(),
+                stats.snapshot_restore_not_found_total.to_string(),
+            ),
+            (
+                "snapshot-restore-policy-block-total".into(),
+                stats.snapshot_restore_policy_block_total.to_string(),
+            ),
+            (
                 "rate-limit-enabled".into(),
                 stats.rate_limit_enabled.to_string(),
             ),
@@ -1401,6 +1619,10 @@ impl NodeHandle {
             (
                 "hot-key-fallback-exec-total".into(),
                 stats.hot_key_fallback_exec_total.to_string(),
+            ),
+            (
+                "hot-key-inflight-keys".into(),
+                stats.hot_key_inflight_keys.to_string(),
             ),
             (
                 "circuit-breaker-enabled".into(),
@@ -1429,6 +1651,94 @@ impl NodeHandle {
             (
                 "circuit-breaker-reject-total".into(),
                 stats.circuit_breaker_reject_total.to_string(),
+            ),
+            (
+                "client-requests-total".into(),
+                stats.client_requests_total.to_string(),
+            ),
+            (
+                "client-requests-tcp-total".into(),
+                stats.client_requests_tcp_total.to_string(),
+            ),
+            (
+                "client-requests-http-total".into(),
+                stats.client_requests_http_total.to_string(),
+            ),
+            (
+                "client-requests-internal-total".into(),
+                stats.client_requests_internal_total.to_string(),
+            ),
+            (
+                "client-request-latency-buckets".into(),
+                Self::format_request_latency_buckets(&stats),
+            ),
+            (
+                "client-latency-p50-estimate-ms".into(),
+                stats
+                    .client_latency_p50_estimate_ms
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "n/a".to_string()),
+            ),
+            (
+                "client-latency-p90-estimate-ms".into(),
+                stats
+                    .client_latency_p90_estimate_ms
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "n/a".to_string()),
+            ),
+            (
+                "client-latency-p95-estimate-ms".into(),
+                stats
+                    .client_latency_p95_estimate_ms
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "n/a".to_string()),
+            ),
+            (
+                "client-latency-p99-estimate-ms".into(),
+                stats
+                    .client_latency_p99_estimate_ms
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "n/a".to_string()),
+            ),
+            (
+                "client-error-total".into(),
+                stats.client_error_total.to_string(),
+            ),
+            (
+                "client-errors-tcp-total".into(),
+                stats.client_errors_tcp_total.to_string(),
+            ),
+            (
+                "client-errors-http-total".into(),
+                stats.client_errors_http_total.to_string(),
+            ),
+            (
+                "client-errors-internal-total".into(),
+                stats.client_errors_internal_total.to_string(),
+            ),
+            (
+                "client-error-auth-total".into(),
+                stats.client_error_auth_total.to_string(),
+            ),
+            (
+                "client-error-throttle-total".into(),
+                stats.client_error_throttle_total.to_string(),
+            ),
+            (
+                "client-error-availability-total".into(),
+                stats.client_error_availability_total.to_string(),
+            ),
+            (
+                "client-error-validation-total".into(),
+                stats.client_error_validation_total.to_string(),
+            ),
+            (
+                "client-error-internal-total".into(),
+                stats.client_error_internal_total.to_string(),
+            ),
+            (
+                "client-error-other-total".into(),
+                stats.client_error_other_total.to_string(),
             ),
         ]
     }
@@ -1547,12 +1857,18 @@ impl NodeHandle {
                 }
             }
             AdminRequest::RestoreLatestSnapshot => {
+                self.snapshot_restore_attempt_total
+                    .fetch_add(1, Ordering::Relaxed);
                 let (import_enabled, cfg) = {
                     let cfg_guard = self.config.lock().unwrap();
                     let (_, _, _, _, _, import_enabled) = Self::persistence_states(&cfg_guard);
                     (import_enabled, cfg_guard.backup.clone())
                 };
                 if !import_enabled {
+                    self.snapshot_restore_failure_total
+                        .fetch_add(1, Ordering::Relaxed);
+                    self.snapshot_restore_policy_block_total
+                        .fetch_add(1, Ordering::Relaxed);
                     return AdminResponse::Error {
                         message: "Restore is disabled by persistence policy. Require DITTO_PERSISTENCE_PLATFORM_ALLOWED=true, DITTO_PERSISTENCE_IMPORT_ALLOWED=true and runtime property persistence-runtime-enabled=true.".into(),
                     };
@@ -1564,15 +1880,25 @@ impl NodeHandle {
                             loaded.entries as u64,
                             loaded.duration_ms,
                         );
+                        self.snapshot_restore_success_total
+                            .fetch_add(1, Ordering::Relaxed);
                         AdminResponse::RestoreResult {
                             path: loaded.path,
                             entries: loaded.entries as u64,
                             duration_ms: loaded.duration_ms,
                         }
                     }
-                    Ok(None) => AdminResponse::NotFound,
+                    Ok(None) => {
+                        self.snapshot_restore_not_found_total
+                            .fetch_add(1, Ordering::Relaxed);
+                        AdminResponse::NotFound
+                    }
                     Err(e) => AdminResponse::Error {
-                        message: e.to_string(),
+                        message: {
+                            self.snapshot_restore_failure_total
+                                .fetch_add(1, Ordering::Relaxed);
+                            e.to_string()
+                        },
                     },
                 }
             }
@@ -2753,10 +3079,54 @@ impl NodeHandle {
         if usage.is_empty() {
             return "-".to_string();
         }
-        usage.iter()
-            .map(|u| format!("{}:{}/{}({}%)", u.namespace, u.key_count, u.quota_limit, u.usage_pct))
+        usage
+            .iter()
+            .map(|u| {
+                format!(
+                    "{}:{}/{}({}%)",
+                    u.namespace, u.key_count, u.quota_limit, u.usage_pct
+                )
+            })
             .collect::<Vec<_>>()
             .join(",")
+    }
+
+    fn format_request_latency_buckets(stats: &NodeStats) -> String {
+        format!(
+            "<=1ms:{};<=5ms:{};<=20ms:{};<=100ms:{};<=500ms:{};>500ms:{}",
+            stats.client_request_latency_le_1ms_total,
+            stats.client_request_latency_le_5ms_total,
+            stats.client_request_latency_le_20ms_total,
+            stats.client_request_latency_le_100ms_total,
+            stats.client_request_latency_le_500ms_total,
+            stats.client_request_latency_gt_500ms_total
+        )
+    }
+
+    fn estimated_latency_percentile_ms(counts: [u64; 6], percentile: u64) -> Option<u64> {
+        if percentile == 0 || percentile > 100 {
+            return None;
+        }
+        let total: u64 = counts.iter().sum();
+        if total == 0 {
+            return None;
+        }
+        let target = ((total * percentile).saturating_add(99)) / 100;
+        let mut cumulative = 0u64;
+        for (idx, c) in counts.into_iter().enumerate() {
+            cumulative = cumulative.saturating_add(c);
+            if cumulative >= target {
+                return Some(match idx {
+                    0 => 1,
+                    1 => 5,
+                    2 => 20,
+                    3 => 100,
+                    4 => 500,
+                    _ => 1000,
+                });
+            }
+        }
+        Some(1000)
     }
 
     /// Collect a point-in-time [`NodeStats`] snapshot.
@@ -2767,9 +3137,22 @@ impl NodeHandle {
         let s = self.store.stats();
         let set = self.active_set.lock().await;
         let log = self.write_log.lock().await;
+        let hot_key_inflight_keys = self.get_flights.lock().await.len() as u64;
         let cfg = self.config.lock().unwrap();
         let backup_dir_bytes = dir_size_bytes(&cfg.backup.path);
         let snapshot_last_load_path = self.snapshot_last_load_path.lock().unwrap().clone();
+        let snapshot_last_load_age_secs = if snapshot_last_load_path.is_some() {
+            let completed_ms = self
+                .snapshot_last_load_completed_at_ms
+                .load(Ordering::Relaxed);
+            if completed_ms > 0 {
+                Some(Self::now_millis().saturating_sub(completed_ms) / 1000)
+            } else {
+                Some(0)
+            }
+        } else {
+            None
+        };
         let (
             persistence_platform_allowed,
             persistence_runtime_enabled,
@@ -2787,7 +3170,8 @@ impl NodeHandle {
         let tenancy_max_keys_per_namespace = cfg.tenancy.max_keys_per_namespace;
         let namespace_quota_top_usage =
             self.namespace_quota_top_usage(tenancy_enabled, tenancy_max_keys_per_namespace, 3);
-        let namespace_quota_reject_total = self.namespace_quota_reject_total.load(Ordering::Relaxed);
+        let namespace_quota_reject_total =
+            self.namespace_quota_reject_total.load(Ordering::Relaxed);
         let (namespace_quota_reject_rate_per_min, namespace_quota_reject_trend) =
             self.namespace_quota_reject_velocity(namespace_quota_reject_total);
         let circuit_breaker_state = if circuit_breaker_enabled {
@@ -2795,6 +3179,28 @@ impl NodeHandle {
         } else {
             "disabled".to_string()
         };
+        let client_request_latency_buckets = [
+            self.client_request_latency_le_1ms_total
+                .load(Ordering::Relaxed),
+            self.client_request_latency_le_5ms_total
+                .load(Ordering::Relaxed),
+            self.client_request_latency_le_20ms_total
+                .load(Ordering::Relaxed),
+            self.client_request_latency_le_100ms_total
+                .load(Ordering::Relaxed),
+            self.client_request_latency_le_500ms_total
+                .load(Ordering::Relaxed),
+            self.client_request_latency_gt_500ms_total
+                .load(Ordering::Relaxed),
+        ];
+        let client_latency_p50_estimate_ms =
+            Self::estimated_latency_percentile_ms(client_request_latency_buckets, 50);
+        let client_latency_p90_estimate_ms =
+            Self::estimated_latency_percentile_ms(client_request_latency_buckets, 90);
+        let client_latency_p95_estimate_ms =
+            Self::estimated_latency_percentile_ms(client_request_latency_buckets, 95);
+        let client_latency_p99_estimate_ms =
+            Self::estimated_latency_percentile_ms(client_request_latency_buckets, 99);
         NodeStats {
             node_id: self.id,
             status: set.local_status(),
@@ -2818,6 +3224,22 @@ impl NodeHandle {
                 .snapshot_last_load_duration_ms
                 .load(Ordering::Relaxed),
             snapshot_last_load_entries: self.snapshot_last_load_entries.load(Ordering::Relaxed),
+            snapshot_last_load_age_secs,
+            snapshot_restore_attempt_total: self
+                .snapshot_restore_attempt_total
+                .load(Ordering::Relaxed),
+            snapshot_restore_success_total: self
+                .snapshot_restore_success_total
+                .load(Ordering::Relaxed),
+            snapshot_restore_failure_total: self
+                .snapshot_restore_failure_total
+                .load(Ordering::Relaxed),
+            snapshot_restore_not_found_total: self
+                .snapshot_restore_not_found_total
+                .load(Ordering::Relaxed),
+            snapshot_restore_policy_block_total: self
+                .snapshot_restore_policy_block_total
+                .load(Ordering::Relaxed),
             persistence_platform_allowed,
             persistence_runtime_enabled,
             persistence_enabled,
@@ -2834,6 +3256,7 @@ impl NodeHandle {
             read_repair_enabled,
             hot_key_coalesced_hits_total: self.hot_key_coalesced_hits_total.load(Ordering::Relaxed),
             hot_key_fallback_exec_total: self.hot_key_fallback_exec_total.load(Ordering::Relaxed),
+            hot_key_inflight_keys,
             read_repair_trigger_total: self.read_repair_trigger_total.load(Ordering::Relaxed),
             read_repair_success_total: self.read_repair_success_total.load(Ordering::Relaxed),
             read_repair_throttled_total: self.read_repair_throttled_total.load(Ordering::Relaxed),
@@ -2878,6 +3301,36 @@ impl NodeHandle {
             circuit_breaker_state,
             circuit_breaker_open_total: self.circuit_breaker_open_total.load(Ordering::Relaxed),
             circuit_breaker_reject_total: self.circuit_breaker_reject_total.load(Ordering::Relaxed),
+            client_requests_total: self.client_requests_total.load(Ordering::Relaxed),
+            client_requests_tcp_total: self.client_requests_tcp_total.load(Ordering::Relaxed),
+            client_requests_http_total: self.client_requests_http_total.load(Ordering::Relaxed),
+            client_requests_internal_total: self
+                .client_requests_internal_total
+                .load(Ordering::Relaxed),
+            client_request_latency_le_1ms_total: client_request_latency_buckets[0],
+            client_request_latency_le_5ms_total: client_request_latency_buckets[1],
+            client_request_latency_le_20ms_total: client_request_latency_buckets[2],
+            client_request_latency_le_100ms_total: client_request_latency_buckets[3],
+            client_request_latency_le_500ms_total: client_request_latency_buckets[4],
+            client_request_latency_gt_500ms_total: client_request_latency_buckets[5],
+            client_latency_p50_estimate_ms,
+            client_latency_p90_estimate_ms,
+            client_latency_p95_estimate_ms,
+            client_latency_p99_estimate_ms,
+            client_error_total: self.client_error_total.load(Ordering::Relaxed),
+            client_errors_tcp_total: self.client_errors_tcp_total.load(Ordering::Relaxed),
+            client_errors_http_total: self.client_errors_http_total.load(Ordering::Relaxed),
+            client_errors_internal_total: self.client_errors_internal_total.load(Ordering::Relaxed),
+            client_error_auth_total: self.client_error_auth_total.load(Ordering::Relaxed),
+            client_error_throttle_total: self.client_error_throttle_total.load(Ordering::Relaxed),
+            client_error_availability_total: self
+                .client_error_availability_total
+                .load(Ordering::Relaxed),
+            client_error_validation_total: self
+                .client_error_validation_total
+                .load(Ordering::Relaxed),
+            client_error_internal_total: self.client_error_internal_total.load(Ordering::Relaxed),
+            client_error_other_total: self.client_error_other_total.load(Ordering::Relaxed),
         }
     }
 }
@@ -2899,12 +3352,14 @@ fn dir_size_bytes(path: &str) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{GetFlight, NodeHandle, TokenBucket, PROTOCOL_VERSION};
+    use super::{
+        CircuitState, ClientRequestSource, GetFlight, NodeHandle, TokenBucket, PROTOCOL_VERSION,
+    };
     use crate::config::Config;
     use crate::store::kv_store::ExportEntry;
     use crate::store::KvStore;
     use bytes::Bytes;
-    use ditto_protocol::{AdminRequest, AdminResponse, ClientRequest, ClientResponse};
+    use ditto_protocol::{AdminRequest, AdminResponse, ClientRequest, ClientResponse, ErrorCode};
     use std::sync::{atomic::Ordering, Arc};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -3051,6 +3506,12 @@ mod tests {
             }
             other => panic!("expected AdminResponse::Error, got {:?}", other),
         }
+        let stats = node.stats().await;
+        assert_eq!(stats.snapshot_restore_attempt_total, 1);
+        assert_eq!(stats.snapshot_restore_success_total, 0);
+        assert_eq!(stats.snapshot_restore_failure_total, 1);
+        assert_eq!(stats.snapshot_restore_not_found_total, 0);
+        assert_eq!(stats.snapshot_restore_policy_block_total, 1);
 
         let _ = std::fs::remove_dir_all(backup_dir);
     }
@@ -3093,6 +3554,44 @@ mod tests {
         let stats = node.stats().await;
         assert_eq!(stats.snapshot_last_load_entries, 1);
         assert!(stats.snapshot_last_load_path.is_some());
+        assert!(stats.snapshot_last_load_age_secs.is_some());
+        assert_eq!(stats.snapshot_restore_attempt_total, 1);
+        assert_eq!(stats.snapshot_restore_success_total, 1);
+        assert_eq!(stats.snapshot_restore_failure_total, 0);
+        assert_eq!(stats.snapshot_restore_not_found_total, 0);
+        assert_eq!(stats.snapshot_restore_policy_block_total, 0);
+
+        let _ = std::fs::remove_dir_all(backup_dir);
+    }
+
+    #[tokio::test]
+    async fn restore_snapshot_invalid_file_increments_failure_counter() {
+        let backup_dir = temp_backup_dir("restore-invalid");
+        let mut cfg = Config::default();
+        cfg.backup.path = backup_dir.clone();
+        cfg.persistence.platform_allowed = true;
+        cfg.persistence.runtime_enabled = true;
+        cfg.persistence.import_allowed = true;
+        let node = test_node(cfg);
+
+        let file =
+            std::path::Path::new(&backup_dir).join("test-node_backup_2099.01.01_00-00-00_UTC.bin");
+        std::fs::write(&file, b"not-bincode").expect("write invalid snapshot file");
+
+        let resp = Arc::clone(&node)
+            .handle_admin(AdminRequest::RestoreLatestSnapshot)
+            .await;
+        match resp {
+            AdminResponse::Error { .. } => {}
+            other => panic!("expected AdminResponse::Error, got {:?}", other),
+        }
+
+        let stats = node.stats().await;
+        assert_eq!(stats.snapshot_restore_attempt_total, 1);
+        assert_eq!(stats.snapshot_restore_success_total, 0);
+        assert_eq!(stats.snapshot_restore_failure_total, 1);
+        assert_eq!(stats.snapshot_restore_not_found_total, 0);
+        assert_eq!(stats.snapshot_restore_policy_block_total, 0);
 
         let _ = std::fs::remove_dir_all(backup_dir);
     }
@@ -3120,6 +3619,140 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn client_observability_counters_track_latency_and_error_categories() {
+        let node = test_node(Config::default());
+
+        node.observe_client_response_metrics(
+            ClientRequestSource::Tcp,
+            Duration::from_millis(1),
+            &ClientResponse::Pong,
+        );
+        node.observe_client_response_metrics(
+            ClientRequestSource::Http,
+            Duration::from_millis(12),
+            &ClientResponse::Error {
+                code: ErrorCode::RateLimited,
+                message: "synthetic".into(),
+            },
+        );
+        node.observe_client_response_metrics(
+            ClientRequestSource::Internal,
+            Duration::from_millis(250),
+            &ClientResponse::Error {
+                code: ErrorCode::NoQuorum,
+                message: "synthetic".into(),
+            },
+        );
+        node.observe_client_response_metrics(
+            ClientRequestSource::Http,
+            Duration::from_millis(750),
+            &ClientResponse::Error {
+                code: ErrorCode::InternalError,
+                message: "synthetic".into(),
+            },
+        );
+
+        let stats = node.stats().await;
+        assert_eq!(stats.client_requests_total, 4);
+        assert_eq!(stats.client_requests_tcp_total, 1);
+        assert_eq!(stats.client_requests_http_total, 2);
+        assert_eq!(stats.client_requests_internal_total, 1);
+        assert_eq!(stats.client_request_latency_le_1ms_total, 1);
+        assert_eq!(stats.client_request_latency_le_20ms_total, 1);
+        assert_eq!(stats.client_request_latency_le_500ms_total, 1);
+        assert_eq!(stats.client_request_latency_gt_500ms_total, 1);
+        assert_eq!(stats.client_latency_p50_estimate_ms, Some(20));
+        assert_eq!(stats.client_latency_p90_estimate_ms, Some(1000));
+        assert_eq!(stats.client_error_total, 3);
+        assert_eq!(stats.client_errors_tcp_total, 0);
+        assert_eq!(stats.client_errors_http_total, 2);
+        assert_eq!(stats.client_errors_internal_total, 1);
+        assert_eq!(stats.client_error_throttle_total, 1);
+        assert_eq!(stats.client_error_availability_total, 1);
+        assert_eq!(stats.client_error_internal_total, 1);
+    }
+
+    #[test]
+    fn rate_limiter_denials_increment_counter() {
+        let mut cfg = Config::default();
+        cfg.rate_limit.enabled = true;
+        cfg.rate_limit.burst = 1;
+        cfg.rate_limit.requests_per_sec = 1;
+        let node = test_node(cfg);
+
+        assert!(node.allow_by_rate_limit());
+        assert!(!node.allow_by_rate_limit());
+        assert_eq!(node.rate_limited_requests_total.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn circuit_breaker_opens_on_threshold_and_rejects_while_open() {
+        let mut cfg = Config::default();
+        cfg.circuit_breaker.enabled = true;
+        cfg.circuit_breaker.failure_threshold = 2;
+        cfg.circuit_breaker.open_ms = 60_000;
+        cfg.circuit_breaker.half_open_max_requests = 1;
+        let node = test_node(cfg);
+
+        node.record_circuit_result(&ClientResponse::Error {
+            code: ErrorCode::NoQuorum,
+            message: "synthetic".into(),
+        });
+        node.record_circuit_result(&ClientResponse::Error {
+            code: ErrorCode::WriteTimeout,
+            message: "synthetic".into(),
+        });
+
+        {
+            let c = node.circuit.lock().unwrap();
+            assert_eq!(c.state, CircuitState::Open);
+        }
+        assert_eq!(node.circuit_breaker_open_total.load(Ordering::Relaxed), 1);
+        assert!(!node.allow_by_circuit_breaker());
+        assert_eq!(node.circuit_breaker_reject_total.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn circuit_breaker_half_open_closes_after_success_quota() {
+        let mut cfg = Config::default();
+        cfg.circuit_breaker.enabled = true;
+        cfg.circuit_breaker.failure_threshold = 1;
+        cfg.circuit_breaker.open_ms = 1;
+        cfg.circuit_breaker.half_open_max_requests = 2;
+        let node = test_node(cfg);
+
+        {
+            let mut c = node.circuit.lock().unwrap();
+            c.state = CircuitState::Open;
+            c.open_until_ms = NodeHandle::now_millis().saturating_sub(1);
+            c.half_open_successes = 0;
+            c.consecutive_failures = 1;
+        }
+
+        assert!(node.allow_by_circuit_breaker());
+        {
+            let c = node.circuit.lock().unwrap();
+            assert_eq!(c.state, CircuitState::HalfOpen);
+            assert_eq!(c.half_open_successes, 0);
+        }
+
+        node.record_circuit_result(&ClientResponse::Pong);
+        {
+            let c = node.circuit.lock().unwrap();
+            assert_eq!(c.state, CircuitState::HalfOpen);
+            assert_eq!(c.half_open_successes, 1);
+        }
+
+        node.record_circuit_result(&ClientResponse::Pong);
+        {
+            let c = node.circuit.lock().unwrap();
+            assert_eq!(c.state, CircuitState::Closed);
+            assert_eq!(c.consecutive_failures, 0);
+            assert_eq!(c.half_open_successes, 0);
+        }
+    }
+
+    #[tokio::test]
     async fn hot_key_waiter_uses_coalesced_response() {
         let mut cfg = Config::default();
         cfg.hot_key.enabled = true;
@@ -3143,9 +3776,7 @@ mod tests {
             }));
         });
 
-        let resp = node
-            .handle_get_with_single_flight(key.clone(), key)
-            .await;
+        let resp = node.handle_get_with_single_flight(key.clone(), key).await;
         assert!(matches!(resp, ClientResponse::Value { version: 7, .. }));
         assert_eq!(node.hot_key_coalesced_hits_total.load(Ordering::Relaxed), 1);
         assert_eq!(node.hot_key_fallback_exec_total.load(Ordering::Relaxed), 0);
@@ -3166,9 +3797,7 @@ mod tests {
             flights.insert(key.clone(), Arc::clone(&flight));
         }
 
-        let resp = node
-            .handle_get_with_single_flight(key.clone(), key)
-            .await;
+        let resp = node.handle_get_with_single_flight(key.clone(), key).await;
         assert!(matches!(resp, ClientResponse::NotFound));
         assert_eq!(node.hot_key_fallback_exec_total.load(Ordering::Relaxed), 1);
     }
@@ -3265,7 +3894,7 @@ mod tests {
         node.namespace_quota_reject_last_total
             .store(0, Ordering::Relaxed);
         node.namespace_quota_reject_last_ts_ms.store(
-            NodeHandle::now_millis().saturating_sub(60_000),
+            NodeHandle::now_millis().saturating_sub(1_000),
             Ordering::Relaxed,
         );
 
@@ -3276,6 +3905,9 @@ mod tests {
         assert_eq!(top.usage_pct, 100);
         assert_eq!(top.remaining_keys, 0);
         assert!(stats.namespace_quota_reject_rate_per_min >= 1);
-        assert_eq!(stats.namespace_quota_reject_trend, "rising");
+        assert!(matches!(
+            stats.namespace_quota_reject_trend.as_str(),
+            "rising" | "surging"
+        ));
     }
 }

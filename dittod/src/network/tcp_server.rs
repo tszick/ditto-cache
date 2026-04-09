@@ -107,7 +107,7 @@ async fn handle_client(mut stream: TcpStream, node: Arc<NodeHandle>) -> anyhow::
                         stream.write_all(&bytes).await?;
                     }
                     other => {
-                        let response = node.handle_client(other).await;
+                        let response = node.handle_client_tcp(other).await;
                         let bytes = encode(&response)?;
                         stream.write_all(&bytes).await?;
                     }

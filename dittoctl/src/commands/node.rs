@@ -275,6 +275,28 @@ pub async fn run(cmd: NodeCommand, cfg: &mut CtlConfig, client: &reqwest::Client
                         .unwrap_or("0")
                 );
                 println!(
+                    "  {:<22} {}s",
+                    "snapshot-load-age",
+                    node["snapshot_last_load_age_secs"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("0")
+                );
+                println!(
+                    "  {:<22} attempts:{} success:{} fail:{} no-snap:{} policy-block:{}",
+                    "snapshot-restore",
+                    node["snapshot_restore_attempt_total"].as_u64().unwrap_or(0),
+                    node["snapshot_restore_success_total"].as_u64().unwrap_or(0),
+                    node["snapshot_restore_failure_total"].as_u64().unwrap_or(0),
+                    node["snapshot_restore_not_found_total"]
+                        .as_u64()
+                        .unwrap_or(0),
+                    node["snapshot_restore_policy_block_total"]
+                        .as_u64()
+                        .unwrap_or(0)
+                );
+                println!(
                     "  {:<22} {}",
                     "persistence",
                     node["persistence_enabled"]
@@ -373,6 +395,15 @@ pub async fn run(cmd: NodeCommand, cfg: &mut CtlConfig, client: &reqwest::Client
                     "  {:<22} {}",
                     "hot-key-fallback",
                     node["hot_key_fallback_exec_total"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "hot-key-inflight",
+                    node["hot_key_inflight_keys"]
                         .as_u64()
                         .map(|v| v.to_string())
                         .as_deref()
@@ -581,6 +612,72 @@ pub async fn run(cmd: NodeCommand, cfg: &mut CtlConfig, client: &reqwest::Client
                         .map(|v| v.to_string())
                         .as_deref()
                         .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "client-requests",
+                    node["client_requests_total"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} tcp:{} http:{} internal:{}",
+                    "client-requests-by-src",
+                    node["client_requests_tcp_total"].as_u64().unwrap_or(0),
+                    node["client_requests_http_total"].as_u64().unwrap_or(0),
+                    node["client_requests_internal_total"].as_u64().unwrap_or(0)
+                );
+                println!(
+                    "  {:<22} <=1ms:{} <=5ms:{} <=20ms:{} <=100ms:{} <=500ms:{} >500ms:{}",
+                    "client-latency",
+                    node["client_request_latency_le_1ms_total"]
+                        .as_u64()
+                        .unwrap_or(0),
+                    node["client_request_latency_le_5ms_total"]
+                        .as_u64()
+                        .unwrap_or(0),
+                    node["client_request_latency_le_20ms_total"]
+                        .as_u64()
+                        .unwrap_or(0),
+                    node["client_request_latency_le_100ms_total"]
+                        .as_u64()
+                        .unwrap_or(0),
+                    node["client_request_latency_le_500ms_total"]
+                        .as_u64()
+                        .unwrap_or(0),
+                    node["client_request_latency_gt_500ms_total"]
+                        .as_u64()
+                        .unwrap_or(0)
+                );
+                println!(
+                    "  {:<22} p50:{}ms p90:{}ms p95:{}ms p99:{}ms",
+                    "client-latency-est",
+                    node["client_latency_p50_estimate_ms"].as_u64().unwrap_or(0),
+                    node["client_latency_p90_estimate_ms"].as_u64().unwrap_or(0),
+                    node["client_latency_p95_estimate_ms"].as_u64().unwrap_or(0),
+                    node["client_latency_p99_estimate_ms"].as_u64().unwrap_or(0)
+                );
+                println!(
+                    "  {:<22} tcp:{} http:{} internal:{}",
+                    "client-errors-by-src",
+                    node["client_errors_tcp_total"].as_u64().unwrap_or(0),
+                    node["client_errors_http_total"].as_u64().unwrap_or(0),
+                    node["client_errors_internal_total"].as_u64().unwrap_or(0)
+                );
+                println!(
+                    "  {:<22} total:{} auth:{} throttle:{} avail:{} valid:{} internal:{} other:{}",
+                    "client-errors",
+                    node["client_error_total"].as_u64().unwrap_or(0),
+                    node["client_error_auth_total"].as_u64().unwrap_or(0),
+                    node["client_error_throttle_total"].as_u64().unwrap_or(0),
+                    node["client_error_availability_total"]
+                        .as_u64()
+                        .unwrap_or(0),
+                    node["client_error_validation_total"].as_u64().unwrap_or(0),
+                    node["client_error_internal_total"].as_u64().unwrap_or(0),
+                    node["client_error_other_total"].as_u64().unwrap_or(0)
                 );
             }
         }

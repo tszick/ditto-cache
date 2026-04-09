@@ -162,7 +162,7 @@ async fn handle_get(
     State(node): State<Arc<NodeHandle>>,
 ) -> Response {
     match node
-        .handle_client(ClientRequest::Get {
+        .handle_client_http(ClientRequest::Get {
             key,
             namespace: namespace_from_headers(&headers),
         })
@@ -215,7 +215,7 @@ async fn handle_set(
         ttl_secs: q.ttl,
         namespace: namespace_from_headers(&headers),
     };
-    match node.handle_client(req).await {
+    match node.handle_client_http(req).await {
         ClientResponse::Ok { version } => {
             Json(serde_json::json!({ "version": version })).into_response()
         }
@@ -257,7 +257,7 @@ async fn handle_batch_set(
             ttl_secs: item.ttl_secs,
             namespace: namespace_from_headers(&headers),
         };
-        match node.handle_client(req).await {
+        match node.handle_client_http(req).await {
             ClientResponse::Ok { .. } => succeeded += 1,
             ClientResponse::Error { code, message } => {
                 errors.push(serde_json::json!({
@@ -294,7 +294,7 @@ async fn handle_delete(
     State(node): State<Arc<NodeHandle>>,
 ) -> Response {
     match node
-        .handle_client(ClientRequest::Delete {
+        .handle_client_http(ClientRequest::Delete {
             key,
             namespace: namespace_from_headers(&headers),
         })
@@ -318,7 +318,7 @@ async fn handle_delete_by_pattern(
     Json(body): Json<DeleteByPatternBody>,
 ) -> Response {
     match node
-        .handle_client(ClientRequest::DeleteByPattern {
+        .handle_client_http(ClientRequest::DeleteByPattern {
             pattern: body.pattern,
             namespace: namespace_from_headers(&headers),
         })
@@ -344,7 +344,7 @@ async fn handle_set_ttl_by_pattern(
     Json(body): Json<SetTtlByPatternBody>,
 ) -> Response {
     match node
-        .handle_client(ClientRequest::SetTtlByPattern {
+        .handle_client_http(ClientRequest::SetTtlByPattern {
             pattern: body.pattern,
             ttl_secs: body.ttl_secs,
             namespace: namespace_from_headers(&headers),
@@ -360,7 +360,7 @@ async fn handle_set_ttl_by_pattern(
 }
 
 async fn handle_ping(State(node): State<Arc<NodeHandle>>) -> Response {
-    node.handle_client(ClientRequest::Ping).await;
+    node.handle_client_http(ClientRequest::Ping).await;
     Json(serde_json::json!({ "pong": true })).into_response()
 }
 
@@ -389,6 +389,31 @@ async fn handle_health_summary(State(node): State<Arc<NodeHandle>>) -> Response 
         "circuit_breaker_state": stats.circuit_breaker_state,
         "circuit_breaker_open_total": stats.circuit_breaker_open_total,
         "circuit_breaker_reject_total": stats.circuit_breaker_reject_total,
+        "hot_key_inflight_keys": stats.hot_key_inflight_keys,
+        "client_requests_total": stats.client_requests_total,
+        "client_requests_tcp_total": stats.client_requests_tcp_total,
+        "client_requests_http_total": stats.client_requests_http_total,
+        "client_requests_internal_total": stats.client_requests_internal_total,
+        "client_request_latency_le_1ms_total": stats.client_request_latency_le_1ms_total,
+        "client_request_latency_le_5ms_total": stats.client_request_latency_le_5ms_total,
+        "client_request_latency_le_20ms_total": stats.client_request_latency_le_20ms_total,
+        "client_request_latency_le_100ms_total": stats.client_request_latency_le_100ms_total,
+        "client_request_latency_le_500ms_total": stats.client_request_latency_le_500ms_total,
+        "client_request_latency_gt_500ms_total": stats.client_request_latency_gt_500ms_total,
+        "client_latency_p50_estimate_ms": stats.client_latency_p50_estimate_ms,
+        "client_latency_p90_estimate_ms": stats.client_latency_p90_estimate_ms,
+        "client_latency_p95_estimate_ms": stats.client_latency_p95_estimate_ms,
+        "client_latency_p99_estimate_ms": stats.client_latency_p99_estimate_ms,
+        "client_error_total": stats.client_error_total,
+        "client_errors_tcp_total": stats.client_errors_tcp_total,
+        "client_errors_http_total": stats.client_errors_http_total,
+        "client_errors_internal_total": stats.client_errors_internal_total,
+        "client_error_auth_total": stats.client_error_auth_total,
+        "client_error_throttle_total": stats.client_error_throttle_total,
+        "client_error_availability_total": stats.client_error_availability_total,
+        "client_error_validation_total": stats.client_error_validation_total,
+        "client_error_internal_total": stats.client_error_internal_total,
+        "client_error_other_total": stats.client_error_other_total,
         "read_repair_enabled": stats.read_repair_enabled,
         "read_repair_trigger_total": stats.read_repair_trigger_total,
         "read_repair_throttled_total": stats.read_repair_throttled_total,
@@ -401,12 +426,21 @@ async fn handle_health_summary(State(node): State<Arc<NodeHandle>>) -> Response 
         "namespace_quota_top_usage": stats.namespace_quota_top_usage,
         "persistence_enabled": stats.persistence_enabled,
         "tenancy_enabled": stats.tenancy_enabled,
+        "snapshot_last_load_age_secs": stats.snapshot_last_load_age_secs,
+        "snapshot_restore_attempt_total": stats.snapshot_restore_attempt_total,
+        "snapshot_restore_success_total": stats.snapshot_restore_success_total,
+        "snapshot_restore_failure_total": stats.snapshot_restore_failure_total,
+        "snapshot_restore_not_found_total": stats.snapshot_restore_not_found_total,
+        "snapshot_restore_policy_block_total": stats.snapshot_restore_policy_block_total,
     });
 
     Json(body).into_response()
 }
 
-fn availability_for_stats(status: &ditto_protocol::NodeStatus, circuit_breaker_state: &str) -> &'static str {
+fn availability_for_stats(
+    status: &ditto_protocol::NodeStatus,
+    circuit_breaker_state: &str,
+) -> &'static str {
     use ditto_protocol::NodeStatus;
     match status {
         NodeStatus::Active => {

@@ -208,7 +208,9 @@ pub async fn list_keys(
     for addr in addrs {
         match admin_rpc(
             addr,
-            AdminRequest::ListKeys { pattern: pattern.clone() },
+            AdminRequest::ListKeys {
+                pattern: pattern.clone(),
+            },
             state.tls.as_ref(),
         )
         .await

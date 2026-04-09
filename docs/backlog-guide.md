@@ -18,7 +18,7 @@ This document tracks the next major development themes for the distributed cache
 2. Rate limit + circuit breaker
 - What: request throttling and fail-fast protection on repeated failures.
 - Why: improves stability during spikes and partial outages.
-- Status: in progress (Sprint 1 foundation delivered).
+- Status: delivered (Sprint 1 baseline + hardening complete).
 
 3. Hot-key protection
 - What: single-flight/request coalescing and soft-TTL patterns for hot keys.
@@ -38,12 +38,12 @@ This document tracks the next major development themes for the distributed cache
 6. Snapshot + fast restart
 - What: startup warm state from snapshot, then catch-up deltas.
 - Why: significantly faster recovery and restart times.
-- Status: planned.
+- Status: delivered (MVP + observability hardening complete).
 
 7. Deep observability
 - What: latency histograms, categorized errors, replication-lag metrics.
 - Why: faster incident diagnosis and better capacity planning.
-- Status: planned (Sprint 1 base metrics included).
+- Status: delivered (Sprint 4 + post-sprint observability expansion).
 
 8. Chaos/Jepsen-style resilience tests
 - What: automated partition, node-failure, and timing-fault scenarios.
@@ -230,7 +230,43 @@ Sprint 4 completion update (2026-04-07):
   - Operational documentation finalized:
     - `docs/operations-runbook.md` incident playbooks,
     - `docs/chaos-playbook.md` automated + manual scenarios,
-    - README test and CI guidance aligned with Sprint 4 scope.
+  - README test and CI guidance aligned with Sprint 4 scope.
+
+Rate limit + circuit breaker closure update (2026-04-09):
+
+- Completed:
+  - config/env toggles and guardrails (`DITTO_RATE_LIMIT_*`, `DITTO_CIRCUIT_BREAKER_*`),
+  - runtime request gating in client path (`RateLimited`, `CircuitOpen`),
+  - status/mgmt/CLI observability fields and counters (`rate_limited_requests_total`, `circuit_breaker_state`, open/reject totals),
+  - HTTP status mapping alignment (`429` for rate-limit, `503` for open-circuit),
+  - dedicated unit coverage for token-bucket rejection counting and circuit state transitions (open -> half-open -> closed).
+
+Deep observability closure update (2026-04-09):
+
+- Completed:
+  - node-level request latency histogram buckets (`<=1ms`, `<=5ms`, `<=20ms`, `<=100ms`, `<=500ms`, `>500ms`),
+  - endpoint-level request + error split (`tcp` / `http` / `internal`) in node stats, health summary, mgmt node status and `dittoctl node status`,
+  - percentile export integration from histogram buckets (`client_latency_p50_estimate_ms`, `p90`, `p95`, `p99`),
+  - categorized client error counters (`auth`, `throttle`, `availability`, `validation`, `internal`, `other`),
+  - exposure in node stats, health summary JSON, mgmt node status view, and `dittoctl node status` output,
+  - dashboard/alert presets for latency/error burn-rate added to `docs/operations-runbook.md`,
+  - targeted unit coverage for latency bucket, source split, percentile estimation and error-category accounting.
+
+Snapshot + fast restart closure update (2026-04-09):
+
+- Completed:
+  - snapshot restore age metric (`snapshot_last_load_age_secs`) added to node stats,
+  - surfaced in health summary, mgmt node status, and `dittoctl node status`,
+  - snapshot restore counters in node stats (`snapshot_restore_attempt_total`, `snapshot_restore_success_total`, `snapshot_restore_failure_total`, `snapshot_restore_not_found_total`, `snapshot_restore_policy_block_total`),
+  - snapshot restore counters surfaced in health summary, mgmt node status and `dittoctl node status`,
+  - snapshot restore regression coverage extended with policy-blocked, invalid snapshot and successful restore counter assertions,
+  - snapshot freshness threshold guidance added to `docs/operations-runbook.md`.
+
+Hot-key observability update (2026-04-09):
+
+- Completed in this slice:
+  - added `hot_key_inflight_keys` runtime metric to show current in-flight single-flight key count,
+  - surfaced in node stats, health summary, mgmt node status, and `dittoctl node status`.
 
 Next session plan (2026-04-08):
 

@@ -67,7 +67,10 @@ pub enum CacheCommand {
 }
 
 fn append_namespace_query(url: &mut String, namespace: Option<String>) {
-    if let Some(ns) = namespace.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
+    if let Some(ns) = namespace
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+    {
         let sep = if url.contains('?') { '&' } else { '?' };
         url.push(sep);
         url.push_str("namespace=");

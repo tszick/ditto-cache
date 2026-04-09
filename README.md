@@ -197,6 +197,7 @@ Example response:
   "namespace_quota_reject_trend": "steady",
   "namespace_quota_top_usage": [],
   "persistence_enabled": true,
+  "snapshot_last_load_age_secs": 42,
   "tenancy_enabled": false
 }
 ```

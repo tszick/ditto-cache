@@ -370,6 +370,19 @@ pub struct NodeStats {
     pub snapshot_last_load_duration_ms: u64,
     /// Number of entries restored by the last snapshot load.
     pub snapshot_last_load_entries: u64,
+    /// Age of the last snapshot load in seconds.
+    /// `None` when no snapshot has been restored in this runtime.
+    pub snapshot_last_load_age_secs: Option<u64>,
+    /// Total restore command attempts received.
+    pub snapshot_restore_attempt_total: u64,
+    /// Total successful restore executions.
+    pub snapshot_restore_success_total: u64,
+    /// Total restore failures (policy blocked + runtime restore errors).
+    pub snapshot_restore_failure_total: u64,
+    /// Total restore requests where no snapshot file was found.
+    pub snapshot_restore_not_found_total: u64,
+    /// Total restore requests rejected by persistence policy gate.
+    pub snapshot_restore_policy_block_total: u64,
     /// Platform-level persistence gate (env/config controlled).
     pub persistence_platform_allowed: bool,
     /// Runtime persistence gate (admin controlled).
@@ -402,6 +415,8 @@ pub struct NodeStats {
     pub hot_key_coalesced_hits_total: u64,
     /// Total GET requests that bypassed coalescing (waiter cap / fallback).
     pub hot_key_fallback_exec_total: u64,
+    /// Number of keys currently tracked as in-flight single-flight entries.
+    pub hot_key_inflight_keys: u64,
     /// Total read-repair attempts triggered on local misses.
     pub read_repair_trigger_total: u64,
     /// Total read-repair attempts where primary had the value.
@@ -446,6 +461,37 @@ pub struct NodeStats {
     pub circuit_breaker_open_total: u64,
     /// Total client requests rejected because circuit is open/limited in half-open.
     pub circuit_breaker_reject_total: u64,
+    /// Total client requests observed by the node request handler.
+    pub client_requests_total: u64,
+    /// Client request counts split by ingress path.
+    pub client_requests_tcp_total: u64,
+    pub client_requests_http_total: u64,
+    pub client_requests_internal_total: u64,
+    /// Request latency bucket counters.
+    pub client_request_latency_le_1ms_total: u64,
+    pub client_request_latency_le_5ms_total: u64,
+    pub client_request_latency_le_20ms_total: u64,
+    pub client_request_latency_le_100ms_total: u64,
+    pub client_request_latency_le_500ms_total: u64,
+    pub client_request_latency_gt_500ms_total: u64,
+    /// Approximate latency percentiles derived from histogram buckets.
+    pub client_latency_p50_estimate_ms: Option<u64>,
+    pub client_latency_p90_estimate_ms: Option<u64>,
+    pub client_latency_p95_estimate_ms: Option<u64>,
+    pub client_latency_p99_estimate_ms: Option<u64>,
+    /// Total client error responses.
+    pub client_error_total: u64,
+    /// Client error counts split by ingress path.
+    pub client_errors_tcp_total: u64,
+    pub client_errors_http_total: u64,
+    pub client_errors_internal_total: u64,
+    /// Client error category counters.
+    pub client_error_auth_total: u64,
+    pub client_error_throttle_total: u64,
+    pub client_error_availability_total: u64,
+    pub client_error_validation_total: u64,
+    pub client_error_internal_total: u64,
+    pub client_error_other_total: u64,
 }
 
 // ---------------------------------------------------------------------------
