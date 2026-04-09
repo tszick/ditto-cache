@@ -192,6 +192,10 @@ Example response:
   "circuit_breaker_state": "closed",
   "anti_entropy_last_detected_lag": 0,
   "mixed_version_last_detected_peer_count": 0,
+  "namespace_quota_reject_total": 0,
+  "namespace_quota_reject_rate_per_min": 0,
+  "namespace_quota_reject_trend": "steady",
+  "namespace_quota_top_usage": [],
   "persistence_enabled": true,
   "tenancy_enabled": false
 }

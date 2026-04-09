@@ -423,6 +423,25 @@ pub async fn run(cmd: NodeCommand, cfg: &mut CtlConfig, client: &reqwest::Client
                 );
                 println!(
                     "  {:<22} {}",
+                    "namespace-quota-rej-rpm",
+                    node["namespace_quota_reject_rate_per_min"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "namespace-quota-trend",
+                    node["namespace_quota_reject_trend"].as_str().unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "namespace-quota-top",
+                    fmt_namespace_quota_top_usage(&node["namespace_quota_top_usage"])
+                );
+                println!(
+                    "  {:<22} {}",
                     "anti-entropy-runs",
                     node["anti_entropy_runs_total"]
                         .as_u64()
@@ -578,4 +597,24 @@ fn fmt_uptime(secs: u64) -> String {
         let s = secs % 60;
         format!("{}h {}m {}s", h, m, s)
     }
+}
+
+fn fmt_namespace_quota_top_usage(v: &serde_json::Value) -> String {
+    let Some(items) = v.as_array() else {
+        return "-".to_string();
+    };
+    if items.is_empty() {
+        return "-".to_string();
+    }
+    items
+        .iter()
+        .map(|item| {
+            let ns = item["namespace"].as_str().unwrap_or("?");
+            let count = item["key_count"].as_u64().unwrap_or(0);
+            let quota = item["quota_limit"].as_u64().unwrap_or(0);
+            let pct = item["usage_pct"].as_u64().unwrap_or(0);
+            format!("{}:{}/{}({}%)", ns, count, quota, pct)
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }

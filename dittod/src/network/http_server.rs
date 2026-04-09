@@ -396,6 +396,9 @@ async fn handle_health_summary(State(node): State<Arc<NodeHandle>>) -> Response 
         "anti_entropy_repair_trigger_total": stats.anti_entropy_repair_trigger_total,
         "mixed_version_last_detected_peer_count": stats.mixed_version_last_detected_peer_count,
         "namespace_quota_reject_total": stats.namespace_quota_reject_total,
+        "namespace_quota_reject_rate_per_min": stats.namespace_quota_reject_rate_per_min,
+        "namespace_quota_reject_trend": stats.namespace_quota_reject_trend,
+        "namespace_quota_top_usage": stats.namespace_quota_top_usage,
         "persistence_enabled": stats.persistence_enabled,
         "tenancy_enabled": stats.tenancy_enabled,
     });

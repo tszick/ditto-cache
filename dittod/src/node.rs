@@ -10,7 +10,7 @@ use crate::{
 use bytes::Bytes;
 use ditto_protocol::{
     AdminRequest, AdminResponse, ClientRequest, ClientResponse, ClusterMessage, ErrorCode,
-    NodeStats, NodeStatus,
+    NamespaceQuotaUsage, NodeStats, NodeStatus,
 };
 use std::{
     collections::HashMap,
@@ -137,6 +137,8 @@ pub struct NodeHandle {
     read_repair_success_total: AtomicU64,
     read_repair_throttled_total: AtomicU64,
     namespace_quota_reject_total: AtomicU64,
+    namespace_quota_reject_last_total: AtomicU64,
+    namespace_quota_reject_last_ts_ms: AtomicU64,
     last_read_repair_trigger_ms: AtomicU64,
     anti_entropy_runs_total: AtomicU64,
     anti_entropy_repair_trigger_total: AtomicU64,
@@ -213,6 +215,8 @@ impl NodeHandle {
             read_repair_success_total: AtomicU64::new(0),
             read_repair_throttled_total: AtomicU64::new(0),
             namespace_quota_reject_total: AtomicU64::new(0),
+            namespace_quota_reject_last_total: AtomicU64::new(0),
+            namespace_quota_reject_last_ts_ms: AtomicU64::new(0),
             last_read_repair_trigger_ms: AtomicU64::new(0),
             anti_entropy_runs_total: AtomicU64::new(0),
             anti_entropy_repair_trigger_total: AtomicU64::new(0),
@@ -1298,6 +1302,18 @@ impl NodeHandle {
             (
                 "namespace-quota-reject-total".into(),
                 stats.namespace_quota_reject_total.to_string(),
+            ),
+            (
+                "namespace-quota-reject-rate-per-min".into(),
+                stats.namespace_quota_reject_rate_per_min.to_string(),
+            ),
+            (
+                "namespace-quota-reject-trend".into(),
+                stats.namespace_quota_reject_trend.clone(),
+            ),
+            (
+                "namespace-quota-top-usage".into(),
+                Self::format_namespace_quota_top_usage(&stats.namespace_quota_top_usage),
             ),
             (
                 "persistence-platform-allowed".into(),
@@ -2660,6 +2676,89 @@ impl NodeHandle {
         });
     }
 
+    fn namespace_quota_top_usage(
+        &self,
+        tenancy_enabled: bool,
+        max_keys_per_namespace: usize,
+        top_n: usize,
+    ) -> Vec<NamespaceQuotaUsage> {
+        if !tenancy_enabled || max_keys_per_namespace == 0 || top_n == 0 {
+            return Vec::new();
+        }
+
+        let mut counts: HashMap<String, u64> = HashMap::new();
+        for key in self.store.keys(None) {
+            if let Some((namespace, _)) = key.split_once("::") {
+                *counts.entry(namespace.to_string()).or_insert(0) += 1;
+            }
+        }
+
+        let quota_limit = max_keys_per_namespace as u64;
+        let mut usage: Vec<NamespaceQuotaUsage> = counts
+            .into_iter()
+            .map(|(namespace, key_count)| {
+                let usage_pct = if quota_limit == 0 {
+                    0
+                } else {
+                    key_count.saturating_mul(100) / quota_limit
+                };
+                let remaining_keys = quota_limit.saturating_sub(key_count);
+                NamespaceQuotaUsage {
+                    namespace,
+                    key_count,
+                    quota_limit,
+                    usage_pct,
+                    remaining_keys,
+                }
+            })
+            .collect();
+
+        usage.sort_by(|a, b| {
+            b.usage_pct
+                .cmp(&a.usage_pct)
+                .then_with(|| b.key_count.cmp(&a.key_count))
+                .then_with(|| a.namespace.cmp(&b.namespace))
+        });
+        usage.truncate(top_n);
+        usage
+    }
+
+    fn namespace_quota_reject_velocity(&self, current_total: u64) -> (u64, String) {
+        let now_ms = Self::now_millis();
+        let prev_total = self
+            .namespace_quota_reject_last_total
+            .swap(current_total, Ordering::Relaxed);
+        let prev_ts = self
+            .namespace_quota_reject_last_ts_ms
+            .swap(now_ms, Ordering::Relaxed);
+
+        if prev_ts == 0 || now_ms <= prev_ts {
+            return (0, "steady".to_string());
+        }
+
+        let delta_total = current_total.saturating_sub(prev_total);
+        let delta_ms = now_ms.saturating_sub(prev_ts).max(1);
+        let rate_per_min = delta_total.saturating_mul(60_000) / delta_ms;
+        let trend = if rate_per_min >= 10 {
+            "surging"
+        } else if rate_per_min > 0 {
+            "rising"
+        } else {
+            "steady"
+        };
+        (rate_per_min, trend.to_string())
+    }
+
+    fn format_namespace_quota_top_usage(usage: &[NamespaceQuotaUsage]) -> String {
+        if usage.is_empty() {
+            return "-".to_string();
+        }
+        usage.iter()
+            .map(|u| format!("{}:{}/{}({}%)", u.namespace, u.key_count, u.quota_limit, u.usage_pct))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
     /// Collect a point-in-time [`NodeStats`] snapshot.
     ///
     /// Acquires short-lived locks on the store, active-set, write-log, and config.
@@ -2686,6 +2785,11 @@ impl NodeHandle {
         let tenancy_enabled = cfg.tenancy.enabled;
         let tenancy_default_namespace = cfg.tenancy.default_namespace.clone();
         let tenancy_max_keys_per_namespace = cfg.tenancy.max_keys_per_namespace;
+        let namespace_quota_top_usage =
+            self.namespace_quota_top_usage(tenancy_enabled, tenancy_max_keys_per_namespace, 3);
+        let namespace_quota_reject_total = self.namespace_quota_reject_total.load(Ordering::Relaxed);
+        let (namespace_quota_reject_rate_per_min, namespace_quota_reject_trend) =
+            self.namespace_quota_reject_velocity(namespace_quota_reject_total);
         let circuit_breaker_state = if circuit_breaker_enabled {
             self.circuit.lock().unwrap().state.as_str().to_string()
         } else {
@@ -2733,7 +2837,10 @@ impl NodeHandle {
             read_repair_trigger_total: self.read_repair_trigger_total.load(Ordering::Relaxed),
             read_repair_success_total: self.read_repair_success_total.load(Ordering::Relaxed),
             read_repair_throttled_total: self.read_repair_throttled_total.load(Ordering::Relaxed),
-            namespace_quota_reject_total: self.namespace_quota_reject_total.load(Ordering::Relaxed),
+            namespace_quota_reject_total,
+            namespace_quota_reject_rate_per_min,
+            namespace_quota_reject_trend,
+            namespace_quota_top_usage,
             anti_entropy_runs_total: self.anti_entropy_runs_total.load(Ordering::Relaxed),
             anti_entropy_repair_trigger_total: self
                 .anti_entropy_repair_trigger_total
@@ -2797,7 +2904,7 @@ mod tests {
     use crate::store::kv_store::ExportEntry;
     use crate::store::KvStore;
     use bytes::Bytes;
-    use ditto_protocol::{AdminRequest, AdminResponse, ClientResponse};
+    use ditto_protocol::{AdminRequest, AdminResponse, ClientRequest, ClientResponse};
     use std::sync::{atomic::Ordering, Arc};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -3064,5 +3171,111 @@ mod tests {
             .await;
         assert!(matches!(resp, ClientResponse::NotFound));
         assert_eq!(node.hot_key_fallback_exec_total.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn namespace_quota_top_usage_empty_when_quota_disabled() {
+        let mut cfg = Config::default();
+        cfg.tenancy.enabled = true;
+        cfg.tenancy.max_keys_per_namespace = 0;
+        let node = test_node(cfg);
+
+        let stats = node.stats().await;
+        assert!(stats.namespace_quota_top_usage.is_empty());
+        assert_eq!(stats.namespace_quota_reject_rate_per_min, 0);
+        assert_eq!(stats.namespace_quota_reject_trend, "steady");
+    }
+
+    #[tokio::test]
+    async fn namespace_quota_top_usage_partial_pressure_sorted() {
+        let mut cfg = Config::default();
+        cfg.tenancy.enabled = true;
+        cfg.tenancy.max_keys_per_namespace = 10;
+        let node = test_node(cfg);
+
+        let _ = node
+            .handle_client(ClientRequest::Set {
+                key: "k1".into(),
+                value: Bytes::from("v"),
+                ttl_secs: None,
+                namespace: Some("tenant-a".into()),
+            })
+            .await;
+        let _ = node
+            .handle_client(ClientRequest::Set {
+                key: "k1".into(),
+                value: Bytes::from("v"),
+                ttl_secs: None,
+                namespace: Some("tenant-b".into()),
+            })
+            .await;
+        let _ = node
+            .handle_client(ClientRequest::Set {
+                key: "k2".into(),
+                value: Bytes::from("v"),
+                ttl_secs: None,
+                namespace: Some("tenant-b".into()),
+            })
+            .await;
+
+        let stats = node.stats().await;
+        assert_eq!(stats.namespace_quota_top_usage.len(), 2);
+        assert_eq!(stats.namespace_quota_top_usage[0].namespace, "tenant-b");
+        assert_eq!(stats.namespace_quota_top_usage[0].key_count, 2);
+        assert_eq!(stats.namespace_quota_top_usage[0].usage_pct, 20);
+        assert_eq!(stats.namespace_quota_top_usage[1].namespace, "tenant-a");
+        assert_eq!(stats.namespace_quota_top_usage[1].key_count, 1);
+        assert_eq!(stats.namespace_quota_top_usage[1].usage_pct, 10);
+    }
+
+    #[tokio::test]
+    async fn namespace_quota_top_usage_full_pressure_and_reject_trend() {
+        let mut cfg = Config::default();
+        cfg.tenancy.enabled = true;
+        cfg.tenancy.max_keys_per_namespace = 2;
+        let node = test_node(cfg);
+
+        let _ = node
+            .handle_client(ClientRequest::Set {
+                key: "k1".into(),
+                value: Bytes::from("v"),
+                ttl_secs: None,
+                namespace: Some("tenant-full".into()),
+            })
+            .await;
+        let _ = node
+            .handle_client(ClientRequest::Set {
+                key: "k2".into(),
+                value: Bytes::from("v"),
+                ttl_secs: None,
+                namespace: Some("tenant-full".into()),
+            })
+            .await;
+
+        let blocked = node
+            .handle_client(ClientRequest::Set {
+                key: "k3".into(),
+                value: Bytes::from("v"),
+                ttl_secs: None,
+                namespace: Some("tenant-full".into()),
+            })
+            .await;
+        assert!(matches!(blocked, ClientResponse::Error { .. }));
+
+        node.namespace_quota_reject_last_total
+            .store(0, Ordering::Relaxed);
+        node.namespace_quota_reject_last_ts_ms.store(
+            NodeHandle::now_millis().saturating_sub(60_000),
+            Ordering::Relaxed,
+        );
+
+        let stats = node.stats().await;
+        let top = &stats.namespace_quota_top_usage[0];
+        assert_eq!(top.namespace, "tenant-full");
+        assert_eq!(top.key_count, 2);
+        assert_eq!(top.usage_pct, 100);
+        assert_eq!(top.remaining_keys, 0);
+        assert!(stats.namespace_quota_reject_rate_per_min >= 1);
+        assert_eq!(stats.namespace_quota_reject_trend, "rising");
     }
 }

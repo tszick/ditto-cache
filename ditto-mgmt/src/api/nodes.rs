@@ -23,6 +23,15 @@ use ditto_protocol::{AdminRequest, AdminResponse};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
+#[derive(Debug, Clone, Serialize)]
+pub struct NamespaceQuotaUsageView {
+    pub namespace: String,
+    pub key_count: u64,
+    pub quota_limit: u64,
+    pub usage_pct: u64,
+    pub remaining_keys: u64,
+}
+
 // ---------------------------------------------------------------------------
 // NodeInfo — JSON representation of a node's health status
 // ---------------------------------------------------------------------------
@@ -61,6 +70,9 @@ pub struct NodeInfo {
     pub read_repair_success_total: Option<u64>,
     pub read_repair_throttled_total: Option<u64>,
     pub namespace_quota_reject_total: Option<u64>,
+    pub namespace_quota_reject_rate_per_min: Option<u64>,
+    pub namespace_quota_reject_trend: Option<String>,
+    pub namespace_quota_top_usage: Option<Vec<NamespaceQuotaUsageView>>,
     pub anti_entropy_runs_total: Option<u64>,
     pub anti_entropy_repair_trigger_total: Option<u64>,
     pub anti_entropy_last_detected_lag: Option<u64>,
@@ -122,6 +134,20 @@ fn build_node_info(
             read_repair_success_total: Some(s.read_repair_success_total),
             read_repair_throttled_total: Some(s.read_repair_throttled_total),
             namespace_quota_reject_total: Some(s.namespace_quota_reject_total),
+            namespace_quota_reject_rate_per_min: Some(s.namespace_quota_reject_rate_per_min),
+            namespace_quota_reject_trend: Some(s.namespace_quota_reject_trend),
+            namespace_quota_top_usage: Some(
+                s.namespace_quota_top_usage
+                    .into_iter()
+                    .map(|u| NamespaceQuotaUsageView {
+                        namespace: u.namespace,
+                        key_count: u.key_count,
+                        quota_limit: u.quota_limit,
+                        usage_pct: u.usage_pct,
+                        remaining_keys: u.remaining_keys,
+                    })
+                    .collect(),
+            ),
             anti_entropy_runs_total: Some(s.anti_entropy_runs_total),
             anti_entropy_repair_trigger_total: Some(s.anti_entropy_repair_trigger_total),
             anti_entropy_last_detected_lag: Some(s.anti_entropy_last_detected_lag),
@@ -180,6 +206,9 @@ fn build_node_info(
             read_repair_success_total: None,
             read_repair_throttled_total: None,
             namespace_quota_reject_total: None,
+            namespace_quota_reject_rate_per_min: None,
+            namespace_quota_reject_trend: None,
+            namespace_quota_top_usage: None,
             anti_entropy_runs_total: None,
             anti_entropy_repair_trigger_total: None,
             anti_entropy_last_detected_lag: None,

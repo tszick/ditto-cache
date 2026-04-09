@@ -325,6 +325,20 @@ pub enum AdminResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NamespaceQuotaUsage {
+    /// Namespace identifier.
+    pub namespace: String,
+    /// Current key count in the namespace.
+    pub key_count: u64,
+    /// Configured quota limit for a namespace.
+    pub quota_limit: u64,
+    /// Usage ratio in percent (0..=100+ when over quota).
+    pub usage_pct: u64,
+    /// Remaining key capacity before reaching quota.
+    pub remaining_keys: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeStats {
     pub node_id: Uuid,
     pub status: NodeStatus,
@@ -396,6 +410,12 @@ pub struct NodeStats {
     pub read_repair_throttled_total: u64,
     /// Total client requests rejected due to per-namespace quota.
     pub namespace_quota_reject_total: u64,
+    /// Recent quota reject velocity (events/minute) between two stats snapshots.
+    pub namespace_quota_reject_rate_per_min: u64,
+    /// Recent quota reject trend label: `steady` | `rising` | `surging`.
+    pub namespace_quota_reject_trend: String,
+    /// Highest namespace quota pressure entries sorted by usage descending.
+    pub namespace_quota_top_usage: Vec<NamespaceQuotaUsage>,
     /// Total anti-entropy loop iterations.
     pub anti_entropy_runs_total: u64,
     /// Total anti-entropy triggered repair attempts.

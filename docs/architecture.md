@@ -114,6 +114,7 @@ Auth/TLS:
 - Optional anti-entropy loop can periodically trigger resync on lag threshold, sampled key-version mismatch, and bounded full keyspace reconcile mismatch.
 - Optional mixed-version probe checks peer `protocol-version` and surfaces compatibility risk via node stats counters.
 - Optional tenancy mode isolates keys by namespace and can enforce per-namespace key quotas.
+- `/health/summary` also surfaces quota pressure telemetry (`namespace_quota_top_usage`, reject trend/rate) for operator diagnostics.
 
 ## Security model summary
 
