@@ -2,7 +2,7 @@ use crate::{
     client::{enc, mgmt_get, mgmt_post},
     config::CtlConfig,
 };
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::Subcommand;
 
 #[derive(Debug, Subcommand)]
@@ -29,6 +29,8 @@ pub enum NodeCommand {
     RestoreSnapshot { target: String },
     /// Show node health status (id, memory, heartbeat, uptime, backup storage).
     Status { target: String },
+    /// Run quick diagnostics and return non-zero on critical findings.
+    Doctor { target: String },
 }
 
 pub async fn run(cmd: NodeCommand, cfg: &mut CtlConfig, client: &reqwest::Client) -> Result<()> {
@@ -582,6 +584,130 @@ pub async fn run(cmd: NodeCommand, cfg: &mut CtlConfig, client: &reqwest::Client
                 );
             }
         }
+
+        NodeCommand::Doctor { target } => {
+            let status_url = format!("{}/api/nodes/{}/status", base, enc(&target));
+            let cluster_url = format!("{}/api/cluster", base);
+            let status_data = mgmt_get(client, &status_url).await?;
+            let cluster_data = mgmt_get(client, &cluster_url).await?;
+            let nodes = status_data.as_array().cloned().unwrap_or_default();
+
+            let mut critical = 0usize;
+            let mut warn = 0usize;
+            let mut notes: Vec<String> = Vec::new();
+
+            println!("  dittoctl doctor");
+            println!("  {}", "-".repeat(52));
+
+            let total = cluster_data["total"].as_u64().unwrap_or(0);
+            let active = cluster_data["active"].as_u64().unwrap_or(0);
+            let syncing = cluster_data["syncing"].as_u64().unwrap_or(0);
+            let inactive = cluster_data["inactive"].as_u64().unwrap_or(0);
+            let offline = cluster_data["offline"].as_u64().unwrap_or(0);
+            println!(
+                "  cluster: total={} active={} syncing={} inactive={} offline={}",
+                total, active, syncing, inactive, offline
+            );
+
+            if inactive > 0 || offline > 0 {
+                critical += 1;
+                notes.push(format!(
+                    "cluster has inactive/offline nodes (inactive={}, offline={})",
+                    inactive, offline
+                ));
+            } else if syncing > 0 {
+                warn += 1;
+                notes.push(format!("cluster has syncing nodes ({})", syncing));
+            }
+
+            for node in nodes {
+                let addr = node["addr"].as_str().unwrap_or("?");
+                let reachable = node["reachable"].as_bool().unwrap_or(false);
+                let status = node["status"].as_str().unwrap_or("Unknown");
+                let heartbeat = node["heartbeat_ms"].as_u64().unwrap_or(0);
+                let quota_rpm = node["namespace_quota_reject_rate_per_min"]
+                    .as_u64()
+                    .unwrap_or(0);
+                let quota_trend = node["namespace_quota_reject_trend"].as_str().unwrap_or("?");
+                let quota_peak = top_quota_usage_pct(&node["namespace_quota_top_usage"]);
+
+                let mut sev = "OK";
+                let mut reasons: Vec<&str> = Vec::new();
+
+                if !reachable {
+                    sev = "CRITICAL";
+                    critical += 1;
+                    reasons.push("unreachable");
+                } else {
+                    if matches!(status, "Inactive" | "Offline") {
+                        sev = "CRITICAL";
+                        critical += 1;
+                        reasons.push("status unhealthy");
+                    } else if status == "Syncing" {
+                        if sev != "CRITICAL" {
+                            sev = "WARN";
+                        }
+                        warn += 1;
+                        reasons.push("status syncing");
+                    }
+
+                    if heartbeat > 2_000 {
+                        if sev == "OK" {
+                            sev = "WARN";
+                        }
+                        warn += 1;
+                        reasons.push("high heartbeat");
+                    }
+
+                    if matches!(quota_trend, "rising" | "surging")
+                        || quota_rpm >= 10
+                        || quota_peak >= 90
+                    {
+                        if sev == "OK" {
+                            sev = "WARN";
+                        }
+                        warn += 1;
+                        reasons.push("quota pressure");
+                    }
+                }
+
+                let reason_str = if reasons.is_empty() {
+                    "-".to_string()
+                } else {
+                    reasons.join(",")
+                };
+
+                println!(
+                    "  [{}] {} status={} hb={}ms quota={}rpm trend={} top={}%",
+                    sev, addr, status, heartbeat, quota_rpm, quota_trend, quota_peak
+                );
+                println!("       notes={}", reason_str);
+            }
+
+            let verdict = if critical > 0 {
+                "CRITICAL"
+            } else if warn > 0 {
+                "WARN"
+            } else {
+                "OK"
+            };
+            println!("  {}", "-".repeat(52));
+            println!("  verdict: {}", verdict);
+
+            if !notes.is_empty() {
+                for note in notes {
+                    println!("  note: {}", note);
+                }
+            }
+
+            if critical > 0 {
+                bail!(
+                    "doctor found {} critical issue(s) (warnings={})",
+                    critical,
+                    warn
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -617,4 +743,15 @@ fn fmt_namespace_quota_top_usage(v: &serde_json::Value) -> String {
         })
         .collect::<Vec<_>>()
         .join(",")
+}
+
+fn top_quota_usage_pct(v: &serde_json::Value) -> u64 {
+    let Some(items) = v.as_array() else {
+        return 0;
+    };
+    items
+        .iter()
+        .filter_map(|item| item["usage_pct"].as_u64())
+        .max()
+        .unwrap_or(0)
 }

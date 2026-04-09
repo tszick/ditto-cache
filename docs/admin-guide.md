@@ -124,6 +124,7 @@ dittoctl cluster list active-set
 
 ```bash
 dittoctl node status all
+dittoctl node doctor all
 dittoctl node describe all
 dittoctl node get active local
 dittoctl node set active local false
@@ -145,6 +146,7 @@ Platform gates are disabled by default, so backup/export/import stay blocked unt
 `node status` includes mixed-version probe counters (`mixed_version_probe_runs_total`, `mixed_version_peers_detected_total`, `mixed_version_probe_errors_total`, `mixed_version_last_detected_peer_count`).
 `node status` includes tenancy fields (`tenancy_enabled`, `tenancy_default_namespace`, `tenancy_max_keys_per_namespace`, `namespace_quota_reject_total`).
 `node status` includes snapshot restore metadata (`snapshot_last_load_path`, `snapshot_last_load_duration_ms`, `snapshot_last_load_entries`).
+`node doctor` provides a quick `OK/WARN/CRITICAL` diagnostics summary and exits non-zero when critical issues are detected.
 
 Recommended gossip baseline:
 - Start with `gossip_interval_ms=200` and `gossip_dead_ms=15000`.

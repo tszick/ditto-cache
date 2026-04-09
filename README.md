@@ -399,6 +399,7 @@ dittoctl cluster get primary
 
 # Node control
 dittoctl node status all
+dittoctl node doctor all
 dittoctl node describe local
 dittoctl node set active 127.0.0.1:7779 false    # maintenance mode
 dittoctl node set max-memory local 1024           # live, no restart
