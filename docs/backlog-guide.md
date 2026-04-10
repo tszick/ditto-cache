@@ -23,7 +23,7 @@ This document tracks the next major development themes for the distributed cache
 3. Hot-key protection
 - What: single-flight/request coalescing and soft-TTL patterns for hot keys.
 - Why: reduces thundering herd and CPU spikes.
-- Status: planned.
+- Status: delivered (Sprint 2 MVP + hardening complete).
 
 4. Read-repair + anti-entropy
 - What: periodic drift detection and automatic key/version reconciliation.
@@ -267,6 +267,15 @@ Hot-key observability update (2026-04-09):
 - Completed in this slice:
   - added `hot_key_inflight_keys` runtime metric to show current in-flight single-flight key count,
   - surfaced in node stats, health summary, mgmt node status, and `dittoctl node status`.
+
+Hot-key hardening closure update (2026-04-10):
+
+- Completed:
+  - added follower wait timeout guard (`hot_key.follower_wait_timeout_ms`) to avoid indefinite waiter blocking,
+  - added soft-stale serving (`hot_key.stale_ttl_ms`, `hot_key.stale_max_entries`) for overload fallback paths,
+  - added runtime counters (`hot_key_wait_timeout_total`, `hot_key_stale_served_total`, `hot_key_stale_cache_entries`),
+  - exposed new hot-key fields via node stats, health summary, mgmt node status and `dittoctl node status`,
+  - extended tests for follower-timeout stale serving and waiter-cap stale serving behavior.
 
 Next session plan (2026-04-08):
 

@@ -415,8 +415,14 @@ pub struct NodeStats {
     pub hot_key_coalesced_hits_total: u64,
     /// Total GET requests that bypassed coalescing (waiter cap / fallback).
     pub hot_key_fallback_exec_total: u64,
+    /// Total follower waits that timed out before leader response.
+    pub hot_key_wait_timeout_total: u64,
+    /// Total responses served from soft-stale cache on fallback paths.
+    pub hot_key_stale_served_total: u64,
     /// Number of keys currently tracked as in-flight single-flight entries.
     pub hot_key_inflight_keys: u64,
+    /// Number of entries currently retained in soft-stale cache.
+    pub hot_key_stale_cache_entries: u64,
     /// Total read-repair attempts triggered on local misses.
     pub read_repair_trigger_total: u64,
     /// Total read-repair attempts where primary had the value.

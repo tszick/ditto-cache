@@ -310,6 +310,16 @@ pub struct HotKeyConfig {
     /// Maximum number of waiting followers per in-flight key.
     #[serde(default = "default_hot_key_max_waiters")]
     pub max_waiters: usize,
+    /// Maximum time (ms) a follower waits for the leader response before fallback.
+    #[serde(default = "default_hot_key_follower_wait_timeout_ms")]
+    pub follower_wait_timeout_ms: u64,
+    /// Soft-stale TTL (ms) for cached GET responses used on fallback paths.
+    /// 0 disables stale serving.
+    #[serde(default = "default_hot_key_stale_ttl_ms")]
+    pub stale_ttl_ms: u64,
+    /// Maximum number of keys retained in soft-stale cache.
+    #[serde(default = "default_hot_key_stale_max_entries")]
+    pub stale_max_entries: usize,
 }
 
 impl Default for HotKeyConfig {
@@ -317,6 +327,9 @@ impl Default for HotKeyConfig {
         Self {
             enabled: false,
             max_waiters: default_hot_key_max_waiters(),
+            follower_wait_timeout_ms: default_hot_key_follower_wait_timeout_ms(),
+            stale_ttl_ms: default_hot_key_stale_ttl_ms(),
+            stale_max_entries: default_hot_key_stale_max_entries(),
         }
     }
 }
@@ -503,6 +516,15 @@ fn default_cb_half_open_max_requests() -> u64 {
 }
 fn default_hot_key_max_waiters() -> usize {
     128
+}
+fn default_hot_key_follower_wait_timeout_ms() -> u64 {
+    25
+}
+fn default_hot_key_stale_ttl_ms() -> u64 {
+    250
+}
+fn default_hot_key_stale_max_entries() -> usize {
+    1024
 }
 
 impl Config {

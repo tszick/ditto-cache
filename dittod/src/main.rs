@@ -280,6 +280,27 @@ async fn main() -> Result<()> {
             config.hot_key.max_waiters = n.max(1);
         }
     }
+    if let Ok(v) = std::env::var("DITTO_HOT_KEY_FOLLOWER_WAIT_TIMEOUT_MS")
+        .or_else(|_| std::env::var("HOT_KEY_FOLLOWER_WAIT_TIMEOUT_MS"))
+    {
+        if let Ok(n) = v.parse::<u64>() {
+            config.hot_key.follower_wait_timeout_ms = n.max(1);
+        }
+    }
+    if let Ok(v) = std::env::var("DITTO_HOT_KEY_STALE_TTL_MS")
+        .or_else(|_| std::env::var("HOT_KEY_STALE_TTL_MS"))
+    {
+        if let Ok(n) = v.parse::<u64>() {
+            config.hot_key.stale_ttl_ms = n;
+        }
+    }
+    if let Ok(v) = std::env::var("DITTO_HOT_KEY_STALE_MAX_ENTRIES")
+        .or_else(|_| std::env::var("HOT_KEY_STALE_MAX_ENTRIES"))
+    {
+        if let Ok(n) = v.parse::<usize>() {
+            config.hot_key.stale_max_entries = n.max(1);
+        }
+    }
     if let Ok(v) = std::env::var("DITTO_BIND_ADDR") {
         config.node.bind_addr = v;
     }

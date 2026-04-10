@@ -96,6 +96,12 @@ struct GetFlight {
     waiters: AtomicUsize,
 }
 
+#[derive(Debug, Clone)]
+struct HotStaleEntry {
+    response: ClientResponse,
+    recorded_at_ms: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClientRequestSource {
     Tcp,
@@ -158,8 +164,11 @@ pub struct NodeHandle {
     client_error_internal_total: AtomicU64,
     client_error_other_total: AtomicU64,
     get_flights: AsyncMutex<HashMap<String, Arc<GetFlight>>>,
+    hot_key_stale_cache: AsyncMutex<HashMap<String, HotStaleEntry>>,
     hot_key_coalesced_hits_total: AtomicU64,
     hot_key_fallback_exec_total: AtomicU64,
+    hot_key_wait_timeout_total: AtomicU64,
+    hot_key_stale_served_total: AtomicU64,
     read_repair_trigger_total: AtomicU64,
     read_repair_success_total: AtomicU64,
     read_repair_throttled_total: AtomicU64,
@@ -262,8 +271,11 @@ impl NodeHandle {
             client_error_internal_total: AtomicU64::new(0),
             client_error_other_total: AtomicU64::new(0),
             get_flights: AsyncMutex::new(HashMap::new()),
+            hot_key_stale_cache: AsyncMutex::new(HashMap::new()),
             hot_key_coalesced_hits_total: AtomicU64::new(0),
             hot_key_fallback_exec_total: AtomicU64::new(0),
+            hot_key_wait_timeout_total: AtomicU64::new(0),
+            hot_key_stale_served_total: AtomicU64::new(0),
             read_repair_trigger_total: AtomicU64::new(0),
             read_repair_success_total: AtomicU64::new(0),
             read_repair_throttled_total: AtomicU64::new(0),
@@ -577,14 +589,78 @@ impl NodeHandle {
         }
     }
 
+    fn is_hot_stale_candidate(response: &ClientResponse) -> bool {
+        matches!(
+            response,
+            ClientResponse::Value { .. } | ClientResponse::NotFound
+        )
+    }
+
+    async fn read_hot_stale_response(
+        &self,
+        lookup_key: &str,
+        stale_ttl_ms: u64,
+    ) -> Option<ClientResponse> {
+        if stale_ttl_ms == 0 {
+            return None;
+        }
+        let now_ms = Self::now_millis();
+        let mut stale = self.hot_key_stale_cache.lock().await;
+        match stale.get(lookup_key) {
+            Some(entry) if now_ms.saturating_sub(entry.recorded_at_ms) <= stale_ttl_ms => {
+                Some(entry.response.clone())
+            }
+            Some(_) => {
+                stale.remove(lookup_key);
+                None
+            }
+            None => None,
+        }
+    }
+
+    async fn write_hot_stale_response(
+        &self,
+        lookup_key: &str,
+        response: &ClientResponse,
+        stale_ttl_ms: u64,
+        stale_max_entries: usize,
+    ) {
+        if stale_ttl_ms == 0 || stale_max_entries == 0 || !Self::is_hot_stale_candidate(response) {
+            return;
+        }
+        let mut stale = self.hot_key_stale_cache.lock().await;
+        if stale.len() >= stale_max_entries && !stale.contains_key(lookup_key) {
+            let oldest_key = stale
+                .iter()
+                .min_by_key(|(_, v)| v.recorded_at_ms)
+                .map(|(k, _)| k.clone());
+            if let Some(k) = oldest_key {
+                stale.remove(&k);
+            }
+        }
+        stale.insert(
+            lookup_key.to_string(),
+            HotStaleEntry {
+                response: response.clone(),
+                recorded_at_ms: Self::now_millis(),
+            },
+        );
+    }
+
     async fn handle_get_with_single_flight(
         &self,
         lookup_key: String,
         response_key: String,
     ) -> ClientResponse {
-        let (enabled, max_waiters) = {
+        let (enabled, max_waiters, follower_wait_timeout_ms, stale_ttl_ms, stale_max_entries) = {
             let cfg = self.config.lock().unwrap();
-            (cfg.hot_key.enabled, cfg.hot_key.max_waiters.max(1))
+            (
+                cfg.hot_key.enabled,
+                cfg.hot_key.max_waiters.max(1),
+                cfg.hot_key.follower_wait_timeout_ms.max(1),
+                cfg.hot_key.stale_ttl_ms,
+                cfg.hot_key.stale_max_entries.max(1),
+            )
         };
         if !enabled {
             return self.execute_get(lookup_key, response_key);
@@ -622,9 +698,25 @@ impl NodeHandle {
 
         match decision {
             JoinDecision::Fallback => {
+                if let Some(stale) = self
+                    .read_hot_stale_response(&lookup_key, stale_ttl_ms)
+                    .await
+                {
+                    self.hot_key_stale_served_total
+                        .fetch_add(1, Ordering::Relaxed);
+                    return stale;
+                }
                 self.hot_key_fallback_exec_total
                     .fetch_add(1, Ordering::Relaxed);
-                self.execute_get(lookup_key, response_key)
+                let response = self.execute_get(lookup_key.clone(), response_key);
+                self.write_hot_stale_response(
+                    &lookup_key,
+                    &response,
+                    stale_ttl_ms,
+                    stale_max_entries,
+                )
+                .await;
+                response
             }
             JoinDecision::Leader(flight) => {
                 let response = self.execute_get(lookup_key.clone(), response_key.clone());
@@ -637,23 +729,59 @@ impl NodeHandle {
                 {
                     flights.remove(&lookup_key);
                 }
+                self.write_hot_stale_response(
+                    &lookup_key,
+                    &response,
+                    stale_ttl_ms,
+                    stale_max_entries,
+                )
+                .await;
                 response
             }
             JoinDecision::Follower { flight, mut rx } => {
                 self.hot_key_coalesced_hits_total
                     .fetch_add(1, Ordering::Relaxed);
-                let response = if rx.borrow().is_some() || rx.changed().await.is_ok() {
+                let response = if rx.borrow().is_some() {
                     rx.borrow().clone()
                 } else {
-                    None
+                    match tokio::time::timeout(
+                        Duration::from_millis(follower_wait_timeout_ms),
+                        rx.changed(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(())) => rx.borrow().clone(),
+                        Ok(Err(_)) => None,
+                        Err(_) => {
+                            self.hot_key_wait_timeout_total
+                                .fetch_add(1, Ordering::Relaxed);
+                            None
+                        }
+                    }
                 };
                 flight.waiters.fetch_sub(1, Ordering::Relaxed);
                 match response {
                     Some(resp) => resp,
                     None => {
+                        if let Some(stale) = self
+                            .read_hot_stale_response(&lookup_key, stale_ttl_ms)
+                            .await
+                        {
+                            self.hot_key_stale_served_total
+                                .fetch_add(1, Ordering::Relaxed);
+                            return stale;
+                        }
                         self.hot_key_fallback_exec_total
                             .fetch_add(1, Ordering::Relaxed);
-                        self.execute_get(lookup_key, response_key)
+                        let response = self.execute_get(lookup_key.clone(), response_key);
+                        self.write_hot_stale_response(
+                            &lookup_key,
+                            &response,
+                            stale_ttl_ms,
+                            stale_max_entries,
+                        )
+                        .await;
+                        response
                     }
                 }
             }
@@ -1613,6 +1741,18 @@ impl NodeHandle {
                 cfg.hot_key.max_waiters.to_string(),
             ),
             (
+                "hot-key-follower-wait-timeout-ms".into(),
+                cfg.hot_key.follower_wait_timeout_ms.to_string(),
+            ),
+            (
+                "hot-key-stale-ttl-ms".into(),
+                cfg.hot_key.stale_ttl_ms.to_string(),
+            ),
+            (
+                "hot-key-stale-max-entries".into(),
+                cfg.hot_key.stale_max_entries.to_string(),
+            ),
+            (
                 "hot-key-coalesced-hits-total".into(),
                 stats.hot_key_coalesced_hits_total.to_string(),
             ),
@@ -1621,8 +1761,20 @@ impl NodeHandle {
                 stats.hot_key_fallback_exec_total.to_string(),
             ),
             (
+                "hot-key-wait-timeout-total".into(),
+                stats.hot_key_wait_timeout_total.to_string(),
+            ),
+            (
+                "hot-key-stale-served-total".into(),
+                stats.hot_key_stale_served_total.to_string(),
+            ),
+            (
                 "hot-key-inflight-keys".into(),
                 stats.hot_key_inflight_keys.to_string(),
+            ),
+            (
+                "hot-key-stale-cache-entries".into(),
+                stats.hot_key_stale_cache_entries.to_string(),
             ),
             (
                 "circuit-breaker-enabled".into(),
@@ -2253,6 +2405,33 @@ impl NodeHandle {
                                 tracing::info!("hot-key-max-waiters -> {}", v);
                             }
                             _ => tracing::warn!("SetProperty hot-key-max-waiters: invalid value '{}'", value),
+                        }
+                    }
+                    "hot-key-follower-wait-timeout-ms" => {
+                        match value.trim().parse::<u64>() {
+                            Ok(v) if v > 0 => {
+                                self.config.lock().unwrap().hot_key.follower_wait_timeout_ms = v;
+                                tracing::info!("hot-key-follower-wait-timeout-ms -> {}", v);
+                            }
+                            _ => tracing::warn!("SetProperty hot-key-follower-wait-timeout-ms: invalid value '{}'", value),
+                        }
+                    }
+                    "hot-key-stale-ttl-ms" => {
+                        match value.trim().parse::<u64>() {
+                            Ok(v) => {
+                                self.config.lock().unwrap().hot_key.stale_ttl_ms = v;
+                                tracing::info!("hot-key-stale-ttl-ms -> {}", v);
+                            }
+                            _ => tracing::warn!("SetProperty hot-key-stale-ttl-ms: invalid value '{}'", value),
+                        }
+                    }
+                    "hot-key-stale-max-entries" => {
+                        match value.trim().parse::<usize>() {
+                            Ok(v) if v > 0 => {
+                                self.config.lock().unwrap().hot_key.stale_max_entries = v;
+                                tracing::info!("hot-key-stale-max-entries -> {}", v);
+                            }
+                            _ => tracing::warn!("SetProperty hot-key-stale-max-entries: invalid value '{}'", value),
                         }
                     }
 
@@ -3138,6 +3317,7 @@ impl NodeHandle {
         let set = self.active_set.lock().await;
         let log = self.write_log.lock().await;
         let hot_key_inflight_keys = self.get_flights.lock().await.len() as u64;
+        let hot_key_stale_cache_entries = self.hot_key_stale_cache.lock().await.len() as u64;
         let cfg = self.config.lock().unwrap();
         let backup_dir_bytes = dir_size_bytes(&cfg.backup.path);
         let snapshot_last_load_path = self.snapshot_last_load_path.lock().unwrap().clone();
@@ -3256,7 +3436,10 @@ impl NodeHandle {
             read_repair_enabled,
             hot_key_coalesced_hits_total: self.hot_key_coalesced_hits_total.load(Ordering::Relaxed),
             hot_key_fallback_exec_total: self.hot_key_fallback_exec_total.load(Ordering::Relaxed),
+            hot_key_wait_timeout_total: self.hot_key_wait_timeout_total.load(Ordering::Relaxed),
+            hot_key_stale_served_total: self.hot_key_stale_served_total.load(Ordering::Relaxed),
             hot_key_inflight_keys,
+            hot_key_stale_cache_entries,
             read_repair_trigger_total: self.read_repair_trigger_total.load(Ordering::Relaxed),
             read_repair_success_total: self.read_repair_success_total.load(Ordering::Relaxed),
             read_repair_throttled_total: self.read_repair_throttled_total.load(Ordering::Relaxed),
@@ -3800,6 +3983,94 @@ mod tests {
         let resp = node.handle_get_with_single_flight(key.clone(), key).await;
         assert!(matches!(resp, ClientResponse::NotFound));
         assert_eq!(node.hot_key_fallback_exec_total.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn hot_key_follower_timeout_serves_stale() {
+        let mut cfg = Config::default();
+        cfg.hot_key.enabled = true;
+        cfg.hot_key.max_waiters = 2;
+        cfg.hot_key.follower_wait_timeout_ms = 1;
+        cfg.hot_key.stale_ttl_ms = 1_000;
+        cfg.hot_key.stale_max_entries = 16;
+        let node = test_node(cfg);
+
+        let _ = node
+            .handle_client(ClientRequest::Set {
+                key: "hot-timeout".into(),
+                value: Bytes::from_static(b"value-1"),
+                ttl_secs: None,
+                namespace: None,
+            })
+            .await;
+        let _ = node
+            .handle_client(ClientRequest::Get {
+                key: "hot-timeout".into(),
+                namespace: None,
+            })
+            .await;
+
+        {
+            let mut flights = node.get_flights.lock().await;
+            flights.insert("hot-timeout".into(), Arc::new(GetFlight::new()));
+        }
+
+        let resp = node
+            .handle_get_with_single_flight("hot-timeout".into(), "hot-timeout".into())
+            .await;
+        match resp {
+            ClientResponse::Value { value, .. } => {
+                assert_eq!(value, Bytes::from_static(b"value-1"))
+            }
+            other => panic!("expected stale value response, got {:?}", other),
+        }
+        assert_eq!(node.hot_key_wait_timeout_total.load(Ordering::Relaxed), 1);
+        assert_eq!(node.hot_key_stale_served_total.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn hot_key_waiter_cap_can_serve_stale_without_fallback_exec() {
+        let mut cfg = Config::default();
+        cfg.hot_key.enabled = true;
+        cfg.hot_key.max_waiters = 1;
+        cfg.hot_key.stale_ttl_ms = 1_000;
+        cfg.hot_key.stale_max_entries = 16;
+        let node = test_node(cfg);
+
+        let _ = node
+            .handle_client(ClientRequest::Set {
+                key: "hot-cap".into(),
+                value: Bytes::from_static(b"value-cap"),
+                ttl_secs: None,
+                namespace: None,
+            })
+            .await;
+        let _ = node
+            .handle_client(ClientRequest::Get {
+                key: "hot-cap".into(),
+                namespace: None,
+            })
+            .await;
+
+        let flight = Arc::new(GetFlight::new());
+        flight.waiters.store(1, Ordering::Relaxed);
+        {
+            let mut flights = node.get_flights.lock().await;
+            flights.insert("hot-cap".into(), Arc::clone(&flight));
+        }
+
+        let resp = node
+            .handle_get_with_single_flight("hot-cap".into(), "hot-cap".into())
+            .await;
+        match resp {
+            ClientResponse::Value { value, .. } => {
+                assert_eq!(value, Bytes::from_static(b"value-cap"))
+            }
+            other => panic!("expected stale value response, got {:?}", other),
+        }
+
+        assert_eq!(node.hot_key_stale_served_total.load(Ordering::Relaxed), 1);
+        assert_eq!(node.hot_key_fallback_exec_total.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]

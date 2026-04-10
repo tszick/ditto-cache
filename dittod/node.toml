@@ -82,8 +82,11 @@ requests_per_sec = 1000
 burst            = 2000
 
 [hot_key]
-enabled     = false
-max_waiters = 128
+enabled                 = false
+max_waiters             = 128
+follower_wait_timeout_ms = 25
+stale_ttl_ms            = 250
+stale_max_entries       = 1024
 
 [circuit_breaker]
 enabled                = false

@@ -27,6 +27,7 @@ Check first:
   - `namespace_quota_reject_total` (when tenancy is enabled).
 - snapshot restore freshness (`snapshot_last_load_age_secs`) is within expected operational window after restart events.
 - snapshot restore failures do not trend up (`snapshot_restore_failure_total`, `snapshot_restore_policy_block_total`).
+- hot-key fallback pressure is controlled (`hot_key_wait_timeout_total`, `hot_key_stale_served_total`, `hot_key_stale_cache_entries`).
 
 ## 2) Common Incident Playbooks
 

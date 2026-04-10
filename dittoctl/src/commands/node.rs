@@ -402,8 +402,35 @@ pub async fn run(cmd: NodeCommand, cfg: &mut CtlConfig, client: &reqwest::Client
                 );
                 println!(
                     "  {:<22} {}",
+                    "hot-key-wait-timeout",
+                    node["hot_key_wait_timeout_total"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "hot-key-stale-served",
+                    node["hot_key_stale_served_total"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
                     "hot-key-inflight",
                     node["hot_key_inflight_keys"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
+                println!(
+                    "  {:<22} {}",
+                    "hot-key-stale-entries",
+                    node["hot_key_stale_cache_entries"]
                         .as_u64()
                         .map(|v| v.to_string())
                         .as_deref()

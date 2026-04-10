@@ -139,7 +139,7 @@ Platform gates are disabled by default, so backup/export/import stay blocked unt
 `node status` includes the persistence fields (`persistence_platform_allowed`, `persistence_runtime_enabled`, `persistence_enabled`, plus per-feature flags).
 `node status` also includes rate-limit and circuit-breaker runtime fields (`rate_limit_enabled`, `rate_limited_requests_total`, `circuit_breaker_state`, and related counters).
 `node describe` includes replication tuning properties (`write-timeout-ms`, `gossip-interval-ms`, `gossip-dead-ms`) and `frame-read-timeout-ms`.
-`node status` now also includes hot-key coalescing fields (`hot_key_enabled`, `hot_key_coalesced_hits_total`, `hot_key_fallback_exec_total`, `hot_key_inflight_keys`).
+`node status` now also includes hot-key fields (`hot_key_enabled`, `hot_key_coalesced_hits_total`, `hot_key_fallback_exec_total`, `hot_key_wait_timeout_total`, `hot_key_stale_served_total`, `hot_key_inflight_keys`, `hot_key_stale_cache_entries`).
 `node status` includes read-repair counters (`read_repair_enabled`, `read_repair_trigger_total`, `read_repair_success_total`, `read_repair_throttled_total`).
 `node status` includes anti-entropy counters (`anti_entropy_runs_total`, `anti_entropy_repair_trigger_total`, `anti_entropy_last_detected_lag`, `anti_entropy_key_checks_total`, `anti_entropy_key_mismatch_total`).
 `node status` includes full anti-entropy reconcile counters (`anti_entropy_full_reconcile_runs_total`, `anti_entropy_full_reconcile_key_checks_total`, `anti_entropy_full_reconcile_mismatch_total`).
