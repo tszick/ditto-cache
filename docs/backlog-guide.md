@@ -349,6 +349,51 @@ Phase II progress update (2026-04-10):
 - Remaining in Phase II:
   - none.
 
+Sprint 5 kickoff plan (2026-04-10) - Coverage quality hardening:
+
+- Scope:
+  - `ditto-client`: establish practical, risk-based test coverage gates (not 100% target).
+  - `ditto-cache`: add consistent coverage tooling and enforce minimum thresholds on critical modules first.
+
+- Target thresholds:
+  - `ditto-client` repository baseline:
+    - line coverage >= 75%,
+    - branch coverage >= 60%.
+  - `ditto-cache` repository baseline:
+    - line coverage >= 70%.
+  - Critical-path modules (both repos):
+    - line coverage >= 85%.
+
+- Critical-path focus modules:
+  - `ditto-client`: strict validation, error mapping, namespace handling, TCP reconnect/watch flows.
+  - `ditto-cache`: rate limit, circuit breaker, namespace quota, health summary + `dittoctl doctor`, snapshot restore paths.
+
+- Execution phases:
+  - Phase A (tooling + visibility):
+    - unify per-language coverage generation and CI artifacts,
+    - publish per-PR coverage report without failing the build yet.
+  - Phase B (critical-path hardening):
+    - raise critical modules to threshold first,
+    - add targeted unit/integration tests for edge cases.
+  - Phase C (progressive gating):
+    - enable fail-on-regression,
+    - enforce critical-path thresholds,
+    - enforce repository baseline thresholds after stability.
+
+- Acceptance criteria:
+  - coverage metrics are produced automatically in CI for all maintained client/cache lanes,
+  - no coverage regression on PRs relative to moving baseline,
+  - critical-path modules meet threshold before full-repo gate is enforced,
+  - documentation updated with coverage commands, thresholds, and gate policy.
+
+Sprint 5 progress update (2026-04-10):
+
+- Phase A started:
+  - `ditto-client` coverage report workflow added (`.github/workflows/coverage-report.yml`),
+  - `ditto-client` Java lane updated with JaCoCo report generation (`jacocoTestReport`),
+  - `ditto-cache` Rust workspace coverage workflow added (`.github/workflows/coverage-report.yml`),
+  - all new workflows are report-only (no fail gate for threshold misses in Phase A).
+
 ## Definition of Done (for each backlog item)
 
 - Feature is disabled by default and guardrailed by config/env.
