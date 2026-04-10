@@ -34,3 +34,62 @@ jobs:
           path: |
             coverage/lcov.info
             coverage/summary.txt
+
+  rust-no-regression:
+    name: Rust Coverage No Regression (PR)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    needs: [rust-coverage]
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Compute current branch Rust total line%
+        run: |
+          set -euo pipefail
+          cargo llvm-cov --workspace --summary-only | tee coverage-current.txt
+          current_line_pct=$(grep -E '^TOTAL' coverage-current.txt | awk '{gsub("%","",$NF); print $NF}' | tail -n1)
+          if [ -z "${current_line_pct}" ]; then
+            echo "failed to parse current rust coverage total line%"
+            exit 1
+          fi
+          echo "current_line_pct=${current_line_pct}" >> "$GITHUB_ENV"
+
+      - name: Compute base branch Rust total line%
+        run: |
+          set -euo pipefail
+          git fetch origin "${{ github.base_ref }}" --depth=1
+          git worktree add ../_base_cache "origin/${{ github.base_ref }}"
+          pushd ../_base_cache >/dev/null
+          cargo llvm-cov --workspace --summary-only | tee coverage-base.txt
+          base_line_pct=$(grep -E '^TOTAL' coverage-base.txt | awk '{gsub("%","",$NF); print $NF}' | tail -n1)
+          popd >/dev/null
+          git worktree remove --force ../_base_cache
+          if [ -z "${base_line_pct}" ]; then
+            echo "failed to parse base rust coverage total line%"
+            exit 1
+          fi
+          echo "base_line_pct=${base_line_pct}" >> "$GITHUB_ENV"
+
+      - name: Compare Rust coverage against base
+        run: |
+          set -euo pipefail
+          echo "Rust total line% current=${current_line_pct} base=${base_line_pct}"
+          {
+            echo "## Rust Coverage No Regression"
+            echo ""
+            echo "- current total line%: ${current_line_pct}"
+            echo "- base total line%: ${base_line_pct}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          awk -v c="${current_line_pct}" -v b="${base_line_pct}" 'BEGIN { exit (c+0 < b+0) ? 1 : 0 }' || {
+            echo "Rust coverage regressed (current=${current_line_pct}, base=${base_line_pct})" >&2
+            exit 1
+          }

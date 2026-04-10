@@ -879,3 +879,50 @@ fn top_quota_usage_pct(v: &serde_json::Value) -> u64 {
         .max()
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{fmt_namespace_quota_top_usage, fmt_uptime, top_quota_usage_pct};
+    use serde_json::json;
+
+    #[test]
+    fn fmt_uptime_formats_short_and_long_ranges() {
+        assert_eq!(fmt_uptime(5), "5s");
+        assert_eq!(fmt_uptime(125), "2m 5s");
+        assert_eq!(fmt_uptime(3_726), "1h 2m 6s");
+    }
+
+    #[test]
+    fn fmt_namespace_quota_top_usage_handles_missing_and_empty_values() {
+        assert_eq!(fmt_namespace_quota_top_usage(&json!(null)), "-");
+        assert_eq!(fmt_namespace_quota_top_usage(&json!([])), "-");
+    }
+
+    #[test]
+    fn fmt_namespace_quota_top_usage_renders_compact_summary() {
+        let value = json!([
+            { "namespace": "tenant-a", "key_count": 9, "quota_limit": 10, "usage_pct": 90 },
+            { "namespace": "tenant-b", "key_count": 3, "quota_limit": 20, "usage_pct": 15 }
+        ]);
+        assert_eq!(
+            fmt_namespace_quota_top_usage(&value),
+            "tenant-a:9/10(90%),tenant-b:3/20(15%)"
+        );
+    }
+
+    #[test]
+    fn top_quota_usage_pct_returns_highest_percentage() {
+        let value = json!([
+            { "usage_pct": 33 },
+            { "usage_pct": 88 },
+            { "usage_pct": 57 }
+        ]);
+        assert_eq!(top_quota_usage_pct(&value), 88);
+    }
+
+    #[test]
+    fn top_quota_usage_pct_returns_zero_for_invalid_input() {
+        assert_eq!(top_quota_usage_pct(&json!(null)), 0);
+        assert_eq!(top_quota_usage_pct(&json!([{ "namespace": "tenant-a" }])), 0);
+    }
+}

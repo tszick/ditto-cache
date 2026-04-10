@@ -490,7 +490,15 @@ mod tests {
             StatusCode::TOO_MANY_REQUESTS
         );
         assert_eq!(
+            status_for_error(&ErrorCode::NamespaceQuotaExceeded),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
             status_for_error(&ErrorCode::CircuitOpen),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            status_for_error(&ErrorCode::NoQuorum),
             StatusCode::SERVICE_UNAVAILABLE
         );
     }
@@ -512,6 +520,14 @@ mod tests {
         assert_eq!(
             availability_for_stats(&NodeStatus::Inactive, "closed"),
             "unavailable"
+        );
+        assert_eq!(
+            availability_for_stats(&NodeStatus::Offline, "closed"),
+            "unavailable"
+        );
+        assert_eq!(
+            availability_for_stats(&NodeStatus::Active, "OPEN"),
+            "degraded"
         );
     }
 }

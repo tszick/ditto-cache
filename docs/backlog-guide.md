@@ -393,6 +393,28 @@ Sprint 5 progress update (2026-04-10):
   - `ditto-client` Java lane updated with JaCoCo report generation (`jacocoTestReport`),
   - `ditto-cache` Rust workspace coverage workflow added (`.github/workflows/coverage-report.yml`),
   - all new workflows are report-only (no fail gate for threshold misses in Phase A).
+- Phase B started (critical-path targeted tests):
+  - `dittoctl doctor` helper coverage expanded with unit tests (`fmt_uptime`, quota-summary formatting, quota peak extraction),
+  - `ditto-client` Node strict validation coverage expanded with namespace `::` rejection tests on HTTP pattern and TCP watch paths.
+  - `ditto-client` Python strict validation coverage expanded:
+    - namespace `::` reject case added,
+    - strict-mode-off no-op validation case added.
+  - `ditto-client` Java strict validation coverage expanded:
+    - HTTP pattern namespace `::` reject case added,
+    - TCP watch namespace `::` reject case added.
+  - `ditto-client` Go strict validation coverage expanded:
+    - namespace `::` reject case added for pattern operations,
+    - strict-mode-off no-op pattern validation case added,
+    - strict/non-strict namespace normalization edge cases added.
+  - `ditto-cache` health/error mapping edge coverage expanded:
+    - HTTP error mapping asserts extended for `NamespaceQuotaExceeded` and `NoQuorum`,
+    - availability mapping asserts extended for `Offline` and case-insensitive circuit-open state.
+- Phase C started (no-regression gate entry, thresholds still report-first):
+  - `ditto-client` coverage workflow now includes PR no-regression checks:
+    - Node line% vs base branch,
+    - Go statements% vs base branch.
+  - `ditto-cache` coverage workflow now includes PR no-regression check:
+    - Rust total line% vs base branch (`cargo llvm-cov --summary-only`).
 
 ## Definition of Done (for each backlog item)
 
