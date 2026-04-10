@@ -77,33 +77,33 @@ pub fn build_router(state: SharedState) -> Router {
     Router::new()
         // Node endpoints
         .route("/api/nodes", get(nodes::list_nodes))
-        .route("/api/nodes/:target/status", get(nodes::node_status))
-        .route("/api/nodes/:target/describe", get(nodes::node_describe))
+        .route("/api/nodes/{target}/status", get(nodes::node_status))
+        .route("/api/nodes/{target}/describe", get(nodes::node_describe))
         .route(
-            "/api/nodes/:target/property/:name",
+            "/api/nodes/{target}/property/{name}",
             get(nodes::get_property).post(nodes::set_property),
         )
-        .route("/api/nodes/:target/set-active", post(nodes::set_active))
-        .route("/api/nodes/:target/backup", post(nodes::backup_node))
+        .route("/api/nodes/{target}/set-active", post(nodes::set_active))
+        .route("/api/nodes/{target}/backup", post(nodes::backup_node))
         .route(
-            "/api/nodes/:target/restore-snapshot",
+            "/api/nodes/{target}/restore-snapshot",
             post(nodes::restore_snapshot),
         )
         // Cluster endpoints
         .route("/api/cluster", get(cluster::cluster_status))
         .route("/api/cluster/primary", get(cluster::cluster_primary))
         // Cache admin endpoints (via admin TCP)
-        .route("/api/cache/:target/stats", get(cache::cache_stats))
-        .route("/api/cache/:target/flush", post(cache::flush_cache))
-        .route("/api/cache/:target/ttl", post(cache::set_keys_ttl))
-        .route("/api/cache/:target/keys", get(cache::list_keys))
+        .route("/api/cache/{target}/stats", get(cache::cache_stats))
+        .route("/api/cache/{target}/flush", post(cache::flush_cache))
+        .route("/api/cache/{target}/ttl", post(cache::set_keys_ttl))
+        .route("/api/cache/{target}/keys", get(cache::list_keys))
         .route(
-            "/api/cache/:target/keys/:key/compressed",
+            "/api/cache/{target}/keys/{key}/compressed",
             post(cache::set_compressed),
         )
         // Cache data endpoints (proxied to node HTTP port)
         .route(
-            "/api/cache/:target/keys/:key",
+            "/api/cache/{target}/keys/{key}",
             get(cache::get_key)
                 .put(cache::set_key)
                 .delete(cache::delete_key),
