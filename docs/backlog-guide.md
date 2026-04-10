@@ -314,6 +314,41 @@ Next session plan (2026-04-09):
   - draft version-bump + changelog generation flow,
   - add a dry-run workflow to verify multi-language client release steps.
 
+Sprint split update (2026-04-10):
+
+- Phase I completed in this sprint:
+  - 1) `ditto-cache` dependency upgrade pass (workspace verification + regression test run),
+  - 2) `ditto-client` dependency upgrade pass (Node/Java/Python/Go verification and updates where needed),
+  - 3) client functional parity alignment slice (error mapping + namespace handling consistency hardening),
+  - 4) documentation sync (`ditto-client` guide + client README updates).
+- Phase II queued for this sprint:
+  - `ditto-cache` namespace quota observability 2.0 follow-up pass,
+  - `ditto-docker` parity regression pack,
+  - `dittoctl doctor` diagnostics hardening pass,
+  - `ditto-client` release automation prep.
+
+Phase II progress update (2026-04-10):
+
+- Completed:
+  - `ditto-client` strict-mode parity follow-up pass:
+    - strict validation aligned for pattern operations (`deleteByPattern`, `setTtlByPattern`) across Node/Java/Python/Go,
+    - TCP watch/unwatch strict validation alignment completed,
+    - parity regression tests added/updated in all four client SDKs.
+  - `ditto-cache` namespace quota observability 2.0 follow-up pass:
+    - `/health/summary` quota pressure telemetry surfaced (`namespace_quota_top_usage`, reject rate/trend),
+    - mgmt/API/CLI alignment completed,
+    - coverage added for empty/partial/full quota telemetry scenarios.
+  - `ditto-docker` parity regression pack:
+    - reproducible auth/quota/rate/circuit/unknown-error mapping checks in all client lanes,
+    - machine-checkable output + strict watch assertion mode (`DITTO_STRICT_WATCH_ASSERT`) documented.
+  - `dittoctl doctor` diagnostics hardening pass:
+    - quick diagnostics summary (`OK/WARN/CRITICAL`) implemented,
+    - non-zero exit on critical findings enabled.
+  - `ditto-client` release automation prep:
+    - release dry-run workflow + changelog/version planning helper added.
+- Remaining in Phase II:
+  - none.
+
 ## Definition of Done (for each backlog item)
 
 - Feature is disabled by default and guardrailed by config/env.
