@@ -316,15 +316,20 @@ async fn main() -> Result<()> {
     }
     apply_replication_guardrails(&mut config);
 
+    // DITTO_INSECURE=true bypasses strict security checks (dev/test only).
+    let insecure = std::env::var("DITTO_INSECURE")
+        .unwrap_or_default()
+        .eq_ignore_ascii_case("true");
+
     // Strict security mode: cluster/admin traffic must use mTLS.
-    if !config.tls.enabled {
+    if !config.tls.enabled && !insecure {
         anyhow::bail!(
             "Strict security: [tls].enabled must be true. Refusing to start cluster/admin port without mTLS."
         );
     }
 
     // Strict security mode: REST API must be protected.
-    if config.http_auth.password_hash.is_none() {
+    if config.http_auth.password_hash.is_none() && !insecure {
         anyhow::bail!(
             "Strict security: [http_auth].password_hash must be configured. Refusing to start unauthenticated HTTP API."
         );
