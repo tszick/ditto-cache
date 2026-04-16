@@ -294,15 +294,18 @@ fn rotate_old_backups(path: &str, node_id: &str, retain_days: u64) {
 /// Long-running task: fires a backup on the cron schedule.
 /// Keeps running until the process exits.
 pub async fn run_scheduler(node: Arc<NodeHandle>, cfg: BackupConfig) {
-    use cron::Schedule;
-    use std::str::FromStr;
+    use cronexpr::{parse_crontab_with, FallbackTimezoneOption, ParseOptions};
+    use cronexpr::jiff::Timestamp;
 
     if !cfg.enabled {
         tracing::info!("Backup scheduler disabled (enabled = false in config).");
         return;
     }
 
-    let schedule = match Schedule::from_str(&cfg.schedule) {
+    let mut parse_options = ParseOptions::default();
+    parse_options.fallback_timezone_option = FallbackTimezoneOption::UTC;
+
+    let schedule = match parse_crontab_with(&cfg.schedule, parse_options) {
         Ok(s) => s,
         Err(e) => {
             tracing::error!(
@@ -317,17 +320,23 @@ pub async fn run_scheduler(node: Arc<NodeHandle>, cfg: BackupConfig) {
     tracing::info!("Backup scheduler started (schedule: '{}')", cfg.schedule);
 
     loop {
-        let next = match schedule.upcoming(chrono::Utc).next() {
-            Some(t) => t,
-            None => {
-                tracing::warn!("Backup schedule has no future occurrences. Stopping.");
+        let now = Timestamp::now();
+        let next = match schedule.find_next(now) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!("Backup schedule has no future occurrences ({}). Stopping.", e);
                 break;
             }
         };
 
-        let delay = (next - chrono::Utc::now())
-            .to_std()
-            .unwrap_or(Duration::from_secs(60));
+        let now_secs = now.as_second();
+        let next_secs = next.timestamp().as_second();
+        let delay_secs = if next_secs > now_secs {
+            (next_secs - now_secs) as u64
+        } else {
+            1
+        };
+        let delay = Duration::from_secs(delay_secs);
 
         tracing::info!("Next scheduled backup at {} (in {:?})", next, delay);
         tokio::time::sleep(delay).await;
