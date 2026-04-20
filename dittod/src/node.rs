@@ -10,7 +10,7 @@ use crate::{
 use bytes::Bytes;
 use ditto_protocol::{
     AdminRequest, AdminResponse, ClientRequest, ClientResponse, ClusterMessage, ErrorCode,
-    NamespaceQuotaUsage, NodeStats, NodeStatus,
+    HotKeyUsage, NamespaceLatencySummary, NamespaceQuotaUsage, NodeStats, NodeStatus,
 };
 use std::{
     collections::HashMap,
@@ -102,11 +102,29 @@ struct HotStaleEntry {
     recorded_at_ms: u64,
 }
 
+#[derive(Debug, Clone)]
+struct HotKeyAdaptiveState {
+    limit: usize,
+    success_streak: u32,
+    last_touched_ms: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClientRequestSource {
     Tcp,
     Http,
     Internal,
+}
+
+const NAMESPACE_LATENCY_TOP_LIMIT: usize = 5;
+const NAMESPACE_LATENCY_STATE_MAX: usize = 256;
+const HOT_KEY_TOP_LIMIT: usize = 10;
+const HOT_KEY_STATE_MAX: usize = 1024;
+
+#[derive(Debug, Default, Clone)]
+struct NamespaceLatencyRuntime {
+    request_total: u64,
+    buckets: [u64; 6],
 }
 
 impl GetFlight {
@@ -165,13 +183,21 @@ pub struct NodeHandle {
     client_error_other_total: AtomicU64,
     get_flights: AsyncMutex<HashMap<String, Arc<GetFlight>>>,
     hot_key_stale_cache: AsyncMutex<HashMap<String, HotStaleEntry>>,
+    hot_key_adaptive_state: Mutex<HashMap<String, HotKeyAdaptiveState>>,
     hot_key_coalesced_hits_total: AtomicU64,
     hot_key_fallback_exec_total: AtomicU64,
     hot_key_wait_timeout_total: AtomicU64,
     hot_key_stale_served_total: AtomicU64,
+    hot_key_adaptive_limit_increase_total: AtomicU64,
+    hot_key_adaptive_limit_decrease_total: AtomicU64,
+    namespace_latency_runtime: Mutex<HashMap<String, NamespaceLatencyRuntime>>,
+    hot_key_usage_runtime: Mutex<HashMap<String, u64>>,
     read_repair_trigger_total: AtomicU64,
     read_repair_success_total: AtomicU64,
     read_repair_throttled_total: AtomicU64,
+    read_repair_budget_exhausted_total: AtomicU64,
+    read_repair_budget_window_start_ms: AtomicU64,
+    read_repair_budget_window_count: AtomicU64,
     namespace_quota_reject_total: AtomicU64,
     namespace_quota_reject_last_total: AtomicU64,
     namespace_quota_reject_last_ts_ms: AtomicU64,
@@ -186,6 +212,7 @@ pub struct NodeHandle {
     anti_entropy_full_reconcile_runs_total: AtomicU64,
     anti_entropy_full_reconcile_key_checks_total: AtomicU64,
     anti_entropy_full_reconcile_mismatch_total: AtomicU64,
+    anti_entropy_budget_exhausted_total: AtomicU64,
     mixed_version_probe_runs_total: AtomicU64,
     mixed_version_peers_detected_total: AtomicU64,
     mixed_version_probe_errors_total: AtomicU64,
@@ -274,13 +301,21 @@ impl NodeHandle {
             client_error_other_total: AtomicU64::new(0),
             get_flights: AsyncMutex::new(HashMap::new()),
             hot_key_stale_cache: AsyncMutex::new(HashMap::new()),
+            hot_key_adaptive_state: Mutex::new(HashMap::new()),
             hot_key_coalesced_hits_total: AtomicU64::new(0),
             hot_key_fallback_exec_total: AtomicU64::new(0),
             hot_key_wait_timeout_total: AtomicU64::new(0),
             hot_key_stale_served_total: AtomicU64::new(0),
+            hot_key_adaptive_limit_increase_total: AtomicU64::new(0),
+            hot_key_adaptive_limit_decrease_total: AtomicU64::new(0),
+            namespace_latency_runtime: Mutex::new(HashMap::new()),
+            hot_key_usage_runtime: Mutex::new(HashMap::new()),
             read_repair_trigger_total: AtomicU64::new(0),
             read_repair_success_total: AtomicU64::new(0),
             read_repair_throttled_total: AtomicU64::new(0),
+            read_repair_budget_exhausted_total: AtomicU64::new(0),
+            read_repair_budget_window_start_ms: AtomicU64::new(0),
+            read_repair_budget_window_count: AtomicU64::new(0),
             namespace_quota_reject_total: AtomicU64::new(0),
             namespace_quota_reject_last_total: AtomicU64::new(0),
             namespace_quota_reject_last_ts_ms: AtomicU64::new(0),
@@ -295,6 +330,7 @@ impl NodeHandle {
             anti_entropy_full_reconcile_runs_total: AtomicU64::new(0),
             anti_entropy_full_reconcile_key_checks_total: AtomicU64::new(0),
             anti_entropy_full_reconcile_mismatch_total: AtomicU64::new(0),
+            anti_entropy_budget_exhausted_total: AtomicU64::new(0),
             mixed_version_probe_runs_total: AtomicU64::new(0),
             mixed_version_peers_detected_total: AtomicU64::new(0),
             mixed_version_probe_errors_total: AtomicU64::new(0),
@@ -503,6 +539,8 @@ impl NodeHandle {
         source: ClientRequestSource,
         elapsed: Duration,
         response: &ClientResponse,
+        namespace_label: Option<&str>,
+        hot_key_label: Option<&str>,
     ) {
         self.client_requests_total.fetch_add(1, Ordering::Relaxed);
         match source {
@@ -521,25 +559,28 @@ impl NodeHandle {
         }
 
         let ms = elapsed.as_millis() as u64;
-        if ms <= 1 {
+        let bucket_idx = Self::latency_bucket_index(ms);
+        if bucket_idx == 0 {
             self.client_request_latency_le_1ms_total
                 .fetch_add(1, Ordering::Relaxed);
-        } else if ms <= 5 {
+        } else if bucket_idx == 1 {
             self.client_request_latency_le_5ms_total
                 .fetch_add(1, Ordering::Relaxed);
-        } else if ms <= 20 {
+        } else if bucket_idx == 2 {
             self.client_request_latency_le_20ms_total
                 .fetch_add(1, Ordering::Relaxed);
-        } else if ms <= 100 {
+        } else if bucket_idx == 3 {
             self.client_request_latency_le_100ms_total
                 .fetch_add(1, Ordering::Relaxed);
-        } else if ms <= 500 {
+        } else if bucket_idx == 4 {
             self.client_request_latency_le_500ms_total
                 .fetch_add(1, Ordering::Relaxed);
         } else {
             self.client_request_latency_gt_500ms_total
                 .fetch_add(1, Ordering::Relaxed);
         }
+        self.observe_namespace_latency(namespace_label, bucket_idx);
+        self.observe_hot_key_usage(hot_key_label);
 
         if let ClientResponse::Error { code, .. } = response {
             self.client_error_total.fetch_add(1, Ordering::Relaxed);
@@ -580,6 +621,139 @@ impl NodeHandle {
                 }
             }
         }
+    }
+
+    fn latency_bucket_index(ms: u64) -> usize {
+        if ms <= 1 {
+            0
+        } else if ms <= 5 {
+            1
+        } else if ms <= 20 {
+            2
+        } else if ms <= 100 {
+            3
+        } else if ms <= 500 {
+            4
+        } else {
+            5
+        }
+    }
+
+    fn request_namespace_label(&self, req: &ClientRequest) -> Option<String> {
+        match req {
+            ClientRequest::Get { namespace, .. }
+            | ClientRequest::Set { namespace, .. }
+            | ClientRequest::Delete { namespace, .. }
+            | ClientRequest::Watch { namespace, .. }
+            | ClientRequest::Unwatch { namespace, .. }
+            | ClientRequest::DeleteByPattern { namespace, .. }
+            | ClientRequest::SetTtlByPattern { namespace, .. } => Some(
+                namespace.clone().unwrap_or_else(|| {
+                    self.config
+                        .lock()
+                        .unwrap()
+                        .tenancy
+                        .default_namespace
+                        .clone()
+                }),
+            ),
+            ClientRequest::Ping | ClientRequest::Auth { .. } => None,
+        }
+    }
+
+    fn request_hot_key_label(&self, req: &ClientRequest, namespace: Option<&str>) -> Option<String> {
+        let key = match req {
+            ClientRequest::Get { key, .. }
+            | ClientRequest::Set { key, .. }
+            | ClientRequest::Delete { key, .. }
+            | ClientRequest::Watch { key, .. }
+            | ClientRequest::Unwatch { key, .. } => Some(key.as_str()),
+            ClientRequest::Ping
+            | ClientRequest::Auth { .. }
+            | ClientRequest::DeleteByPattern { .. }
+            | ClientRequest::SetTtlByPattern { .. } => None,
+        }?;
+        let ns = namespace.unwrap_or("default");
+        Some(format!("{}::{}", ns, key))
+    }
+
+    fn observe_namespace_latency(&self, namespace_label: Option<&str>, bucket_idx: usize) {
+        let Some(namespace) = namespace_label else {
+            return;
+        };
+        let mut map = self.namespace_latency_runtime.lock().unwrap();
+        if !map.contains_key(namespace) && map.len() >= NAMESPACE_LATENCY_STATE_MAX {
+            if let Some(evict_key) = map
+                .iter()
+                .min_by_key(|(_, s)| s.request_total)
+                .map(|(k, _)| k.clone())
+            {
+                map.remove(&evict_key);
+            }
+        }
+        let entry = map.entry(namespace.to_string()).or_default();
+        entry.request_total = entry.request_total.saturating_add(1);
+        if bucket_idx < entry.buckets.len() {
+            entry.buckets[bucket_idx] = entry.buckets[bucket_idx].saturating_add(1);
+        }
+    }
+
+    fn observe_hot_key_usage(&self, hot_key_label: Option<&str>) {
+        let Some(key) = hot_key_label else {
+            return;
+        };
+        let mut map = self.hot_key_usage_runtime.lock().unwrap();
+        if !map.contains_key(key) && map.len() >= HOT_KEY_STATE_MAX {
+            if let Some(evict_key) = map
+                .iter()
+                .min_by_key(|(_, count)| *count)
+                .map(|(k, _)| k.clone())
+            {
+                map.remove(&evict_key);
+            }
+        }
+        let count = map.entry(key.to_string()).or_insert(0);
+        *count = count.saturating_add(1);
+    }
+
+    fn namespace_latency_top(&self, limit: usize) -> Vec<NamespaceLatencySummary> {
+        let mut rows: Vec<NamespaceLatencySummary> = self
+            .namespace_latency_runtime
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(namespace, runtime)| NamespaceLatencySummary {
+                namespace: namespace.clone(),
+                request_total: runtime.request_total,
+                latency_p95_estimate_ms: Self::estimated_latency_percentile_ms(
+                    runtime.buckets,
+                    95,
+                ),
+                latency_p99_estimate_ms: Self::estimated_latency_percentile_ms(
+                    runtime.buckets,
+                    99,
+                ),
+            })
+            .collect();
+        rows.sort_by(|a, b| b.request_total.cmp(&a.request_total));
+        rows.truncate(limit);
+        rows
+    }
+
+    fn hot_key_top_usage(&self, limit: usize) -> Vec<HotKeyUsage> {
+        let mut rows: Vec<HotKeyUsage> = self
+            .hot_key_usage_runtime
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(key, request_total)| HotKeyUsage {
+                key: key.clone(),
+                request_total: *request_total,
+            })
+            .collect();
+        rows.sort_by(|a, b| b.request_total.cmp(&a.request_total));
+        rows.truncate(limit);
+        rows
     }
 
     fn execute_get(&self, lookup_key: String, response_key: String) -> ClientResponse {
@@ -651,12 +825,125 @@ impl NodeHandle {
         );
     }
 
+    fn hot_key_adaptive_waiter_limit(
+        &self,
+        lookup_key: &str,
+        enabled: bool,
+        max_waiters: usize,
+        adaptive_min_waiters: usize,
+        adaptive_state_max_keys: usize,
+    ) -> usize {
+        if !enabled {
+            return max_waiters;
+        }
+        let now_ms = Self::now_millis();
+        let mut states = self.hot_key_adaptive_state.lock().unwrap();
+        if !states.contains_key(lookup_key)
+            && states.len() >= adaptive_state_max_keys.max(1)
+            && adaptive_state_max_keys > 0
+        {
+            let oldest_key = states
+                .iter()
+                .min_by_key(|(_, v)| v.last_touched_ms)
+                .map(|(k, _)| k.clone());
+            if let Some(k) = oldest_key {
+                states.remove(&k);
+            }
+        }
+
+        let min_limit = adaptive_min_waiters.max(1).min(max_waiters.max(1));
+        let state = states
+            .entry(lookup_key.to_string())
+            .or_insert(HotKeyAdaptiveState {
+                limit: max_waiters.max(1),
+                success_streak: 0,
+                last_touched_ms: now_ms,
+            });
+        state.last_touched_ms = now_ms;
+        state.limit = state.limit.clamp(min_limit, max_waiters.max(1));
+        state.limit
+    }
+
+    fn hot_key_adaptive_on_timeout(
+        &self,
+        lookup_key: &str,
+        enabled: bool,
+        max_waiters: usize,
+        adaptive_min_waiters: usize,
+    ) {
+        if !enabled {
+            return;
+        }
+        let now_ms = Self::now_millis();
+        let min_limit = adaptive_min_waiters.max(1).min(max_waiters.max(1));
+        let mut states = self.hot_key_adaptive_state.lock().unwrap();
+        let state = states
+            .entry(lookup_key.to_string())
+            .or_insert(HotKeyAdaptiveState {
+                limit: max_waiters.max(1),
+                success_streak: 0,
+                last_touched_ms: now_ms,
+            });
+        let old = state.limit.clamp(min_limit, max_waiters.max(1));
+        let reduced = old.saturating_div(2).max(min_limit);
+        state.limit = reduced;
+        state.success_streak = 0;
+        state.last_touched_ms = now_ms;
+        if reduced < old {
+            self.hot_key_adaptive_limit_decrease_total
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn hot_key_adaptive_on_success(
+        &self,
+        lookup_key: &str,
+        enabled: bool,
+        max_waiters: usize,
+        adaptive_min_waiters: usize,
+        adaptive_success_threshold: u32,
+    ) {
+        if !enabled {
+            return;
+        }
+        let now_ms = Self::now_millis();
+        let min_limit = adaptive_min_waiters.max(1).min(max_waiters.max(1));
+        let threshold = adaptive_success_threshold.max(1);
+        let mut states = self.hot_key_adaptive_state.lock().unwrap();
+        let state = states
+            .entry(lookup_key.to_string())
+            .or_insert(HotKeyAdaptiveState {
+                limit: max_waiters.max(1),
+                success_streak: 0,
+                last_touched_ms: now_ms,
+            });
+        state.limit = state.limit.clamp(min_limit, max_waiters.max(1));
+        state.success_streak = state.success_streak.saturating_add(1);
+        if state.success_streak >= threshold && state.limit < max_waiters.max(1) {
+            state.limit = state.limit.saturating_add(1).min(max_waiters.max(1));
+            state.success_streak = 0;
+            self.hot_key_adaptive_limit_increase_total
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        state.last_touched_ms = now_ms;
+    }
+
     async fn handle_get_with_single_flight(
         &self,
         lookup_key: String,
         response_key: String,
     ) -> ClientResponse {
-        let (enabled, max_waiters, follower_wait_timeout_ms, stale_ttl_ms, stale_max_entries) = {
+        let (
+            enabled,
+            max_waiters,
+            follower_wait_timeout_ms,
+            stale_ttl_ms,
+            stale_max_entries,
+            adaptive_waiters_enabled,
+            adaptive_min_waiters,
+            adaptive_success_threshold,
+            adaptive_state_max_keys,
+        ) = {
             let cfg = self.config.lock().unwrap();
             (
                 cfg.hot_key.enabled,
@@ -664,6 +951,10 @@ impl NodeHandle {
                 cfg.hot_key.follower_wait_timeout_ms.max(1),
                 cfg.hot_key.stale_ttl_ms,
                 cfg.hot_key.stale_max_entries.max(1),
+                cfg.hot_key.adaptive_waiters_enabled,
+                cfg.hot_key.adaptive_min_waiters.max(1),
+                cfg.hot_key.adaptive_success_threshold.max(1),
+                cfg.hot_key.adaptive_state_max_keys.max(1),
             )
         };
         if !enabled {
@@ -683,7 +974,14 @@ impl NodeHandle {
             let mut flights = self.get_flights.lock().await;
             if let Some(existing) = flights.get(&lookup_key) {
                 let current = existing.waiters.load(Ordering::Relaxed);
-                if current >= max_waiters {
+                let effective_limit = self.hot_key_adaptive_waiter_limit(
+                    &lookup_key,
+                    adaptive_waiters_enabled,
+                    max_waiters,
+                    adaptive_min_waiters,
+                    adaptive_state_max_keys,
+                );
+                if current >= effective_limit {
                     JoinDecision::Fallback
                 } else {
                     existing.waiters.fetch_add(1, Ordering::Relaxed);
@@ -759,13 +1057,28 @@ impl NodeHandle {
                         Err(_) => {
                             self.hot_key_wait_timeout_total
                                 .fetch_add(1, Ordering::Relaxed);
+                            self.hot_key_adaptive_on_timeout(
+                                &lookup_key,
+                                adaptive_waiters_enabled,
+                                max_waiters,
+                                adaptive_min_waiters,
+                            );
                             None
                         }
                     }
                 };
                 flight.waiters.fetch_sub(1, Ordering::Relaxed);
                 match response {
-                    Some(resp) => resp,
+                    Some(resp) => {
+                        self.hot_key_adaptive_on_success(
+                            &lookup_key,
+                            adaptive_waiters_enabled,
+                            max_waiters,
+                            adaptive_min_waiters,
+                            adaptive_success_threshold,
+                        );
+                        resp
+                    }
                     None => {
                         if let Some(stale) = self
                             .read_hot_stale_response(&lookup_key, stale_ttl_ms)
@@ -797,11 +1110,12 @@ impl NodeHandle {
         namespace: Option<String>,
         key: String,
     ) -> Option<ClientResponse> {
-        let (enabled, min_interval_ms) = {
+        let (enabled, min_interval_ms, max_per_minute) = {
             let cfg = self.config.lock().unwrap();
             (
                 cfg.replication.read_repair_on_miss_enabled,
                 cfg.replication.read_repair_min_interval_ms.max(1),
+                cfg.replication.read_repair_max_per_minute,
             )
         };
         if !enabled {
@@ -817,6 +1131,11 @@ impl NodeHandle {
         }
 
         let now_ms = Self::now_millis();
+        if !self.try_consume_read_repair_budget(now_ms, max_per_minute) {
+            self.read_repair_budget_exhausted_total
+                .fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
         let last_ms = self.last_read_repair_trigger_ms.load(Ordering::Relaxed);
         if now_ms < last_ms.saturating_add(min_interval_ms) {
             self.read_repair_throttled_total
@@ -882,6 +1201,8 @@ impl NodeHandle {
         source: ClientRequestSource,
     ) -> ClientResponse {
         let started = Instant::now();
+        let namespace_label = self.request_namespace_label(&req);
+        let hot_key_label = self.request_hot_key_label(&req, namespace_label.as_deref());
         let mut should_record_circuit_result = false;
         let response = if !self.active.load(Ordering::Relaxed) {
             ClientResponse::Error {
@@ -1034,7 +1355,13 @@ impl NodeHandle {
         if should_record_circuit_result {
             self.record_circuit_result(&response);
         }
-        self.observe_client_response_metrics(source, started.elapsed(), &response);
+        self.observe_client_response_metrics(
+            source,
+            started.elapsed(),
+            &response,
+            namespace_label.as_deref(),
+            hot_key_label.as_deref(),
+        );
         response
     }
 
@@ -1572,6 +1899,18 @@ impl NodeHandle {
                     .to_string(),
             ),
             (
+                "anti-entropy-budget-max-checks-per-run".into(),
+                cfg.replication
+                    .anti_entropy_budget_max_checks_per_run
+                    .to_string(),
+            ),
+            (
+                "anti-entropy-budget-max-duration-ms".into(),
+                cfg.replication
+                    .anti_entropy_budget_max_duration_ms
+                    .to_string(),
+            ),
+            (
                 "anti-entropy-runs-total".into(),
                 stats.anti_entropy_runs_total.to_string(),
             ),
@@ -1610,6 +1949,10 @@ impl NodeHandle {
                 stats.anti_entropy_full_reconcile_mismatch_total.to_string(),
             ),
             (
+                "anti-entropy-budget-exhausted-total".into(),
+                stats.anti_entropy_budget_exhausted_total.to_string(),
+            ),
+            (
                 "mixed-version-probe-enabled".into(),
                 cfg.replication.mixed_version_probe_enabled.to_string(),
             ),
@@ -1642,6 +1985,10 @@ impl NodeHandle {
                 cfg.replication.read_repair_min_interval_ms.to_string(),
             ),
             (
+                "read-repair-max-per-minute".into(),
+                cfg.replication.read_repair_max_per_minute.to_string(),
+            ),
+            (
                 "read-repair-trigger-total".into(),
                 stats.read_repair_trigger_total.to_string(),
             ),
@@ -1652,6 +1999,10 @@ impl NodeHandle {
             (
                 "read-repair-throttled-total".into(),
                 stats.read_repair_throttled_total.to_string(),
+            ),
+            (
+                "read-repair-budget-exhausted-total".into(),
+                stats.read_repair_budget_exhausted_total.to_string(),
             ),
             (
                 "namespace-quota-reject-total".into(),
@@ -1668,6 +2019,14 @@ impl NodeHandle {
             (
                 "namespace-quota-top-usage".into(),
                 Self::format_namespace_quota_top_usage(&stats.namespace_quota_top_usage),
+            ),
+            (
+                "namespace-latency-top".into(),
+                Self::format_namespace_latency_top(&stats.namespace_latency_top),
+            ),
+            (
+                "hot-key-top-usage".into(),
+                Self::format_hot_key_top_usage(&stats.hot_key_top_usage),
             ),
             (
                 "persistence-platform-allowed".into(),
@@ -1758,6 +2117,10 @@ impl NodeHandle {
                 stats.snapshot_restore_policy_block_total.to_string(),
             ),
             (
+                "snapshot-restore-success-ratio-pct".into(),
+                stats.snapshot_restore_success_ratio_pct.to_string(),
+            ),
+            (
                 "rate-limit-enabled".into(),
                 stats.rate_limit_enabled.to_string(),
             ),
@@ -1788,6 +2151,22 @@ impl NodeHandle {
                 cfg.hot_key.stale_max_entries.to_string(),
             ),
             (
+                "hot-key-adaptive-waiters-enabled".into(),
+                cfg.hot_key.adaptive_waiters_enabled.to_string(),
+            ),
+            (
+                "hot-key-adaptive-min-waiters".into(),
+                cfg.hot_key.adaptive_min_waiters.to_string(),
+            ),
+            (
+                "hot-key-adaptive-success-threshold".into(),
+                cfg.hot_key.adaptive_success_threshold.to_string(),
+            ),
+            (
+                "hot-key-adaptive-state-max-keys".into(),
+                cfg.hot_key.adaptive_state_max_keys.to_string(),
+            ),
+            (
                 "hot-key-coalesced-hits-total".into(),
                 stats.hot_key_coalesced_hits_total.to_string(),
             ),
@@ -1810,6 +2189,18 @@ impl NodeHandle {
             (
                 "hot-key-stale-cache-entries".into(),
                 stats.hot_key_stale_cache_entries.to_string(),
+            ),
+            (
+                "hot-key-adaptive-state-keys".into(),
+                stats.hot_key_adaptive_state_keys.to_string(),
+            ),
+            (
+                "hot-key-adaptive-limit-increase-total".into(),
+                stats.hot_key_adaptive_limit_increase_total.to_string(),
+            ),
+            (
+                "hot-key-adaptive-limit-decrease-total".into(),
+                stats.hot_key_adaptive_limit_decrease_total.to_string(),
             ),
             (
                 "circuit-breaker-enabled".into(),
@@ -2327,6 +2718,18 @@ impl NodeHandle {
                             ),
                         }
                     }
+                    "read-repair-max-per-minute" => {
+                        match value.trim().parse::<u64>() {
+                            Ok(v) => {
+                                self.config.lock().unwrap().replication.read_repair_max_per_minute = v;
+                                tracing::info!("read-repair-max-per-minute -> {}", v);
+                            }
+                            _ => tracing::warn!(
+                                "SetProperty read-repair-max-per-minute: invalid value '{}'",
+                                value
+                            ),
+                        }
+                    }
 
                     // ── persistence runtime gate ───────────────────────────────
                     "anti-entropy-enabled" => {
@@ -2396,6 +2799,28 @@ impl NodeHandle {
                         }
                         _ => tracing::warn!(
                             "SetProperty anti-entropy-full-reconcile-max-keys: invalid value '{}'",
+                            value
+                        ),
+                    },
+                    "anti-entropy-budget-max-checks-per-run" => {
+                        match value.trim().parse::<usize>() {
+                            Ok(v) => {
+                                self.config.lock().unwrap().replication.anti_entropy_budget_max_checks_per_run = v;
+                                tracing::info!("anti-entropy-budget-max-checks-per-run -> {}", v);
+                            }
+                            _ => tracing::warn!(
+                                "SetProperty anti-entropy-budget-max-checks-per-run: invalid value '{}'",
+                                value
+                            ),
+                        }
+                    }
+                    "anti-entropy-budget-max-duration-ms" => match value.trim().parse::<u64>() {
+                        Ok(v) => {
+                            self.config.lock().unwrap().replication.anti_entropy_budget_max_duration_ms = v;
+                            tracing::info!("anti-entropy-budget-max-duration-ms -> {}", v);
+                        }
+                        _ => tracing::warn!(
+                            "SetProperty anti-entropy-budget-max-duration-ms: invalid value '{}'",
                             value
                         ),
                     },
@@ -2512,6 +2937,47 @@ impl NodeHandle {
                                 tracing::info!("hot-key-stale-max-entries -> {}", v);
                             }
                             _ => tracing::warn!("SetProperty hot-key-stale-max-entries: invalid value '{}'", value),
+                        }
+                    }
+                    "hot-key-adaptive-waiters-enabled" => {
+                        let val = value.trim().eq_ignore_ascii_case("true");
+                        self.config.lock().unwrap().hot_key.adaptive_waiters_enabled = val;
+                        tracing::info!("hot-key-adaptive-waiters-enabled -> {}", val);
+                    }
+                    "hot-key-adaptive-min-waiters" => {
+                        match value.trim().parse::<usize>() {
+                            Ok(v) if v > 0 => {
+                                self.config.lock().unwrap().hot_key.adaptive_min_waiters = v;
+                                tracing::info!("hot-key-adaptive-min-waiters -> {}", v);
+                            }
+                            _ => tracing::warn!(
+                                "SetProperty hot-key-adaptive-min-waiters: invalid value '{}'",
+                                value
+                            ),
+                        }
+                    }
+                    "hot-key-adaptive-success-threshold" => {
+                        match value.trim().parse::<u32>() {
+                            Ok(v) if v > 0 => {
+                                self.config.lock().unwrap().hot_key.adaptive_success_threshold = v;
+                                tracing::info!("hot-key-adaptive-success-threshold -> {}", v);
+                            }
+                            _ => tracing::warn!(
+                                "SetProperty hot-key-adaptive-success-threshold: invalid value '{}'",
+                                value
+                            ),
+                        }
+                    }
+                    "hot-key-adaptive-state-max-keys" => {
+                        match value.trim().parse::<usize>() {
+                            Ok(v) if v > 0 => {
+                                self.config.lock().unwrap().hot_key.adaptive_state_max_keys = v;
+                                tracing::info!("hot-key-adaptive-state-max-keys -> {}", v);
+                            }
+                            _ => tracing::warn!(
+                                "SetProperty hot-key-adaptive-state-max-keys: invalid value '{}'",
+                                value
+                            ),
                         }
                     }
 
@@ -2943,6 +3409,52 @@ impl NodeHandle {
         now_ms < last_ms.saturating_add(min_interval_ms.max(1))
     }
 
+    fn try_consume_read_repair_budget(&self, now_ms: u64, max_per_minute: u64) -> bool {
+        if max_per_minute == 0 {
+            return true;
+        }
+
+        let window_ms = 60_000;
+        let start_ms = self.read_repair_budget_window_start_ms.load(Ordering::Relaxed);
+        if start_ms == 0 || now_ms >= start_ms.saturating_add(window_ms) {
+            self.read_repair_budget_window_start_ms
+                .store(now_ms, Ordering::Relaxed);
+            self.read_repair_budget_window_count
+                .store(1, Ordering::Relaxed);
+            return true;
+        }
+
+        let prev = self
+            .read_repair_budget_window_count
+            .fetch_add(1, Ordering::Relaxed);
+        prev < max_per_minute
+    }
+
+    fn anti_entropy_budget_exhausted(
+        started_at: Instant,
+        consumed_checks: usize,
+        max_checks: usize,
+        max_duration_ms: u64,
+    ) -> bool {
+        if max_checks > 0 && consumed_checks >= max_checks {
+            return true;
+        }
+        if max_duration_ms > 0
+            && started_at.elapsed() >= Duration::from_millis(max_duration_ms)
+        {
+            return true;
+        }
+        false
+    }
+
+    fn anti_entropy_budget_remaining_checks(consumed_checks: usize, max_checks: usize) -> usize {
+        if max_checks == 0 {
+            usize::MAX
+        } else {
+            max_checks.saturating_sub(consumed_checks)
+        }
+    }
+
     fn classify_mixed_version_response(resp: Option<AdminResponse>) -> (bool, bool) {
         match resp {
             Some(AdminResponse::Properties(entries)) => {
@@ -2965,7 +3477,10 @@ impl NodeHandle {
         &self,
         primary_addr: SocketAddr,
         max_keys: usize,
-    ) -> Option<(u64, u64)> {
+        max_checks: usize,
+        started_at: Instant,
+        max_duration_ms: u64,
+    ) -> Option<(u64, u64, bool)> {
         let primary_keys = match self
             .admin_request_to_addr(primary_addr, AdminRequest::ListKeys { pattern: None })
             .await
@@ -2983,9 +3498,17 @@ impl NodeHandle {
         let mut j = 0usize;
         let mut checked = 0u64;
         let mut mismatches = 0u64;
+        let mut budget_exhausted = false;
 
         while i < local_keys.len() || j < primary_keys.len() {
             if max_keys > 0 && checked >= max_keys as u64 {
+                break;
+            }
+            if checked >= max_checks as u64
+                || (max_duration_ms > 0
+                    && started_at.elapsed() >= Duration::from_millis(max_duration_ms))
+            {
+                budget_exhausted = true;
                 break;
             }
 
@@ -3034,7 +3557,7 @@ impl NodeHandle {
             }
         }
 
-        Some((checked, mismatches))
+        Some((checked, mismatches, budget_exhausted))
     }
 
     /// Spawn a periodic anti-entropy task.
@@ -3053,6 +3576,8 @@ impl NodeHandle {
                     key_sample_size,
                     full_reconcile_every,
                     full_reconcile_max_keys,
+                    budget_max_checks_per_run,
+                    budget_max_duration_ms,
                 ) = {
                     let cfg = self.config.lock().unwrap();
                     (
@@ -3063,6 +3588,8 @@ impl NodeHandle {
                         cfg.replication.anti_entropy_key_sample_size,
                         cfg.replication.anti_entropy_full_reconcile_every,
                         cfg.replication.anti_entropy_full_reconcile_max_keys,
+                        cfg.replication.anti_entropy_budget_max_checks_per_run,
+                        cfg.replication.anti_entropy_budget_max_duration_ms,
                     )
                 };
 
@@ -3076,6 +3603,8 @@ impl NodeHandle {
                     .anti_entropy_runs_total
                     .fetch_add(1, Ordering::Relaxed)
                     .saturating_add(1);
+                let run_started_at = Instant::now();
+                let mut consumed_checks = 0usize;
 
                 // Only check when Active and not the primary.
                 let (status, am_primary, our_index, primary_index, primary_addr) = {
@@ -3138,15 +3667,40 @@ impl NodeHandle {
                     continue;
                 }
 
+                if Self::anti_entropy_budget_exhausted(
+                    run_started_at,
+                    consumed_checks,
+                    budget_max_checks_per_run,
+                    budget_max_duration_ms,
+                ) {
+                    self.anti_entropy_budget_exhausted_total
+                        .fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+
                 if Self::should_run_full_reconcile(run_no, full_reconcile_every) {
                     self.anti_entropy_full_reconcile_runs_total
                         .fetch_add(1, Ordering::Relaxed);
-                    if let Some((checked, mismatches)) = self
-                        .anti_entropy_full_reconcile_once(primary_addr, full_reconcile_max_keys)
+                    if let Some((checked, mismatches, budget_exhausted)) = self
+                        .anti_entropy_full_reconcile_once(
+                            primary_addr,
+                            full_reconcile_max_keys,
+                            Self::anti_entropy_budget_remaining_checks(
+                                consumed_checks,
+                                budget_max_checks_per_run,
+                            ),
+                            run_started_at,
+                            budget_max_duration_ms,
+                        )
                         .await
                     {
                         self.anti_entropy_full_reconcile_key_checks_total
                             .fetch_add(checked, Ordering::Relaxed);
+                        consumed_checks = consumed_checks.saturating_add(checked as usize);
+                        if budget_exhausted {
+                            self.anti_entropy_budget_exhausted_total
+                                .fetch_add(1, Ordering::Relaxed);
+                        }
                         if mismatches > 0 {
                             self.anti_entropy_full_reconcile_mismatch_total
                                 .fetch_add(mismatches, Ordering::Relaxed);
@@ -3187,6 +3741,17 @@ impl NodeHandle {
                     continue;
                 }
 
+                if Self::anti_entropy_budget_exhausted(
+                    run_started_at,
+                    consumed_checks,
+                    budget_max_checks_per_run,
+                    budget_max_duration_ms,
+                ) {
+                    self.anti_entropy_budget_exhausted_total
+                        .fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+
                 let keys = match self
                     .admin_request_to_addr(primary_addr, AdminRequest::ListKeys { pattern: None })
                     .await
@@ -3198,6 +3763,16 @@ impl NodeHandle {
                 let mut checked = 0u64;
                 let mut mismatches = 0u64;
                 for key in keys.into_iter().take(key_sample_size) {
+                    if Self::anti_entropy_budget_exhausted(
+                        run_started_at,
+                        consumed_checks.saturating_add(checked as usize),
+                        budget_max_checks_per_run,
+                        budget_max_duration_ms,
+                    ) {
+                        self.anti_entropy_budget_exhausted_total
+                            .fetch_add(1, Ordering::Relaxed);
+                        break;
+                    }
                     checked = checked.saturating_add(1);
                     let local_version = self.store.get(&key).map(|e| e.version);
                     let primary_version = match self
@@ -3414,6 +3989,36 @@ impl NodeHandle {
             .join(",")
     }
 
+    fn format_namespace_latency_top(rows: &[NamespaceLatencySummary]) -> String {
+        if rows.is_empty() {
+            return "-".to_string();
+        }
+        rows.iter()
+            .map(|r| {
+                let p95 = r
+                    .latency_p95_estimate_ms
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".to_string());
+                let p99 = r
+                    .latency_p99_estimate_ms
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".to_string());
+                format!("{}:{}(p95={},p99={})", r.namespace, r.request_total, p95, p99)
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    fn format_hot_key_top_usage(rows: &[HotKeyUsage]) -> String {
+        if rows.is_empty() {
+            return "-".to_string();
+        }
+        rows.iter()
+            .map(|r| format!("{}:{}", r.key, r.request_total))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
     fn format_request_latency_buckets(stats: &NodeStats) -> String {
         format!(
             "<=1ms:{};<=5ms:{};<=20ms:{};<=100ms:{};<=500ms:{};>500ms:{}",
@@ -3462,6 +4067,7 @@ impl NodeHandle {
         let log = self.write_log.lock().await;
         let hot_key_inflight_keys = self.get_flights.lock().await.len() as u64;
         let hot_key_stale_cache_entries = self.hot_key_stale_cache.lock().await.len() as u64;
+        let hot_key_adaptive_state_keys = self.hot_key_adaptive_state.lock().unwrap().len() as u64;
         let cfg = self.config.lock().unwrap();
         let backup_dir_bytes = dir_size_bytes(&cfg.backup.path);
         let snapshot_last_load_path = self.snapshot_last_load_path.lock().unwrap().clone();
@@ -3494,10 +4100,29 @@ impl NodeHandle {
         let tenancy_max_keys_per_namespace = cfg.tenancy.max_keys_per_namespace;
         let namespace_quota_top_usage =
             self.namespace_quota_top_usage(tenancy_enabled, tenancy_max_keys_per_namespace, 3);
+        let namespace_latency_top = self.namespace_latency_top(NAMESPACE_LATENCY_TOP_LIMIT);
+        let hot_key_top_usage = self.hot_key_top_usage(HOT_KEY_TOP_LIMIT);
         let namespace_quota_reject_total =
             self.namespace_quota_reject_total.load(Ordering::Relaxed);
         let (namespace_quota_reject_rate_per_min, namespace_quota_reject_trend) =
             self.namespace_quota_reject_velocity(namespace_quota_reject_total);
+        let snapshot_restore_attempt_total =
+            self.snapshot_restore_attempt_total.load(Ordering::Relaxed);
+        let snapshot_restore_success_total =
+            self.snapshot_restore_success_total.load(Ordering::Relaxed);
+        let snapshot_restore_failure_total =
+            self.snapshot_restore_failure_total.load(Ordering::Relaxed);
+        let snapshot_restore_not_found_total =
+            self.snapshot_restore_not_found_total.load(Ordering::Relaxed);
+        let snapshot_restore_policy_block_total =
+            self.snapshot_restore_policy_block_total.load(Ordering::Relaxed);
+        let snapshot_restore_success_ratio_pct = if snapshot_restore_attempt_total == 0 {
+            100
+        } else {
+            ((snapshot_restore_success_total.saturating_mul(100))
+                / snapshot_restore_attempt_total)
+            .min(100)
+        };
         let circuit_breaker_state = if circuit_breaker_enabled {
             self.circuit.lock().unwrap().state.as_str().to_string()
         } else {
@@ -3549,21 +4174,12 @@ impl NodeHandle {
                 .load(Ordering::Relaxed),
             snapshot_last_load_entries: self.snapshot_last_load_entries.load(Ordering::Relaxed),
             snapshot_last_load_age_secs,
-            snapshot_restore_attempt_total: self
-                .snapshot_restore_attempt_total
-                .load(Ordering::Relaxed),
-            snapshot_restore_success_total: self
-                .snapshot_restore_success_total
-                .load(Ordering::Relaxed),
-            snapshot_restore_failure_total: self
-                .snapshot_restore_failure_total
-                .load(Ordering::Relaxed),
-            snapshot_restore_not_found_total: self
-                .snapshot_restore_not_found_total
-                .load(Ordering::Relaxed),
-            snapshot_restore_policy_block_total: self
-                .snapshot_restore_policy_block_total
-                .load(Ordering::Relaxed),
+            snapshot_restore_attempt_total,
+            snapshot_restore_success_total,
+            snapshot_restore_failure_total,
+            snapshot_restore_not_found_total,
+            snapshot_restore_policy_block_total,
+            snapshot_restore_success_ratio_pct,
             persistence_platform_allowed,
             persistence_runtime_enabled,
             persistence_enabled,
@@ -3577,6 +4193,7 @@ impl NodeHandle {
             rate_limited_requests_total: self.rate_limited_requests_total.load(Ordering::Relaxed),
             circuit_breaker_enabled,
             hot_key_enabled,
+            hot_key_adaptive_waiters_enabled: cfg.hot_key.adaptive_waiters_enabled,
             read_repair_enabled,
             hot_key_coalesced_hits_total: self.hot_key_coalesced_hits_total.load(Ordering::Relaxed),
             hot_key_fallback_exec_total: self.hot_key_fallback_exec_total.load(Ordering::Relaxed),
@@ -3584,13 +4201,25 @@ impl NodeHandle {
             hot_key_stale_served_total: self.hot_key_stale_served_total.load(Ordering::Relaxed),
             hot_key_inflight_keys,
             hot_key_stale_cache_entries,
+            hot_key_adaptive_state_keys,
+            hot_key_adaptive_limit_increase_total: self
+                .hot_key_adaptive_limit_increase_total
+                .load(Ordering::Relaxed),
+            hot_key_adaptive_limit_decrease_total: self
+                .hot_key_adaptive_limit_decrease_total
+                .load(Ordering::Relaxed),
             read_repair_trigger_total: self.read_repair_trigger_total.load(Ordering::Relaxed),
             read_repair_success_total: self.read_repair_success_total.load(Ordering::Relaxed),
             read_repair_throttled_total: self.read_repair_throttled_total.load(Ordering::Relaxed),
+            read_repair_budget_exhausted_total: self
+                .read_repair_budget_exhausted_total
+                .load(Ordering::Relaxed),
             namespace_quota_reject_total,
             namespace_quota_reject_rate_per_min,
             namespace_quota_reject_trend,
             namespace_quota_top_usage,
+            namespace_latency_top,
+            hot_key_top_usage,
             anti_entropy_runs_total: self.anti_entropy_runs_total.load(Ordering::Relaxed),
             anti_entropy_repair_trigger_total: self
                 .anti_entropy_repair_trigger_total
@@ -3615,6 +4244,9 @@ impl NodeHandle {
                 .load(Ordering::Relaxed),
             anti_entropy_full_reconcile_mismatch_total: self
                 .anti_entropy_full_reconcile_mismatch_total
+                .load(Ordering::Relaxed),
+            anti_entropy_budget_exhausted_total: self
+                .anti_entropy_budget_exhausted_total
                 .load(Ordering::Relaxed),
             mixed_version_probe_runs_total: self
                 .mixed_version_probe_runs_total
@@ -3692,7 +4324,7 @@ mod tests {
     use ditto_protocol::{AdminRequest, AdminResponse, ClientRequest, ClientResponse, ErrorCode};
     use sha2::{Digest, Sha256};
     use std::sync::{atomic::Ordering, Arc};
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     fn test_node(mut cfg: Config) -> Arc<NodeHandle> {
         cfg.node.id = "test-node".into();
@@ -3801,6 +4433,29 @@ mod tests {
         ));
         assert!(!NodeHandle::should_throttle_anti_entropy_repair(
             10_000, 8_000, 1_000
+        ));
+    }
+
+    #[test]
+    fn read_repair_budget_helper_limits_per_minute() {
+        let cfg = Config::default();
+        let node = test_node(cfg);
+        let now = 1_000_000_u64;
+        assert!(node.try_consume_read_repair_budget(now, 2));
+        assert!(node.try_consume_read_repair_budget(now + 100, 2));
+        assert!(!node.try_consume_read_repair_budget(now + 200, 2));
+        assert!(node.try_consume_read_repair_budget(now + 61_000, 2));
+    }
+
+    #[test]
+    fn anti_entropy_budget_helper_respects_checks_and_duration() {
+        let started = Instant::now();
+        assert!(!NodeHandle::anti_entropy_budget_exhausted(started, 1, 2, 0));
+        assert!(NodeHandle::anti_entropy_budget_exhausted(started, 2, 2, 0));
+
+        let started_old = Instant::now() - Duration::from_millis(20);
+        assert!(NodeHandle::anti_entropy_budget_exhausted(
+            started_old, 0, 0, 10
         ));
     }
 
@@ -4044,6 +4699,43 @@ mod tests {
         ); // 3/5
     }
 
+    #[test]
+    fn hot_key_adaptive_waiter_limit_scales_down_on_timeout_and_back_on_success() {
+        let mut cfg = Config::default();
+        cfg.hot_key.max_waiters = 16;
+        cfg.hot_key.adaptive_waiters_enabled = true;
+        cfg.hot_key.adaptive_min_waiters = 2;
+        cfg.hot_key.adaptive_success_threshold = 2;
+        cfg.hot_key.adaptive_state_max_keys = 64;
+        let node = test_node(cfg);
+
+        let initial = node.hot_key_adaptive_waiter_limit("k1", true, 16, 2, 64);
+        assert_eq!(initial, 16);
+
+        node.hot_key_adaptive_on_timeout("k1", true, 16, 2);
+        assert_eq!(node.hot_key_adaptive_waiter_limit("k1", true, 16, 2, 64), 8);
+
+        node.hot_key_adaptive_on_timeout("k1", true, 16, 2);
+        assert_eq!(node.hot_key_adaptive_waiter_limit("k1", true, 16, 2, 64), 4);
+
+        node.hot_key_adaptive_on_timeout("k1", true, 16, 2);
+        assert_eq!(node.hot_key_adaptive_waiter_limit("k1", true, 16, 2, 64), 2);
+
+        node.hot_key_adaptive_on_success("k1", true, 16, 2, 2);
+        assert_eq!(node.hot_key_adaptive_waiter_limit("k1", true, 16, 2, 64), 2);
+        node.hot_key_adaptive_on_success("k1", true, 16, 2, 2);
+        assert_eq!(node.hot_key_adaptive_waiter_limit("k1", true, 16, 2, 64), 3);
+
+        assert!(node
+            .hot_key_adaptive_limit_decrease_total
+            .load(Ordering::Relaxed)
+            >= 3);
+        assert!(node
+            .hot_key_adaptive_limit_increase_total
+            .load(Ordering::Relaxed)
+            >= 1);
+    }
+
     #[tokio::test]
     async fn client_observability_counters_track_latency_and_error_categories() {
         let node = test_node(Config::default());
@@ -4052,6 +4744,8 @@ mod tests {
             ClientRequestSource::Tcp,
             Duration::from_millis(1),
             &ClientResponse::Pong,
+            Some("tenant-a"),
+            Some("tenant-a::k1"),
         );
         node.observe_client_response_metrics(
             ClientRequestSource::Http,
@@ -4060,6 +4754,8 @@ mod tests {
                 code: ErrorCode::RateLimited,
                 message: "synthetic".into(),
             },
+            Some("tenant-a"),
+            Some("tenant-a::k1"),
         );
         node.observe_client_response_metrics(
             ClientRequestSource::Internal,
@@ -4068,6 +4764,8 @@ mod tests {
                 code: ErrorCode::NoQuorum,
                 message: "synthetic".into(),
             },
+            Some("tenant-b"),
+            Some("tenant-b::k2"),
         );
         node.observe_client_response_metrics(
             ClientRequestSource::Http,
@@ -4076,6 +4774,8 @@ mod tests {
                 code: ErrorCode::InternalError,
                 message: "synthetic".into(),
             },
+            None,
+            None,
         );
 
         let stats = node.stats().await;
@@ -4096,6 +4796,12 @@ mod tests {
         assert_eq!(stats.client_error_throttle_total, 1);
         assert_eq!(stats.client_error_availability_total, 1);
         assert_eq!(stats.client_error_internal_total, 1);
+        assert_eq!(stats.namespace_latency_top.len(), 2);
+        assert_eq!(stats.namespace_latency_top[0].namespace, "tenant-a");
+        assert_eq!(stats.namespace_latency_top[0].request_total, 2);
+        assert_eq!(stats.hot_key_top_usage.len(), 2);
+        assert_eq!(stats.hot_key_top_usage[0].key, "tenant-a::k1");
+        assert_eq!(stats.hot_key_top_usage[0].request_total, 2);
     }
 
     #[test]

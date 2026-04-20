@@ -300,6 +300,7 @@ password_hash = "$2b$12$..."  # generate with: dittoctl hash-password
 | `DITTO_WRITE_QUORUM_MODE` | `replication.write_quorum_mode` (`all-active` \| `majority`) |
 | `DITTO_READ_REPAIR_ON_MISS_ENABLED` | `replication.read_repair_on_miss_enabled` |
 | `DITTO_READ_REPAIR_MIN_INTERVAL_MS` | `replication.read_repair_min_interval_ms` |
+| `DITTO_READ_REPAIR_MAX_PER_MINUTE` | `replication.read_repair_max_per_minute` |
 | `DITTO_ANTI_ENTROPY_ENABLED` | `replication.anti_entropy_enabled` |
 | `DITTO_ANTI_ENTROPY_INTERVAL_MS` | `replication.anti_entropy_interval_ms` |
 | `DITTO_ANTI_ENTROPY_MIN_REPAIR_INTERVAL_MS` | `replication.anti_entropy_min_repair_interval_ms` |
@@ -307,6 +308,8 @@ password_hash = "$2b$12$..."  # generate with: dittoctl hash-password
 | `DITTO_ANTI_ENTROPY_KEY_SAMPLE_SIZE` | `replication.anti_entropy_key_sample_size` |
 | `DITTO_ANTI_ENTROPY_FULL_RECONCILE_EVERY` | `replication.anti_entropy_full_reconcile_every` |
 | `DITTO_ANTI_ENTROPY_FULL_RECONCILE_MAX_KEYS` | `replication.anti_entropy_full_reconcile_max_keys` |
+| `DITTO_ANTI_ENTROPY_BUDGET_MAX_CHECKS_PER_RUN` | `replication.anti_entropy_budget_max_checks_per_run` |
+| `DITTO_ANTI_ENTROPY_BUDGET_MAX_DURATION_MS` | `replication.anti_entropy_budget_max_duration_ms` |
 | `DITTO_MIXED_VERSION_PROBE_ENABLED` | `replication.mixed_version_probe_enabled` |
 | `DITTO_MIXED_VERSION_PROBE_INTERVAL_MS` | `replication.mixed_version_probe_interval_ms` |
 | `DITTO_TLS_ENABLED` | `tls.enabled` |
@@ -332,6 +335,10 @@ password_hash = "$2b$12$..."  # generate with: dittoctl hash-password
 | `DITTO_RATE_LIMIT_BURST` | token bucket burst capacity |
 | `DITTO_HOT_KEY_ENABLED` | hot-key GET coalescing enable flag |
 | `DITTO_HOT_KEY_MAX_WAITERS` | max concurrent waiters per in-flight key |
+| `DITTO_HOT_KEY_ADAPTIVE_WAITERS_ENABLED` | enable adaptive per-key waiter limit tuning |
+| `DITTO_HOT_KEY_ADAPTIVE_MIN_WAITERS` | minimum adaptive waiter limit per key |
+| `DITTO_HOT_KEY_ADAPTIVE_SUCCESS_THRESHOLD` | successful coalesced follower responses before adaptive limit increases |
+| `DITTO_HOT_KEY_ADAPTIVE_STATE_MAX_KEYS` | max retained per-key adaptive waiter state entries |
 | `DITTO_CIRCUIT_BREAKER_ENABLED` | circuit breaker enable flag |
 | `DITTO_CIRCUIT_BREAKER_FAILURE_THRESHOLD` | consecutive failure threshold to open |
 | `DITTO_CIRCUIT_BREAKER_OPEN_MS` | open-state timeout before half-open probes |
@@ -491,7 +498,7 @@ Current GitHub Actions workflows:
 - `Release Gate` (`.github/workflows/release-gate.yml`)
   - Purpose: enforce baseline Rust quality gate before merge/release.
   - Triggers: push/PR on `main`.
-  - Commands: `cargo check`, `cargo test --workspace`
+  - Commands: `cargo check`, `cargo test --workspace`, `cargo test -p ditto-protocol`, `cargo audit`
 
 Manual run (GitHub UI):
 

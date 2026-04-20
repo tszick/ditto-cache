@@ -339,6 +339,26 @@ pub struct NamespaceQuotaUsage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NamespaceLatencySummary {
+    /// Namespace identifier.
+    pub namespace: String,
+    /// Requests observed in this namespace.
+    pub request_total: u64,
+    /// Estimated namespace latency p95 (ms) from request histogram.
+    pub latency_p95_estimate_ms: Option<u64>,
+    /// Estimated namespace latency p99 (ms) from request histogram.
+    pub latency_p99_estimate_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HotKeyUsage {
+    /// Namespaced key label in the form `namespace::key`.
+    pub key: String,
+    /// Observed request count for this key.
+    pub request_total: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeStats {
     pub node_id: Uuid,
     pub status: NodeStatus,
@@ -383,6 +403,8 @@ pub struct NodeStats {
     pub snapshot_restore_not_found_total: u64,
     /// Total restore requests rejected by persistence policy gate.
     pub snapshot_restore_policy_block_total: u64,
+    /// Snapshot restore success ratio in percent.
+    pub snapshot_restore_success_ratio_pct: u64,
     /// Platform-level persistence gate (env/config controlled).
     pub persistence_platform_allowed: bool,
     /// Runtime persistence gate (admin controlled).
@@ -409,6 +431,8 @@ pub struct NodeStats {
     pub circuit_breaker_enabled: bool,
     /// Hot-key GET coalescing enabled.
     pub hot_key_enabled: bool,
+    /// Adaptive per-key waiter limit tuning enabled.
+    pub hot_key_adaptive_waiters_enabled: bool,
     /// Read-repair on local miss enabled.
     pub read_repair_enabled: bool,
     /// Total GET requests served via in-flight coalescing wait path.
@@ -423,12 +447,20 @@ pub struct NodeStats {
     pub hot_key_inflight_keys: u64,
     /// Number of entries currently retained in soft-stale cache.
     pub hot_key_stale_cache_entries: u64,
+    /// Number of keys with adaptive waiter state retained.
+    pub hot_key_adaptive_state_keys: u64,
+    /// Number of adaptive waiter limit upward adjustments.
+    pub hot_key_adaptive_limit_increase_total: u64,
+    /// Number of adaptive waiter limit downward adjustments.
+    pub hot_key_adaptive_limit_decrease_total: u64,
     /// Total read-repair attempts triggered on local misses.
     pub read_repair_trigger_total: u64,
     /// Total read-repair attempts where primary had the value.
     pub read_repair_success_total: u64,
     /// Total read-repair attempts skipped due to min-interval throttling.
     pub read_repair_throttled_total: u64,
+    /// Total read-repair attempts skipped due to per-minute budget exhaustion.
+    pub read_repair_budget_exhausted_total: u64,
     /// Total client requests rejected due to per-namespace quota.
     pub namespace_quota_reject_total: u64,
     /// Recent quota reject velocity (events/minute) between two stats snapshots.
@@ -437,6 +469,10 @@ pub struct NodeStats {
     pub namespace_quota_reject_trend: String,
     /// Highest namespace quota pressure entries sorted by usage descending.
     pub namespace_quota_top_usage: Vec<NamespaceQuotaUsage>,
+    /// Top namespaces by request volume with estimated latency percentiles.
+    pub namespace_latency_top: Vec<NamespaceLatencySummary>,
+    /// Top hot keys by request volume.
+    pub hot_key_top_usage: Vec<HotKeyUsage>,
     /// Total anti-entropy loop iterations.
     pub anti_entropy_runs_total: u64,
     /// Total anti-entropy triggered repair attempts.
@@ -455,6 +491,8 @@ pub struct NodeStats {
     pub anti_entropy_full_reconcile_key_checks_total: u64,
     /// Total mismatches detected by full keyspace reconcile.
     pub anti_entropy_full_reconcile_mismatch_total: u64,
+    /// Total anti-entropy checks that stopped early due to budget exhaustion.
+    pub anti_entropy_budget_exhausted_total: u64,
     /// Total mixed-version probe loop iterations.
     pub mixed_version_probe_runs_total: u64,
     /// Cumulative count of peers detected with a mismatching protocol version.

@@ -129,6 +129,13 @@ async fn main() -> Result<()> {
             config.replication.read_repair_min_interval_ms = ms.max(1);
         }
     }
+    if let Ok(v) = std::env::var("DITTO_READ_REPAIR_MAX_PER_MINUTE")
+        .or_else(|_| std::env::var("READ_REPAIR_MAX_PER_MINUTE"))
+    {
+        if let Ok(n) = v.parse::<u64>() {
+            config.replication.read_repair_max_per_minute = n;
+        }
+    }
     if let Some(v) = parse_bool_env("DITTO_ANTI_ENTROPY_ENABLED")
         .or_else(|| parse_bool_env("ANTI_ENTROPY_ENABLED"))
     {
@@ -174,6 +181,20 @@ async fn main() -> Result<()> {
     {
         if let Ok(n) = v.parse::<usize>() {
             config.replication.anti_entropy_full_reconcile_max_keys = n;
+        }
+    }
+    if let Ok(v) = std::env::var("DITTO_ANTI_ENTROPY_BUDGET_MAX_CHECKS_PER_RUN")
+        .or_else(|_| std::env::var("ANTI_ENTROPY_BUDGET_MAX_CHECKS_PER_RUN"))
+    {
+        if let Ok(n) = v.parse::<usize>() {
+            config.replication.anti_entropy_budget_max_checks_per_run = n;
+        }
+    }
+    if let Ok(v) = std::env::var("DITTO_ANTI_ENTROPY_BUDGET_MAX_DURATION_MS")
+        .or_else(|_| std::env::var("ANTI_ENTROPY_BUDGET_MAX_DURATION_MS"))
+    {
+        if let Ok(ms) = v.parse::<u64>() {
+            config.replication.anti_entropy_budget_max_duration_ms = ms;
         }
     }
     if let Some(v) = parse_bool_env("DITTO_MIXED_VERSION_PROBE_ENABLED")
@@ -317,6 +338,32 @@ async fn main() -> Result<()> {
     {
         if let Ok(n) = v.parse::<usize>() {
             config.hot_key.stale_max_entries = n.max(1);
+        }
+    }
+    if let Some(v) = parse_bool_env("DITTO_HOT_KEY_ADAPTIVE_WAITERS_ENABLED")
+        .or_else(|| parse_bool_env("HOT_KEY_ADAPTIVE_WAITERS_ENABLED"))
+    {
+        config.hot_key.adaptive_waiters_enabled = v;
+    }
+    if let Ok(v) = std::env::var("DITTO_HOT_KEY_ADAPTIVE_MIN_WAITERS")
+        .or_else(|_| std::env::var("HOT_KEY_ADAPTIVE_MIN_WAITERS"))
+    {
+        if let Ok(n) = v.parse::<usize>() {
+            config.hot_key.adaptive_min_waiters = n.max(1);
+        }
+    }
+    if let Ok(v) = std::env::var("DITTO_HOT_KEY_ADAPTIVE_SUCCESS_THRESHOLD")
+        .or_else(|_| std::env::var("HOT_KEY_ADAPTIVE_SUCCESS_THRESHOLD"))
+    {
+        if let Ok(n) = v.parse::<u32>() {
+            config.hot_key.adaptive_success_threshold = n.max(1);
+        }
+    }
+    if let Ok(v) = std::env::var("DITTO_HOT_KEY_ADAPTIVE_STATE_MAX_KEYS")
+        .or_else(|_| std::env::var("HOT_KEY_ADAPTIVE_STATE_MAX_KEYS"))
+    {
+        if let Ok(n) = v.parse::<usize>() {
+            config.hot_key.adaptive_state_max_keys = n.max(1);
         }
     }
     if let Ok(v) = std::env::var("DITTO_BIND_ADDR") {

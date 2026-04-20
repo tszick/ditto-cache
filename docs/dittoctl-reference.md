@@ -98,8 +98,13 @@ dittoctl node set rate-limit-requests-per-sec <target> <number>
 dittoctl node set rate-limit-burst <target> <number>
 dittoctl node set hot-key-enabled <target> <true|false>
 dittoctl node set hot-key-max-waiters <target> <number>
+dittoctl node set hot-key-adaptive-waiters-enabled <target> <true|false>
+dittoctl node set hot-key-adaptive-min-waiters <target> <number>
+dittoctl node set hot-key-adaptive-success-threshold <target> <number>
+dittoctl node set hot-key-adaptive-state-max-keys <target> <number>
 dittoctl node set read-repair-on-miss-enabled <target> <true|false>
 dittoctl node set read-repair-min-interval-ms <target> <number>
+dittoctl node set read-repair-max-per-minute <target> <number>
 dittoctl node set anti-entropy-enabled <target> <true|false>
 dittoctl node set anti-entropy-interval-ms <target> <number>
 dittoctl node set anti-entropy-min-repair-interval-ms <target> <number>
@@ -107,6 +112,8 @@ dittoctl node set anti-entropy-lag-threshold <target> <number>
 dittoctl node set anti-entropy-key-sample-size <target> <number>
 dittoctl node set anti-entropy-full-reconcile-every <target> <number>
 dittoctl node set anti-entropy-full-reconcile-max-keys <target> <number>
+dittoctl node set anti-entropy-budget-max-checks-per-run <target> <number>
+dittoctl node set anti-entropy-budget-max-duration-ms <target> <number>
 dittoctl node set mixed-version-probe-enabled <target> <true|false>
 dittoctl node set mixed-version-probe-interval-ms <target> <number>
 dittoctl node set tenancy-enabled <target> <true|false>
@@ -148,7 +155,7 @@ dittoctl node status <target>
 
 `target` can be `local`, `all`, or a specific node address/name expected by mgmt.
 Status output includes persistence policy flags (`persistence_platform_allowed`, `persistence_runtime_enabled`, `persistence_enabled`, and per-feature states).
-Status output also includes resilience-runtime fields (`rate_limit_enabled`, `rate_limited_requests_total`, `hot_key_enabled`, `hot_key_coalesced_hits_total`, `hot_key_fallback_exec_total`, `hot_key_wait_timeout_total`, `hot_key_stale_served_total`, `hot_key_inflight_keys`, `hot_key_stale_cache_entries`, `read_repair_enabled`, `read_repair_trigger_total`, `read_repair_success_total`, `read_repair_throttled_total`, `anti_entropy_runs_total`, `anti_entropy_repair_trigger_total`, `anti_entropy_repair_throttled_total`, `anti_entropy_last_detected_lag`, `anti_entropy_key_checks_total`, `anti_entropy_key_mismatch_total`, `circuit_breaker_enabled`, `circuit_breaker_state`, `circuit_breaker_open_total`, `circuit_breaker_reject_total`), request-observability fields (`client_requests_total`, source split `client_requests_{tcp,http,internal}_total`, latency buckets, estimated latency percentiles `client_latency_p50/p90/p95/p99_estimate_ms`, source-split errors `client_errors_{tcp,http,internal}_total`, categorized `client_error_*` counters), and snapshot restore metadata (`snapshot_last_load_path`, `snapshot_last_load_duration_ms`, `snapshot_last_load_entries`, `snapshot_last_load_age_secs`, `snapshot_restore_attempt_total`, `snapshot_restore_success_total`, `snapshot_restore_failure_total`, `snapshot_restore_not_found_total`, `snapshot_restore_policy_block_total`).
+Status output also includes resilience-runtime fields (`rate_limit_enabled`, `rate_limited_requests_total`, `hot_key_enabled`, `hot_key_adaptive_waiters_enabled`, `hot_key_coalesced_hits_total`, `hot_key_fallback_exec_total`, `hot_key_wait_timeout_total`, `hot_key_stale_served_total`, `hot_key_inflight_keys`, `hot_key_stale_cache_entries`, `hot_key_adaptive_state_keys`, `hot_key_adaptive_limit_increase_total`, `hot_key_adaptive_limit_decrease_total`, `read_repair_enabled`, `read_repair_trigger_total`, `read_repair_success_total`, `read_repair_throttled_total`, `read_repair_budget_exhausted_total`, `anti_entropy_runs_total`, `anti_entropy_repair_trigger_total`, `anti_entropy_repair_throttled_total`, `anti_entropy_last_detected_lag`, `anti_entropy_key_checks_total`, `anti_entropy_key_mismatch_total`, `anti_entropy_budget_exhausted_total`, `circuit_breaker_enabled`, `circuit_breaker_state`, `circuit_breaker_open_total`, `circuit_breaker_reject_total`), request-observability fields (`client_requests_total`, source split `client_requests_{tcp,http,internal}_total`, latency buckets, estimated latency percentiles `client_latency_p50/p90/p95/p99_estimate_ms`, namespace-level latency summary `namespace_latency_top`, hot-key pressure summary `hot_key_top_usage`, source-split errors `client_errors_{tcp,http,internal}_total`, categorized `client_error_*` counters), and snapshot restore metadata (`snapshot_last_load_path`, `snapshot_last_load_duration_ms`, `snapshot_last_load_entries`, `snapshot_last_load_age_secs`, `snapshot_restore_attempt_total`, `snapshot_restore_success_total`, `snapshot_restore_failure_total`, `snapshot_restore_not_found_total`, `snapshot_restore_policy_block_total`, `snapshot_restore_success_ratio_pct`).
 
 ## Cache commands
 

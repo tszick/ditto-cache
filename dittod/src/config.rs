@@ -320,6 +320,18 @@ pub struct HotKeyConfig {
     /// Maximum number of keys retained in soft-stale cache.
     #[serde(default = "default_hot_key_stale_max_entries")]
     pub stale_max_entries: usize,
+    /// Enable adaptive per-key waiter limit tuning.
+    #[serde(default)]
+    pub adaptive_waiters_enabled: bool,
+    /// Minimum adaptive waiter limit for a single hot key.
+    #[serde(default = "default_hot_key_adaptive_min_waiters")]
+    pub adaptive_min_waiters: usize,
+    /// Number of successful coalesced follower responses required before increasing the adaptive limit.
+    #[serde(default = "default_hot_key_adaptive_success_threshold")]
+    pub adaptive_success_threshold: u32,
+    /// Maximum number of per-key adaptive waiter states retained.
+    #[serde(default = "default_hot_key_adaptive_state_max_keys")]
+    pub adaptive_state_max_keys: usize,
 }
 
 impl Default for HotKeyConfig {
@@ -330,6 +342,10 @@ impl Default for HotKeyConfig {
             follower_wait_timeout_ms: default_hot_key_follower_wait_timeout_ms(),
             stale_ttl_ms: default_hot_key_stale_ttl_ms(),
             stale_max_entries: default_hot_key_stale_max_entries(),
+            adaptive_waiters_enabled: false,
+            adaptive_min_waiters: default_hot_key_adaptive_min_waiters(),
+            adaptive_success_threshold: default_hot_key_adaptive_success_threshold(),
+            adaptive_state_max_keys: default_hot_key_adaptive_state_max_keys(),
         }
     }
 }
@@ -397,6 +413,9 @@ pub struct ReplicationConfig {
     /// Minimum spacing between read-repair triggers on this node (ms).
     #[serde(default = "default_read_repair_min_interval_ms")]
     pub read_repair_min_interval_ms: u64,
+    /// Maximum read-repair triggers per rolling minute on this node (0 = unlimited).
+    #[serde(default = "default_read_repair_max_per_minute")]
+    pub read_repair_max_per_minute: u64,
     /// Enable periodic anti-entropy reconciliation.
     #[serde(default)]
     pub anti_entropy_enabled: bool,
@@ -418,6 +437,12 @@ pub struct ReplicationConfig {
     /// Max keys inspected during one full keyspace reconcile run (0 = unlimited).
     #[serde(default = "default_anti_entropy_full_reconcile_max_keys")]
     pub anti_entropy_full_reconcile_max_keys: usize,
+    /// Anti-entropy per-run key-check budget (0 = unlimited).
+    #[serde(default = "default_anti_entropy_budget_max_checks_per_run")]
+    pub anti_entropy_budget_max_checks_per_run: usize,
+    /// Anti-entropy per-run wall-clock budget in milliseconds (0 = unlimited).
+    #[serde(default = "default_anti_entropy_budget_max_duration_ms")]
+    pub anti_entropy_budget_max_duration_ms: u64,
     /// Enable periodic mixed-version probe against peers.
     #[serde(default = "default_true")]
     pub mixed_version_probe_enabled: bool,
@@ -457,6 +482,9 @@ fn default_write_quorum_mode() -> WriteQuorumMode {
 fn default_read_repair_min_interval_ms() -> u64 {
     5_000
 }
+fn default_read_repair_max_per_minute() -> u64 {
+    30
+}
 fn default_tenancy_default_namespace() -> String {
     "default".to_string()
 }
@@ -477,6 +505,12 @@ fn default_anti_entropy_full_reconcile_every() -> u64 {
 }
 fn default_anti_entropy_full_reconcile_max_keys() -> usize {
     2000
+}
+fn default_anti_entropy_budget_max_checks_per_run() -> usize {
+    256
+}
+fn default_anti_entropy_budget_max_duration_ms() -> u64 {
+    250
 }
 fn default_mixed_version_probe_interval_ms() -> u64 {
     30_000
@@ -556,6 +590,15 @@ fn default_hot_key_stale_ttl_ms() -> u64 {
 fn default_hot_key_stale_max_entries() -> usize {
     1024
 }
+fn default_hot_key_adaptive_min_waiters() -> usize {
+    4
+}
+fn default_hot_key_adaptive_success_threshold() -> u32 {
+    8
+}
+fn default_hot_key_adaptive_state_max_keys() -> usize {
+    4096
+}
 
 impl Config {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
@@ -609,6 +652,7 @@ impl Default for Config {
                 version_check_interval_ms: 30_000,
                 read_repair_on_miss_enabled: false,
                 read_repair_min_interval_ms: default_read_repair_min_interval_ms(),
+                read_repair_max_per_minute: default_read_repair_max_per_minute(),
                 anti_entropy_enabled: false,
                 anti_entropy_interval_ms: default_anti_entropy_interval_ms(),
                 anti_entropy_min_repair_interval_ms: default_anti_entropy_min_repair_interval_ms(),
@@ -617,6 +661,10 @@ impl Default for Config {
                 anti_entropy_full_reconcile_every: default_anti_entropy_full_reconcile_every(),
                 anti_entropy_full_reconcile_max_keys: default_anti_entropy_full_reconcile_max_keys(
                 ),
+                anti_entropy_budget_max_checks_per_run:
+                    default_anti_entropy_budget_max_checks_per_run(),
+                anti_entropy_budget_max_duration_ms:
+                    default_anti_entropy_budget_max_duration_ms(),
                 mixed_version_probe_enabled: true,
                 mixed_version_probe_interval_ms: default_mixed_version_probe_interval_ms(),
             },

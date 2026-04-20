@@ -22,3 +22,20 @@ jobs:
 
       - name: Cargo test (workspace)
         run: cargo test --workspace
+
+      - name: Flaky guard (repeat critical suites)
+        run: |
+          for i in 1 2 3; do
+            echo "Flaky guard pass $i/3"
+            cargo test -p dittod -- --test-threads=1
+            cargo test -p dittoctl -- --test-threads=1
+          done
+
+      - name: Protocol compatibility check
+        run: cargo test -p ditto-protocol
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Security scan (cargo audit)
+        run: cargo audit

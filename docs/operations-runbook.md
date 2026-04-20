@@ -20,15 +20,19 @@ Check first:
   - `circuit_breaker_reject_total`
   - `client_request_latency_gt_500ms_total`
   - `client_latency_p95_estimate_ms` / `client_latency_p99_estimate_ms`
+  - `namespace_latency_top` (watch namespace-level p95/p99 outliers)
+  - `hot_key_top_usage` (hot key concentration trend)
   - source skew in `client_requests_tcp_total` vs `client_requests_http_total`
   - `client_error_total` (especially `client_error_throttle_total` / `client_error_availability_total`)
   - `client_errors_http_total` / `client_errors_tcp_total` rapid growth on one ingress path
   - `anti_entropy_repair_trigger_total`
   - `anti_entropy_repair_throttled_total`
+  - `anti_entropy_budget_exhausted_total`
+  - `read_repair_budget_exhausted_total`
   - `namespace_quota_reject_total` (when tenancy is enabled).
 - snapshot restore freshness (`snapshot_last_load_age_secs`) is within expected operational window after restart events.
-- snapshot restore failures do not trend up (`snapshot_restore_failure_total`, `snapshot_restore_policy_block_total`).
-- hot-key fallback pressure is controlled (`hot_key_wait_timeout_total`, `hot_key_stale_served_total`, `hot_key_stale_cache_entries`).
+- snapshot restore failures do not trend up (`snapshot_restore_failure_total`, `snapshot_restore_policy_block_total`) and success ratio stays healthy (`snapshot_restore_success_ratio_pct`).
+- hot-key fallback pressure is controlled (`hot_key_wait_timeout_total`, `hot_key_stale_served_total`, `hot_key_stale_cache_entries`, `hot_key_adaptive_limit_decrease_total`).
 
 ## 2) Common Incident Playbooks
 

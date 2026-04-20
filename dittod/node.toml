@@ -34,6 +34,7 @@ gossip_dead_ms             = 15000
 version_check_interval_ms  = 30000
 read_repair_on_miss_enabled = false
 read_repair_min_interval_ms = 5000
+read_repair_max_per_minute = 30
 anti_entropy_enabled = false
 anti_entropy_interval_ms = 60000
 anti_entropy_min_repair_interval_ms = 30000
@@ -41,6 +42,8 @@ anti_entropy_lag_threshold = 32
 anti_entropy_key_sample_size = 64
 anti_entropy_full_reconcile_every = 10
 anti_entropy_full_reconcile_max_keys = 2000
+anti_entropy_budget_max_checks_per_run = 256
+anti_entropy_budget_max_duration_ms = 250
 mixed_version_probe_enabled = true
 mixed_version_probe_interval_ms = 30000
 
@@ -89,6 +92,10 @@ max_waiters             = 128
 follower_wait_timeout_ms = 25
 stale_ttl_ms            = 250
 stale_max_entries       = 1024
+adaptive_waiters_enabled = false
+adaptive_min_waiters     = 4
+adaptive_success_threshold = 8
+adaptive_state_max_keys  = 4096
 
 [circuit_breaker]
 enabled                = false
