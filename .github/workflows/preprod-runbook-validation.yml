@@ -6,11 +6,28 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+    inputs:
+      real_run:
+        description: "Run against a live local dev cluster (self-hosted runner required)"
+        required: false
+        default: false
+        type: boolean
+      compose_dir:
+        description: "Path to ditto-docker compose workspace (self-hosted runner)"
+        required: false
+        default: "..\\ditto-docker"
+        type: string
+      namespace:
+        description: "Namespace for scenario keys"
+        required: false
+        default: "preprod-drill"
+        type: string
 
 jobs:
-  runbook-validation:
+  runbook-validation-dry:
     name: Runbook Validation (Dry Run)
     runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch' || inputs.real_run != true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,3 +35,18 @@ jobs:
       - name: Validate runbook scenarios in dry-run mode
         shell: pwsh
         run: ./scripts/preprod-runbook-validate.ps1 -DryRun
+
+  runbook-validation-real:
+    name: Runbook Validation (Real Run)
+    runs-on: [self-hosted, windows]
+    if: github.event_name == 'workflow_dispatch' && inputs.real_run == true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate runbook scenarios against live dev cluster
+        shell: powershell
+        run: >
+          .\scripts\preprod-runbook-validate.ps1
+          -ComposeDir "${{ inputs.compose_dir }}"
+          -Namespace "${{ inputs.namespace }}"

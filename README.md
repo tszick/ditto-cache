@@ -506,7 +506,8 @@ Current GitHub Actions workflows:
 - `Pre-Prod Runbook Validation` (`.github/workflows/preprod-runbook-validation.yml`)
   - Purpose: automate runbook scenario validation entrypoint (node-loss / restore telemetry / quota telemetry).
   - Triggers: push/PR on `main` + manual run.
-  - Command: `./scripts/preprod-runbook-validate.ps1 -DryRun`
+  - Default CI command: `./scripts/preprod-runbook-validate.ps1 -DryRun`
+  - Manual real-run mode (self-hosted Windows runner): set `real_run=true` and optionally override `compose_dir` / `namespace`.
 - `Performance Gate` (`.github/workflows/perf-gate.yml`)
   - Purpose: block regressions on p50/p95/p99 latency against committed baseline.
   - Triggers: push/PR on `main` + manual run.
