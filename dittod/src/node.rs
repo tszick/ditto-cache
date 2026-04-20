@@ -1639,6 +1639,13 @@ impl NodeHandle {
         }
     }
 
+    fn should_wait_for_recovery_peer_discovery(
+        discovered_peer_count: usize,
+        configured_seed_count: usize,
+    ) -> bool {
+        discovered_peer_count == 0 && configured_seed_count > 0
+    }
+
     async fn broadcast_and_count_acks(
         &self,
         peers: &[SocketAddr],
@@ -3034,12 +3041,22 @@ impl NodeHandle {
     /// not yet known). Transitions through Syncing to Active on success, or sets
     /// the node to Inactive if the sync fails.
     ///
-    /// If no peers are found (single-node cluster) the node starts active immediately.
+    /// If no peers are found and no seeds are configured, the node starts active immediately.
+    /// In seeded clusters, waits a short grace window so gossip can discover peers first.
     pub async fn run_recovery(self: Arc<Self>) {
         // Give gossip time to discover peers.
         tokio::time::sleep(Duration::from_millis(600)).await;
 
-        let peers: Vec<SocketAddr> = {
+        let configured_seed_count = {
+            let cfg = self.config.lock().unwrap();
+            cfg.cluster
+                .seeds
+                .iter()
+                .filter(|s| !s.trim().is_empty())
+                .count()
+        };
+
+        let mut peers: Vec<SocketAddr> = {
             let set = self.active_set.lock().await;
             set.all_nodes()
                 .into_iter()
@@ -3048,6 +3065,35 @@ impl NodeHandle {
                 .collect()
         };
 
+        if Self::should_wait_for_recovery_peer_discovery(peers.len(), configured_seed_count) {
+            tracing::warn!(
+                "Recovery: no peers discovered yet after initial delay; waiting for gossip bootstrap (configured_seeds={}).",
+                configured_seed_count
+            );
+            let wait_until = Instant::now() + Duration::from_millis(3000);
+            while peers.is_empty() && Instant::now() < wait_until {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                peers = {
+                    let set = self.active_set.lock().await;
+                    set.all_nodes()
+                        .into_iter()
+                        .filter(|n| n.id != set.local_id())
+                        .map(|n| SocketAddr::new(n.addr.ip(), n.cluster_port))
+                        .collect()
+                };
+            }
+            if peers.is_empty() {
+                tracing::warn!(
+                    "Recovery: no peers discovered after bootstrap wait; continuing as standalone for this startup pass."
+                );
+            } else {
+                tracing::info!(
+                    "Recovery: discovered {} peer(s) after bootstrap wait.",
+                    peers.len()
+                );
+            }
+        }
+
         if peers.is_empty() {
             tracing::info!("Recovery: no peers found, assuming single-node cluster.");
             return;
@@ -3055,32 +3101,38 @@ impl NodeHandle {
 
         let our_index = self.write_log.lock().await.committed_index();
 
-        // Prefer the primary; fall back to the peer furthest ahead in the log.
+        // Prefer the elected primary when it is a remote node; when we currently
+        // believe we are primary, still pick a peer candidate so we can detect and
+        // reconcile potential lag after restart.
         let sync_addr = {
             let set = self.active_set.lock().await;
             let primary_id = set.primary_id();
-            let am_primary = primary_id == Some(set.local_id());
-
-            if am_primary {
-                tracing::info!("Recovery: we are the primary, no sync needed.");
-                return;
-            }
+            let local_id = set.local_id();
 
             // Try primary first.
-            let primary_addr = primary_id.and_then(|pid| {
-                set.all_nodes()
-                    .into_iter()
-                    .find(|n| n.id == pid)
-                    .map(|n| SocketAddr::new(n.addr.ip(), n.cluster_port))
-            });
+            let primary_addr = primary_id
+                .filter(|pid| *pid != local_id)
+                .and_then(|pid| {
+                    set.all_nodes()
+                        .into_iter()
+                        .find(|n| n.id == pid)
+                        .map(|n| SocketAddr::new(n.addr.ip(), n.cluster_port))
+                });
 
-            // Fallback: peer furthest ahead.
+            // Fallback: most advanced known peer (or any known peer when index
+            // metadata is still converging immediately after startup).
             let fallback_addr = set
                 .all_nodes()
                 .into_iter()
-                .filter(|n| n.id != set.local_id() && n.last_applied > our_index)
+                .filter(|n| n.id != local_id)
                 .max_by_key(|n| n.last_applied)
                 .map(|n| SocketAddr::new(n.addr.ip(), n.cluster_port));
+
+            if primary_addr.is_none() && fallback_addr.is_some() {
+                tracing::info!(
+                    "Recovery: local node currently elected primary; probing peer catch-up source."
+                );
+            }
 
             primary_addr.or(fallback_addr)
         };
@@ -4697,6 +4749,14 @@ mod tests {
             NodeHandle::required_prepare_peer_acks(WriteQuorumMode::Majority, 4),
             2
         ); // 3/5
+    }
+
+    #[test]
+    fn recovery_waits_for_peer_discovery_only_in_seeded_clusters() {
+        assert!(NodeHandle::should_wait_for_recovery_peer_discovery(0, 1));
+        assert!(NodeHandle::should_wait_for_recovery_peer_discovery(0, 3));
+        assert!(!NodeHandle::should_wait_for_recovery_peer_discovery(1, 3));
+        assert!(!NodeHandle::should_wait_for_recovery_peer_discovery(0, 0));
     }
 
     #[test]

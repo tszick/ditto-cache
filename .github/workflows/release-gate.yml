@@ -7,8 +7,35 @@ on:
   pull_request:
 
 jobs:
+  runbook-dry:
+    name: Runbook Validation (Dry Run Gate)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate runbook scenarios in dry-run mode
+        shell: pwsh
+        run: ./scripts/preprod-runbook-validate.ps1 -DryRun
+
+  runbook-real:
+    name: Runbook Validation (Real Run Gate)
+    runs-on: [self-hosted, windows]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate runbook scenarios against live dev cluster
+        shell: powershell
+        run: >
+          .\scripts\preprod-runbook-validate.ps1
+          -ComposeDir "..\ditto-docker"
+          -Namespace "preprod-release-gate"
+
   rust-gate:
     name: Rust Build and Test Gate
+    needs: [runbook-dry]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
