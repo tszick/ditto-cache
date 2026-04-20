@@ -422,6 +422,7 @@ async fn handle_health_summary(State(node): State<Arc<NodeHandle>>) -> Response 
         "read_repair_throttled_total": stats.read_repair_throttled_total,
         "anti_entropy_last_detected_lag": stats.anti_entropy_last_detected_lag,
         "anti_entropy_repair_trigger_total": stats.anti_entropy_repair_trigger_total,
+        "anti_entropy_repair_throttled_total": stats.anti_entropy_repair_throttled_total,
         "mixed_version_last_detected_peer_count": stats.mixed_version_last_detected_peer_count,
         "namespace_quota_reject_total": stats.namespace_quota_reject_total,
         "namespace_quota_reject_rate_per_min": stats.namespace_quota_reject_rate_per_min,

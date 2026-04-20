@@ -441,6 +441,8 @@ pub struct NodeStats {
     pub anti_entropy_runs_total: u64,
     /// Total anti-entropy triggered repair attempts.
     pub anti_entropy_repair_trigger_total: u64,
+    /// Total anti-entropy repair attempts skipped due to min-interval throttling.
+    pub anti_entropy_repair_throttled_total: u64,
     /// Last lag value detected by anti-entropy (in log entries).
     pub anti_entropy_last_detected_lag: u64,
     /// Total key-version comparisons performed by anti-entropy sampling.

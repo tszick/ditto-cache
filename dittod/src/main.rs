@@ -9,7 +9,7 @@ mod replication;
 mod store;
 
 use anyhow::{Context, Result};
-use config::{Config, LogConfig};
+use config::{Config, LogConfig, WriteQuorumMode};
 use gossip::GossipEngine;
 use node::NodeHandle;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
@@ -106,6 +106,17 @@ async fn main() -> Result<()> {
             config.replication.gossip_dead_ms = ms;
         }
     }
+    if let Ok(v) = std::env::var("DITTO_WRITE_QUORUM_MODE") {
+        let normalized = v.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "all-active" => config.replication.write_quorum_mode = WriteQuorumMode::AllActive,
+            "majority" => config.replication.write_quorum_mode = WriteQuorumMode::Majority,
+            _ => warn!(
+                "Ignoring invalid DITTO_WRITE_QUORUM_MODE='{}' (allowed: all-active|majority)",
+                v
+            ),
+        }
+    }
     if let Some(v) = parse_bool_env("DITTO_READ_REPAIR_ON_MISS_ENABLED")
         .or_else(|| parse_bool_env("READ_REPAIR_ON_MISS_ENABLED"))
     {
@@ -128,6 +139,13 @@ async fn main() -> Result<()> {
     {
         if let Ok(ms) = v.parse::<u64>() {
             config.replication.anti_entropy_interval_ms = ms.max(1);
+        }
+    }
+    if let Ok(v) = std::env::var("DITTO_ANTI_ENTROPY_MIN_REPAIR_INTERVAL_MS")
+        .or_else(|_| std::env::var("ANTI_ENTROPY_MIN_REPAIR_INTERVAL_MS"))
+    {
+        if let Ok(ms) = v.parse::<u64>() {
+            config.replication.anti_entropy_min_repair_interval_ms = ms.max(1);
         }
     }
     if let Ok(v) = std::env::var("DITTO_ANTI_ENTROPY_LAG_THRESHOLD")
@@ -320,6 +338,11 @@ async fn main() -> Result<()> {
     let insecure = std::env::var("DITTO_INSECURE")
         .unwrap_or_default()
         .eq_ignore_ascii_case("true");
+    if insecure && !cfg!(debug_assertions) {
+        anyhow::bail!(
+            "DITTO_INSECURE is blocked in release builds. Use a debug/dev build for insecure local testing."
+        );
+    }
 
     // Strict security mode: cluster/admin traffic must use mTLS.
     if !config.tls.enabled && !insecure {

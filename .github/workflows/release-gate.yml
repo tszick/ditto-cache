@@ -1,0 +1,24 @@
+name: Release Gate
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  rust-gate:
+    name: Rust Build and Test Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo check
+        run: cargo check
+
+      - name: Cargo test (workspace)
+        run: cargo test --workspace

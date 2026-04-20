@@ -260,6 +260,7 @@ threshold_bytes = 4096
 
 [replication]
 write_timeout_ms   = 500
+write_quorum_mode  = "all-active" # all-active | majority
 gossip_interval_ms = 200
 gossip_dead_ms     = 15000
 version_check_interval_ms = 30000
@@ -267,6 +268,7 @@ read_repair_on_miss_enabled = false
 read_repair_min_interval_ms = 5000
 anti_entropy_enabled = false
 anti_entropy_interval_ms = 60000
+anti_entropy_min_repair_interval_ms = 30000
 anti_entropy_lag_threshold = 32
 anti_entropy_key_sample_size = 64
 anti_entropy_full_reconcile_every = 10
@@ -295,10 +297,12 @@ password_hash = "$2b$12$..."  # generate with: dittoctl hash-password
 | `DITTO_SEEDS` | `cluster.seeds` (comma-separated) |
 | `DITTO_MAX_MEMORY_MB` | `cache.max_memory_mb` |
 | `DITTO_GOSSIP_DEAD_MS` | `replication.gossip_dead_ms` |
+| `DITTO_WRITE_QUORUM_MODE` | `replication.write_quorum_mode` (`all-active` \| `majority`) |
 | `DITTO_READ_REPAIR_ON_MISS_ENABLED` | `replication.read_repair_on_miss_enabled` |
 | `DITTO_READ_REPAIR_MIN_INTERVAL_MS` | `replication.read_repair_min_interval_ms` |
 | `DITTO_ANTI_ENTROPY_ENABLED` | `replication.anti_entropy_enabled` |
 | `DITTO_ANTI_ENTROPY_INTERVAL_MS` | `replication.anti_entropy_interval_ms` |
+| `DITTO_ANTI_ENTROPY_MIN_REPAIR_INTERVAL_MS` | `replication.anti_entropy_min_repair_interval_ms` |
 | `DITTO_ANTI_ENTROPY_LAG_THRESHOLD` | `replication.anti_entropy_lag_threshold` |
 | `DITTO_ANTI_ENTROPY_KEY_SAMPLE_SIZE` | `replication.anti_entropy_key_sample_size` |
 | `DITTO_ANTI_ENTROPY_FULL_RECONCILE_EVERY` | `replication.anti_entropy_full_reconcile_every` |
@@ -520,6 +524,11 @@ is independent of the TLS certificates.  Generate a key with:
 ```bash
 openssl rand -hex 32
 ```
+
+Backup integrity:
+- every backup payload now has a SHA-256 checksum sidecar (`*.sha256`),
+- snapshot restore verifies checksum before decrypt/deserialize,
+- restore fails when the sidecar is missing or mismatched.
 
 ```bash
 # Generate test certificates (includes localhost SAN for the mgmt cert)

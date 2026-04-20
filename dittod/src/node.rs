@@ -1,5 +1,5 @@
 use crate::{
-    config::Config,
+    config::{Config, WriteQuorumMode},
     network::cluster_server::send_cluster,
     replication::{ActiveSet, WriteLog},
     store::{
@@ -176,8 +176,10 @@ pub struct NodeHandle {
     namespace_quota_reject_last_total: AtomicU64,
     namespace_quota_reject_last_ts_ms: AtomicU64,
     last_read_repair_trigger_ms: AtomicU64,
+    last_anti_entropy_repair_trigger_ms: AtomicU64,
     anti_entropy_runs_total: AtomicU64,
     anti_entropy_repair_trigger_total: AtomicU64,
+    anti_entropy_repair_throttled_total: AtomicU64,
     anti_entropy_last_detected_lag: AtomicU64,
     anti_entropy_key_checks_total: AtomicU64,
     anti_entropy_key_mismatch_total: AtomicU64,
@@ -283,8 +285,10 @@ impl NodeHandle {
             namespace_quota_reject_last_total: AtomicU64::new(0),
             namespace_quota_reject_last_ts_ms: AtomicU64::new(0),
             last_read_repair_trigger_ms: AtomicU64::new(0),
+            last_anti_entropy_repair_trigger_ms: AtomicU64::new(0),
             anti_entropy_runs_total: AtomicU64::new(0),
             anti_entropy_repair_trigger_total: AtomicU64::new(0),
+            anti_entropy_repair_throttled_total: AtomicU64::new(0),
             anti_entropy_last_detected_lag: AtomicU64::new(0),
             anti_entropy_key_checks_total: AtomicU64::new(0),
             anti_entropy_key_mismatch_total: AtomicU64::new(0),
@@ -1130,11 +1134,17 @@ impl NodeHandle {
             ttl_secs,
         };
 
-        let timeout =
-            Duration::from_millis(self.config.lock().unwrap().replication.write_timeout_ms);
-        let all_acked = self.broadcast_and_wait(&peers, &prepare_msg, timeout).await;
+        let (timeout, quorum_mode) = {
+            let cfg = self.config.lock().unwrap();
+            (
+                Duration::from_millis(cfg.replication.write_timeout_ms),
+                cfg.replication.write_quorum_mode,
+            )
+        };
+        let required_peer_acks = Self::required_prepare_peer_acks(quorum_mode, peers.len());
+        let prepare_acks = self.broadcast_and_count_acks(&peers, &prepare_msg, timeout).await;
 
-        if !all_acked {
+        if prepare_acks < required_peer_acks {
             warn!("PREPARE timed out for log_index={}", log_index);
             return ClientResponse::Error {
                 code: ErrorCode::WriteTimeout,
@@ -1147,7 +1157,7 @@ impl NodeHandle {
 
         // --- COMMIT phase ---
         let commit_msg = ClusterMessage::Commit { log_index };
-        let _ = self.broadcast_and_wait(&peers, &commit_msg, timeout).await;
+        let _ = self.broadcast_and_count_acks(&peers, &commit_msg, timeout).await;
 
         self.write_log.lock().await.commit(log_index);
         self.active_set.lock().await.set_local_applied(log_index);
@@ -1291,14 +1301,25 @@ impl NodeHandle {
         version
     }
 
-    async fn broadcast_and_wait(
+    fn required_prepare_peer_acks(quorum_mode: WriteQuorumMode, peer_count: usize) -> usize {
+        match quorum_mode {
+            WriteQuorumMode::AllActive => peer_count,
+            WriteQuorumMode::Majority => {
+                let total_active = peer_count + 1; // local primary + peers
+                let required_total = (total_active / 2) + 1;
+                required_total.saturating_sub(1) // local primary ACK is implicit
+            }
+        }
+    }
+
+    async fn broadcast_and_count_acks(
         &self,
         peers: &[SocketAddr],
         msg: &ClusterMessage,
         timeout: Duration,
-    ) -> bool {
+    ) -> usize {
         if peers.is_empty() {
-            return true;
+            return 0;
         }
 
         let handles: Vec<_> = peers
@@ -1312,13 +1333,13 @@ impl NodeHandle {
             })
             .collect();
 
-        let mut all_ok = true;
+        let mut acked = 0usize;
         for h in handles {
-            if !matches!(h.await, Ok(Ok(Ok(_)))) {
-                all_ok = false;
+            if matches!(h.await, Ok(Ok(Ok(_)))) {
+                acked += 1;
             }
         }
-        all_ok
+        acked
     }
 
     // -----------------------------------------------------------------------
@@ -1501,6 +1522,10 @@ impl NodeHandle {
                 cfg.replication.write_timeout_ms.to_string(),
             ),
             (
+                "write-quorum-mode".into(),
+                cfg.replication.write_quorum_mode.as_str().to_string(),
+            ),
+            (
                 "gossip-interval-ms".into(),
                 cfg.replication.gossip_interval_ms.to_string(),
             ),
@@ -1519,6 +1544,12 @@ impl NodeHandle {
             (
                 "anti-entropy-interval-ms".into(),
                 cfg.replication.anti_entropy_interval_ms.to_string(),
+            ),
+            (
+                "anti-entropy-min-repair-interval-ms".into(),
+                cfg.replication
+                    .anti_entropy_min_repair_interval_ms
+                    .to_string(),
             ),
             (
                 "anti-entropy-lag-threshold".into(),
@@ -1547,6 +1578,10 @@ impl NodeHandle {
             (
                 "anti-entropy-repair-trigger-total".into(),
                 stats.anti_entropy_repair_trigger_total.to_string(),
+            ),
+            (
+                "anti-entropy-repair-throttled-total".into(),
+                stats.anti_entropy_repair_throttled_total.to_string(),
             ),
             (
                 "anti-entropy-last-detected-lag".into(),
@@ -2234,6 +2269,37 @@ impl NodeHandle {
                         }
                     }
 
+                    "write-timeout-ms" => {
+                        match value.trim().parse::<u64>() {
+                            Ok(ms) if ms > 0 => {
+                                self.config.lock().unwrap().replication.write_timeout_ms = ms;
+                                tracing::info!("write-timeout-ms -> {}", ms);
+                            }
+                            _ => tracing::warn!(
+                                "SetProperty write-timeout-ms: invalid value '{}'",
+                                value
+                            ),
+                        }
+                    }
+
+                    "write-quorum-mode" => {
+                        let normalized = value.trim().to_ascii_lowercase();
+                        let mode = match normalized.as_str() {
+                            "all-active" => Some(WriteQuorumMode::AllActive),
+                            "majority" => Some(WriteQuorumMode::Majority),
+                            _ => None,
+                        };
+                        if let Some(mode) = mode {
+                            self.config.lock().unwrap().replication.write_quorum_mode = mode;
+                            tracing::info!("write-quorum-mode -> {}", mode.as_str());
+                        } else {
+                            tracing::warn!(
+                                "SetProperty write-quorum-mode: invalid value '{}'",
+                                value
+                            );
+                        }
+                    }
+
                     // ── version-check-interval ────────────────────────────────
                     "version-check-interval" => {
                         match value.trim().parse::<u64>() {
@@ -2275,6 +2341,20 @@ impl NodeHandle {
                         }
                         _ => tracing::warn!(
                             "SetProperty anti-entropy-interval-ms: invalid value '{}'",
+                            value
+                        ),
+                    },
+                    "anti-entropy-min-repair-interval-ms" => match value.trim().parse::<u64>() {
+                        Ok(ms) if ms > 0 => {
+                            self.config
+                                .lock()
+                                .unwrap()
+                                .replication
+                                .anti_entropy_min_repair_interval_ms = ms;
+                            tracing::info!("anti-entropy-min-repair-interval-ms -> {}", ms);
+                        }
+                        _ => tracing::warn!(
+                            "SetProperty anti-entropy-min-repair-interval-ms: invalid value '{}'",
                             value
                         ),
                     },
@@ -2859,6 +2939,10 @@ impl NodeHandle {
         every > 0 && run_no > 0 && run_no.is_multiple_of(every)
     }
 
+    fn should_throttle_anti_entropy_repair(now_ms: u64, last_ms: u64, min_interval_ms: u64) -> bool {
+        now_ms < last_ms.saturating_add(min_interval_ms.max(1))
+    }
+
     fn classify_mixed_version_response(resp: Option<AdminResponse>) -> (bool, bool) {
         match resp {
             Some(AdminResponse::Properties(entries)) => {
@@ -2964,6 +3048,7 @@ impl NodeHandle {
                 let (
                     enabled,
                     interval_ms,
+                    min_repair_interval_ms,
                     lag_threshold,
                     key_sample_size,
                     full_reconcile_every,
@@ -2973,6 +3058,7 @@ impl NodeHandle {
                     (
                         cfg.replication.anti_entropy_enabled,
                         cfg.replication.anti_entropy_interval_ms.max(1),
+                        cfg.replication.anti_entropy_min_repair_interval_ms.max(1),
                         cfg.replication.anti_entropy_lag_threshold.max(1),
                         cfg.replication.anti_entropy_key_sample_size,
                         cfg.replication.anti_entropy_full_reconcile_every,
@@ -3021,14 +3107,34 @@ impl NodeHandle {
                 self.anti_entropy_last_detected_lag
                     .store(lag, Ordering::Relaxed);
                 if lag >= lag_threshold {
-                    self.anti_entropy_repair_trigger_total
-                        .fetch_add(1, Ordering::Relaxed);
-                    tracing::warn!(
-                        "Anti-entropy: lag={} (threshold={}) detected; triggering resync.",
-                        lag,
-                        lag_threshold
-                    );
-                    Arc::clone(&self).run_resync().await;
+                    let now_ms = Self::now_millis();
+                    let last_ms = self
+                        .last_anti_entropy_repair_trigger_ms
+                        .load(Ordering::Relaxed);
+                    if Self::should_throttle_anti_entropy_repair(
+                        now_ms,
+                        last_ms,
+                        min_repair_interval_ms,
+                    ) {
+                        self.anti_entropy_repair_throttled_total
+                            .fetch_add(1, Ordering::Relaxed);
+                        tracing::debug!(
+                            "Anti-entropy: lag={} detected but repair throttled (min_interval_ms={}).",
+                            lag,
+                            min_repair_interval_ms
+                        );
+                    } else {
+                        self.last_anti_entropy_repair_trigger_ms
+                            .store(now_ms, Ordering::Relaxed);
+                        self.anti_entropy_repair_trigger_total
+                            .fetch_add(1, Ordering::Relaxed);
+                        tracing::warn!(
+                            "Anti-entropy: lag={} (threshold={}) detected; triggering resync.",
+                            lag,
+                            lag_threshold
+                        );
+                        Arc::clone(&self).run_resync().await;
+                    }
                     continue;
                 }
 
@@ -3044,15 +3150,34 @@ impl NodeHandle {
                         if mismatches > 0 {
                             self.anti_entropy_full_reconcile_mismatch_total
                                 .fetch_add(mismatches, Ordering::Relaxed);
-                            self.anti_entropy_repair_trigger_total
-                                .fetch_add(1, Ordering::Relaxed);
-                            tracing::warn!(
-                                "Anti-entropy: full reconcile found {} mismatches (checked={}, run_no={}); triggering resync.",
-                                mismatches,
-                                checked,
-                                run_no
-                            );
-                            Arc::clone(&self).run_resync().await;
+                            let now_ms = Self::now_millis();
+                            let last_ms = self
+                                .last_anti_entropy_repair_trigger_ms
+                                .load(Ordering::Relaxed);
+                            if Self::should_throttle_anti_entropy_repair(
+                                now_ms,
+                                last_ms,
+                                min_repair_interval_ms,
+                            ) {
+                                self.anti_entropy_repair_throttled_total
+                                    .fetch_add(1, Ordering::Relaxed);
+                                tracing::debug!(
+                                    "Anti-entropy: full reconcile mismatch detected but repair throttled (min_interval_ms={}).",
+                                    min_repair_interval_ms
+                                );
+                            } else {
+                                self.last_anti_entropy_repair_trigger_ms
+                                    .store(now_ms, Ordering::Relaxed);
+                                self.anti_entropy_repair_trigger_total
+                                    .fetch_add(1, Ordering::Relaxed);
+                                tracing::warn!(
+                                    "Anti-entropy: full reconcile found {} mismatches (checked={}, run_no={}); triggering resync.",
+                                    mismatches,
+                                    checked,
+                                    run_no
+                                );
+                                Arc::clone(&self).run_resync().await;
+                            }
                             continue;
                         }
                     }
@@ -3096,14 +3221,33 @@ impl NodeHandle {
                 if mismatches > 0 {
                     self.anti_entropy_key_mismatch_total
                         .fetch_add(mismatches, Ordering::Relaxed);
-                    self.anti_entropy_repair_trigger_total
-                        .fetch_add(1, Ordering::Relaxed);
-                    tracing::warn!(
-                        "Anti-entropy: detected {} key-version mismatches in sample (checked={}); triggering resync.",
-                        mismatches,
-                        checked
-                    );
-                    Arc::clone(&self).run_resync().await;
+                    let now_ms = Self::now_millis();
+                    let last_ms = self
+                        .last_anti_entropy_repair_trigger_ms
+                        .load(Ordering::Relaxed);
+                    if Self::should_throttle_anti_entropy_repair(
+                        now_ms,
+                        last_ms,
+                        min_repair_interval_ms,
+                    ) {
+                        self.anti_entropy_repair_throttled_total
+                            .fetch_add(1, Ordering::Relaxed);
+                        tracing::debug!(
+                            "Anti-entropy: sample mismatch detected but repair throttled (min_interval_ms={}).",
+                            min_repair_interval_ms
+                        );
+                    } else {
+                        self.last_anti_entropy_repair_trigger_ms
+                            .store(now_ms, Ordering::Relaxed);
+                        self.anti_entropy_repair_trigger_total
+                            .fetch_add(1, Ordering::Relaxed);
+                        tracing::warn!(
+                            "Anti-entropy: detected {} key-version mismatches in sample (checked={}); triggering resync.",
+                            mismatches,
+                            checked
+                        );
+                        Arc::clone(&self).run_resync().await;
+                    }
                 }
             }
         });
@@ -3451,6 +3595,9 @@ impl NodeHandle {
             anti_entropy_repair_trigger_total: self
                 .anti_entropy_repair_trigger_total
                 .load(Ordering::Relaxed),
+            anti_entropy_repair_throttled_total: self
+                .anti_entropy_repair_throttled_total
+                .load(Ordering::Relaxed),
             anti_entropy_last_detected_lag: self
                 .anti_entropy_last_detected_lag
                 .load(Ordering::Relaxed),
@@ -3538,11 +3685,12 @@ mod tests {
     use super::{
         CircuitState, ClientRequestSource, GetFlight, NodeHandle, TokenBucket, PROTOCOL_VERSION,
     };
-    use crate::config::Config;
+    use crate::config::{Config, WriteQuorumMode};
     use crate::store::kv_store::ExportEntry;
     use crate::store::KvStore;
     use bytes::Bytes;
     use ditto_protocol::{AdminRequest, AdminResponse, ClientRequest, ClientResponse, ErrorCode};
+    use sha2::{Digest, Sha256};
     use std::sync::{atomic::Ordering, Arc};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -3574,6 +3722,20 @@ mod tests {
         path.push(format!("ditto-{}-{}-{}", tag, std::process::id(), nanos));
         std::fs::create_dir_all(&path).expect("create temp backup dir");
         path.to_string_lossy().into_owned()
+    }
+
+    fn write_snapshot_with_checksum(path: &std::path::Path, data: &[u8]) {
+        std::fs::write(path, data).expect("write snapshot file");
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        let digest = hex::encode(hasher.finalize());
+        let mut sidecar = path.to_path_buf();
+        let sidecar_ext = match sidecar.extension().and_then(|e| e.to_str()) {
+            Some(ext) if !ext.is_empty() => format!("{ext}.sha256"),
+            _ => "sha256".to_string(),
+        };
+        sidecar.set_extension(sidecar_ext);
+        std::fs::write(sidecar, format!("{digest}\n")).expect("write snapshot checksum sidecar");
     }
 
     #[test]
@@ -3630,6 +3792,16 @@ mod tests {
         assert!(NodeHandle::should_run_full_reconcile(10, 10));
         assert!(NodeHandle::should_run_full_reconcile(20, 10));
         assert!(!NodeHandle::should_run_full_reconcile(20, 0));
+    }
+
+    #[test]
+    fn anti_entropy_repair_throttle_helper() {
+        assert!(NodeHandle::should_throttle_anti_entropy_repair(
+            10_000, 9_500, 1_000
+        ));
+        assert!(!NodeHandle::should_throttle_anti_entropy_repair(
+            10_000, 8_000, 1_000
+        ));
     }
 
     #[test]
@@ -3720,7 +3892,7 @@ mod tests {
         let data = bincode::serialize(&snapshot_entries).expect("serialize snapshot");
         let file =
             std::path::Path::new(&backup_dir).join("test-node_backup_2099.01.01_00-00-00_UTC.bin");
-        std::fs::write(&file, data).expect("write snapshot file");
+        write_snapshot_with_checksum(&file, &data);
 
         let resp = Arc::clone(&node)
             .handle_admin(AdminRequest::RestoreLatestSnapshot)
@@ -3759,13 +3931,47 @@ mod tests {
 
         let file =
             std::path::Path::new(&backup_dir).join("test-node_backup_2099.01.01_00-00-00_UTC.bin");
-        std::fs::write(&file, b"not-bincode").expect("write invalid snapshot file");
+        write_snapshot_with_checksum(&file, b"not-bincode");
 
         let resp = Arc::clone(&node)
             .handle_admin(AdminRequest::RestoreLatestSnapshot)
             .await;
         match resp {
             AdminResponse::Error { .. } => {}
+            other => panic!("expected AdminResponse::Error, got {:?}", other),
+        }
+
+        let stats = node.stats().await;
+        assert_eq!(stats.snapshot_restore_attempt_total, 1);
+        assert_eq!(stats.snapshot_restore_success_total, 0);
+        assert_eq!(stats.snapshot_restore_failure_total, 1);
+        assert_eq!(stats.snapshot_restore_not_found_total, 0);
+        assert_eq!(stats.snapshot_restore_policy_block_total, 0);
+
+        let _ = std::fs::remove_dir_all(backup_dir);
+    }
+
+    #[tokio::test]
+    async fn restore_snapshot_missing_checksum_sidecar_increments_failure_counter() {
+        let backup_dir = temp_backup_dir("restore-missing-checksum");
+        let mut cfg = Config::default();
+        cfg.backup.path = backup_dir.clone();
+        cfg.persistence.platform_allowed = true;
+        cfg.persistence.runtime_enabled = true;
+        cfg.persistence.import_allowed = true;
+        let node = test_node(cfg);
+
+        let file =
+            std::path::Path::new(&backup_dir).join("test-node_backup_2099.01.01_00-00-00_UTC.bin");
+        std::fs::write(&file, b"opaque-backup-payload").expect("write snapshot without checksum");
+
+        let resp = Arc::clone(&node)
+            .handle_admin(AdminRequest::RestoreLatestSnapshot)
+            .await;
+        match resp {
+            AdminResponse::Error { message } => {
+                assert!(message.contains("missing backup checksum sidecar"));
+            }
             other => panic!("expected AdminResponse::Error, got {:?}", other),
         }
 
@@ -3799,6 +4005,43 @@ mod tests {
             }
         }
         assert_eq!(allowed, 10);
+    }
+
+    #[test]
+    fn write_quorum_peer_ack_requirement_all_active() {
+        assert_eq!(
+            NodeHandle::required_prepare_peer_acks(WriteQuorumMode::AllActive, 0),
+            0
+        );
+        assert_eq!(
+            NodeHandle::required_prepare_peer_acks(WriteQuorumMode::AllActive, 3),
+            3
+        );
+    }
+
+    #[test]
+    fn write_quorum_peer_ack_requirement_majority() {
+        // total active = peers + primary(local)
+        assert_eq!(
+            NodeHandle::required_prepare_peer_acks(WriteQuorumMode::Majority, 0),
+            0
+        ); // 1/1
+        assert_eq!(
+            NodeHandle::required_prepare_peer_acks(WriteQuorumMode::Majority, 1),
+            1
+        ); // 2/2
+        assert_eq!(
+            NodeHandle::required_prepare_peer_acks(WriteQuorumMode::Majority, 2),
+            1
+        ); // 2/3
+        assert_eq!(
+            NodeHandle::required_prepare_peer_acks(WriteQuorumMode::Majority, 3),
+            2
+        ); // 3/4
+        assert_eq!(
+            NodeHandle::required_prepare_peer_acks(WriteQuorumMode::Majority, 4),
+            2
+        ); // 3/5
     }
 
     #[tokio::test]

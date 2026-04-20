@@ -5,6 +5,7 @@ use aes_gcm::{
 };
 use ditto_protocol::NodeStatus;
 use rand::RngExt;
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::PathBuf,
@@ -23,6 +24,61 @@ pub struct SnapshotLoadResult {
     pub path: String,
     pub entries: usize,
     pub duration_ms: u64,
+}
+
+fn checksum_sidecar_path(path: &PathBuf) -> PathBuf {
+    let mut sidecar = path.clone();
+    let sidecar_ext = match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) if !ext.is_empty() => format!("{ext}.sha256"),
+        _ => "sha256".to_string(),
+    };
+    sidecar.set_extension(sidecar_ext);
+    sidecar
+}
+
+fn checksum_hex(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hex::encode(hasher.finalize())
+}
+
+fn write_checksum_sidecar(path: &PathBuf, data: &[u8]) -> anyhow::Result<()> {
+    let sidecar = checksum_sidecar_path(path);
+    let digest = checksum_hex(data);
+    fs::write(&sidecar, format!("{digest}\n"))?;
+    Ok(())
+}
+
+fn verify_checksum_sidecar(path: &PathBuf, data: &[u8]) -> anyhow::Result<()> {
+    let sidecar = checksum_sidecar_path(path);
+    if !sidecar.exists() {
+        anyhow::bail!(
+            "missing backup checksum sidecar: {}",
+            sidecar.to_string_lossy()
+        );
+    }
+    let expected = fs::read_to_string(&sidecar)?
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if expected.is_empty() {
+        anyhow::bail!(
+            "invalid backup checksum sidecar (empty digest): {}",
+            sidecar.to_string_lossy()
+        );
+    }
+    let actual = checksum_hex(data);
+    if actual != expected {
+        anyhow::bail!(
+            "backup checksum mismatch for {} (expected {}, got {})",
+            path.to_string_lossy(),
+            expected,
+            actual
+        );
+    }
+    Ok(())
 }
 
 /// Run a single backup cycle:
@@ -102,6 +158,9 @@ pub fn restore_latest_snapshot(
         if !name.starts_with(&format!("{}_backup_", node_id)) {
             continue;
         }
+        if name.ends_with(".sha256") {
+            continue;
+        }
         let modified = entry
             .metadata()
             .and_then(|m| m.modified())
@@ -121,6 +180,8 @@ pub fn restore_latest_snapshot(
         .ok_or_else(|| anyhow::anyhow!("snapshot filename is not valid UTF-8"))?
         .to_string();
     let data = fs::read(&path)?;
+    verify_checksum_sidecar(&path, &data)?;
+
     let raw = if filename.ends_with(".enc") {
         let key = cfg.encryption_key.as_ref().ok_or_else(|| {
             anyhow::anyhow!("encrypted snapshot found but backup.encryption_key is missing")
@@ -176,9 +237,10 @@ async fn write_snapshot(node: &NodeHandle, cfg: &BackupConfig) -> anyhow::Result
     fs::create_dir_all(&dir)?;
     let full_path = dir.join(&filename);
     fs::write(&full_path, &data)?;
+    write_checksum_sidecar(&full_path, &data)?;
 
     tracing::info!(
-        "Backup written: {:?}  ({} bytes{})",
+        "Backup written: {:?}  ({} bytes{}; checksum sidecar written)",
         full_path,
         data.len(),
         if cfg.encryption_key.is_some() {

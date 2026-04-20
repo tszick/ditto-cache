@@ -24,6 +24,7 @@ Check first:
   - `client_error_total` (especially `client_error_throttle_total` / `client_error_availability_total`)
   - `client_errors_http_total` / `client_errors_tcp_total` rapid growth on one ingress path
   - `anti_entropy_repair_trigger_total`
+  - `anti_entropy_repair_throttled_total`
   - `namespace_quota_reject_total` (when tenancy is enabled).
 - snapshot restore freshness (`snapshot_last_load_age_secs`) is within expected operational window after restart events.
 - snapshot restore failures do not trend up (`snapshot_restore_failure_total`, `snapshot_restore_policy_block_total`).

@@ -373,8 +373,13 @@ impl Default for LogConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplicationConfig {
-    /// Milliseconds to wait for all active-set ACKs on a write.
+    /// Milliseconds to wait for PREPARE/COMMIT peer ACKs on a write.
     pub write_timeout_ms: u64,
+    /// Quorum policy for PREPARE acknowledgements.
+    /// - `all-active`: require ACK from every active peer (current strict mode).
+    /// - `majority`: require quorum majority including local primary ACK.
+    #[serde(default = "default_write_quorum_mode")]
+    pub write_quorum_mode: WriteQuorumMode,
     /// Gossip heartbeat interval in milliseconds.
     pub gossip_interval_ms: u64,
     /// How many ms without a heartbeat before a node is marked offline.
@@ -398,6 +403,9 @@ pub struct ReplicationConfig {
     /// Interval of anti-entropy checks in milliseconds.
     #[serde(default = "default_anti_entropy_interval_ms")]
     pub anti_entropy_interval_ms: u64,
+    /// Minimum spacing between anti-entropy repair triggers on this node (ms).
+    #[serde(default = "default_anti_entropy_min_repair_interval_ms")]
+    pub anti_entropy_min_repair_interval_ms: u64,
     /// Minimum lag (entries) before anti-entropy triggers a repair action.
     #[serde(default = "default_anti_entropy_lag_threshold")]
     pub anti_entropy_lag_threshold: u64,
@@ -418,6 +426,22 @@ pub struct ReplicationConfig {
     pub mixed_version_probe_interval_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum WriteQuorumMode {
+    AllActive,
+    Majority,
+}
+
+impl WriteQuorumMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AllActive => "all-active",
+            Self::Majority => "majority",
+        }
+    }
+}
+
 fn default_cluster_bind_addr() -> String {
     "site-local".into()
 }
@@ -427,6 +451,9 @@ fn default_max_nodes() -> usize {
 fn default_version_check_interval_ms() -> u64 {
     30_000
 }
+fn default_write_quorum_mode() -> WriteQuorumMode {
+    WriteQuorumMode::AllActive
+}
 fn default_read_repair_min_interval_ms() -> u64 {
     5_000
 }
@@ -435,6 +462,9 @@ fn default_tenancy_default_namespace() -> String {
 }
 fn default_anti_entropy_interval_ms() -> u64 {
     60_000
+}
+fn default_anti_entropy_min_repair_interval_ms() -> u64 {
+    30_000
 }
 fn default_anti_entropy_lag_threshold() -> u64 {
     32
@@ -573,6 +603,7 @@ impl Default for Config {
             },
             replication: ReplicationConfig {
                 write_timeout_ms: 500,
+                write_quorum_mode: default_write_quorum_mode(),
                 gossip_interval_ms: 200,
                 gossip_dead_ms: default_gossip_dead_ms(),
                 version_check_interval_ms: 30_000,
@@ -580,6 +611,7 @@ impl Default for Config {
                 read_repair_min_interval_ms: default_read_repair_min_interval_ms(),
                 anti_entropy_enabled: false,
                 anti_entropy_interval_ms: default_anti_entropy_interval_ms(),
+                anti_entropy_min_repair_interval_ms: default_anti_entropy_min_repair_interval_ms(),
                 anti_entropy_lag_threshold: default_anti_entropy_lag_threshold(),
                 anti_entropy_key_sample_size: default_anti_entropy_key_sample_size(),
                 anti_entropy_full_reconcile_every: default_anti_entropy_full_reconcile_every(),
