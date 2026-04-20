@@ -488,6 +488,10 @@ Current GitHub Actions workflows:
   - Purpose: validate chaos script wiring without Docker side effects.
   - Triggers: push/PR on `main` + manual run (`workflow_dispatch`).
   - Command: `./scripts/chaos-smoke.ps1 -DryRun -Iterations 1`
+- `Release Gate` (`.github/workflows/release-gate.yml`)
+  - Purpose: enforce baseline Rust quality gate before merge/release.
+  - Triggers: push/PR on `main`.
+  - Commands: `cargo check`, `cargo test --workspace`
 
 Manual run (GitHub UI):
 
