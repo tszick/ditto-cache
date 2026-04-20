@@ -1,0 +1,23 @@
+﻿name: Performance Gate
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  perf-gate:
+    name: Perf Baseline Regression Gate
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run performance gate
+        shell: pwsh
+        run: ./scripts/perf-gate.ps1 -Samples 80 -Warmup 10

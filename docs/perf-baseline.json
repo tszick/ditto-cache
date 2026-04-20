@@ -1,0 +1,11 @@
+﻿{
+  "version": 1,
+  "scenarios": {
+    "single_node_http": {
+      "p50_ms_max": 30,
+      "p95_ms_max": 120,
+      "p99_ms_max": 250,
+      "max_failures": 0
+    }
+  }
+}

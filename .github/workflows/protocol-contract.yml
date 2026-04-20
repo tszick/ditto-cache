@@ -1,0 +1,27 @@
+﻿name: Protocol Contract
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  contract-check:
+    name: Protocol Contract Drift Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate protocol contract
+        shell: pwsh
+        run: ./scripts/generate-protocol-contract.ps1
+
+      - name: Verify contract is committed
+        shell: bash
+        run: git diff --exit-code -- ditto-protocol/schema/protocol-contract.json
+
+      - name: Contract check mode
+        shell: pwsh
+        run: ./scripts/generate-protocol-contract.ps1 -Check

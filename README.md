@@ -499,6 +499,18 @@ Current GitHub Actions workflows:
   - Purpose: enforce baseline Rust quality gate before merge/release.
   - Triggers: push/PR on `main`.
   - Commands: `cargo check`, `cargo test --workspace`, `cargo test -p ditto-protocol`, `cargo audit`
+- `Protocol Contract` (`.github/workflows/protocol-contract.yml`)
+  - Purpose: enforce schema-first protocol contract sync (`ditto-protocol/schema/protocol-contract.json`).
+  - Triggers: push/PR on `main`.
+  - Commands: `./scripts/generate-protocol-contract.ps1` + drift check.
+- `Pre-Prod Runbook Validation` (`.github/workflows/preprod-runbook-validation.yml`)
+  - Purpose: automate runbook scenario validation entrypoint (node-loss / restore telemetry / quota telemetry).
+  - Triggers: push/PR on `main` + manual run.
+  - Command: `./scripts/preprod-runbook-validate.ps1 -DryRun`
+- `Performance Gate` (`.github/workflows/perf-gate.yml`)
+  - Purpose: block regressions on p50/p95/p99 latency against committed baseline.
+  - Triggers: push/PR on `main` + manual run.
+  - Command: `./scripts/perf-gate.ps1 -Samples 80 -Warmup 10`
 
 Manual run (GitHub UI):
 

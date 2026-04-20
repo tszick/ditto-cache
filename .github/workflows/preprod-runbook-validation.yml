@@ -1,0 +1,20 @@
+﻿name: Pre-Prod Runbook Validation
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  runbook-validation:
+    name: Runbook Validation (Dry Run)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate runbook scenarios in dry-run mode
+        shell: pwsh
+        run: ./scripts/preprod-runbook-validate.ps1 -DryRun
