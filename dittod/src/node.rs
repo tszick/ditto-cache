@@ -3940,6 +3940,7 @@ mod tests {
         let mut cfg = Config::default();
         cfg.hot_key.enabled = true;
         cfg.hot_key.max_waiters = 8;
+        cfg.hot_key.follower_wait_timeout_ms = 1_000;
         let node = test_node(cfg);
         let key = "hot:key".to_string();
 
@@ -3951,7 +3952,7 @@ mod tests {
 
         let flight_for_sender = Arc::clone(&flight);
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(15)).await;
+            tokio::time::sleep(Duration::from_millis(1)).await;
             let _ = flight_for_sender.tx.send(Some(ClientResponse::Value {
                 key: "hot:key".into(),
                 value: Bytes::from("v1"),

@@ -9,9 +9,9 @@ use tokio_rustls::TlsConnector;
 /// Maximum time allowed for establishing a TCP connection to a dittod node.
 /// When a Docker container stops its iptables rules are removed and new connection
 /// attempts no longer receive an immediate RST â€” without a timeout they would block
-/// for the OS-level TCP connect timeout (~20â€“75 s).  2 s is well below the 3-second
-/// `reqwest` HTTP client timeout used elsewhere and keeps the UI responsive.
-const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
+/// for the OS-level TCP connect timeout (~20â€“75 s). 2 s is well below the
+/// management request timeout and keeps the UI responsive without false negatives.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const RPC_READ_TIMEOUT: Duration = Duration::from_secs(2);
 
 // ---------------------------------------------------------------------------
