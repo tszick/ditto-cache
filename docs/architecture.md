@@ -24,7 +24,7 @@ Management clients
   |- dittoctl             -> ditto-mgmt :7781
 
 Internal cluster traffic
-  |- Replication/Admin RPC (TCP, optional mTLS) -> :7779
+  |- Replication/Admin RPC (TCP, mTLS required by default) -> :7779
   |- Gossip heartbeats (UDP)                     -> :7780
 ```
 
@@ -120,8 +120,10 @@ Auth/TLS:
 
 ### `dittod`
 
-- Optional mTLS on cluster/admin channel (`:7779`).
-- Optional Basic auth on client HTTP API (`:7778`).
+- Strict by default in this codebase:
+  - startup is rejected if cluster/admin mTLS is disabled,
+  - startup is rejected if HTTP Basic auth hash is not configured.
+- `DITTO_INSECURE=true` bypasses strict checks for local/dev only.
 - Optional client token auth for TCP (`:7777`).
 
 ### `ditto-mgmt`
@@ -132,7 +134,7 @@ Auth/TLS:
 - refuses startup if admin password hash is not configured,
 - refuses startup if management HTTPS cert/key are not configured.
 
-This strictness applies to the management plane only; data plane availability still depends on `dittod`.
+Both management plane and data plane enforce strict security defaults in this repository.
 
 ## Docker notes
 
