@@ -1820,6 +1820,34 @@ impl NodeHandle {
                 cfg.node.frame_read_timeout_ms.to_string(),
             ),
             (
+                "client-auth-enabled".into(),
+                cfg.node.client_auth_token.is_some().to_string(),
+            ),
+            (
+                "tcp-client-bind-loopback-only".into(),
+                ditto_config::is_loopback_bind_addr(&cfg.node.bind_addr).to_string(),
+            ),
+            (
+                "tcp-production-safe".into(),
+                (cfg.node.client_auth_token.is_some()
+                    || ditto_config::is_loopback_bind_addr(&cfg.node.bind_addr))
+                .to_string(),
+            ),
+            (
+                "insecure-runtime-enabled".into(),
+                std::env::var("DITTO_INSECURE")
+                    .unwrap_or_default()
+                    .eq_ignore_ascii_case("true")
+                    .to_string(),
+            ),
+            (
+                "strict-security-enforced".into(),
+                (!std::env::var("DITTO_INSECURE")
+                    .unwrap_or_default()
+                    .eq_ignore_ascii_case("true"))
+                .to_string(),
+            ),
+            (
                 "max-memory".into(),
                 format!("{}mb", cfg.cache.max_memory_mb),
             ),

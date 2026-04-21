@@ -46,6 +46,13 @@ fn apply_replication_guardrails(config: &mut Config) {
     }
 }
 
+fn tcp_client_auth_required(config: &Config, resolved_bind: &str, insecure: bool) -> bool {
+    !insecure
+        && !ditto_config::is_loopback_bind_addr(resolved_bind)
+        && config.node.client_port != 0
+        && config.node.client_auth_token.is_none()
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Install the ring crypto provider for rustls (must happen before any TLS use).
@@ -391,6 +398,27 @@ async fn main() -> Result<()> {
         );
     }
 
+    // Logging — initialised after config so the file appender path / rotation
+    // can be read from LogConfig.  _appender_guard must stay alive until main()
+    // returns or the async writer thread is shut down prematurely.
+    let _appender_guard = init_logging(&config.log)?;
+
+    if config_missing {
+        info!("Config file '{}' not found, using defaults.", config_path);
+    }
+    if insecure {
+        warn!(
+            "DITTO_INSECURE=true enabled: strict security startup checks are bypassed for local/dev testing only"
+        );
+    }
+
+    // Resolve bind addresses early so startup fails fast with a clear error
+    // when "site-local" is requested but no private interface is available.
+    let resolved_bind = ditto_config::resolve_bind_addr(&config.node.bind_addr)
+        .context("resolving node.bind_addr")?;
+    let resolved_cluster_bind = ditto_config::resolve_bind_addr(&config.node.cluster_bind_addr)
+        .context("resolving node.cluster_bind_addr")?;
+
     // Strict security mode: cluster/admin traffic must use mTLS.
     if !config.tls.enabled && !insecure {
         anyhow::bail!(
@@ -405,21 +433,12 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Logging — initialised after config so the file appender path / rotation
-    // can be read from LogConfig.  _appender_guard must stay alive until main()
-    // returns or the async writer thread is shut down prematurely.
-    let _appender_guard = init_logging(&config.log)?;
-
-    if config_missing {
-        info!("Config file '{}' not found, using defaults.", config_path);
+    // Strict security mode: non-loopback TCP client exposure must require token auth.
+    if tcp_client_auth_required(&config, &resolved_bind, insecure) {
+        anyhow::bail!(
+            "Strict security: non-loopback TCP client exposure requires [node].client_auth_token (or DITTO_CLIENT_AUTH_TOKEN). Bind to localhost for dev-only local access, or configure TCP auth before exposing port 7777."
+        );
     }
-
-    // Resolve bind addresses early so startup fails fast with a clear error
-    // when "site-local" is requested but no private interface is available.
-    let resolved_bind = ditto_config::resolve_bind_addr(&config.node.bind_addr)
-        .context("resolving node.bind_addr")?;
-    let resolved_cluster_bind = ditto_config::resolve_bind_addr(&config.node.cluster_bind_addr)
-        .context("resolving node.cluster_bind_addr")?;
 
     info!(
         "Starting dittod  node_id={}  active={}",
@@ -669,7 +688,7 @@ fn rotate_old_logs(dir: &str, retain_days: u64) {
 
 #[cfg(test)]
 mod tests {
-    use super::apply_replication_guardrails;
+    use super::{apply_replication_guardrails, tcp_client_auth_required};
     use crate::config::Config;
 
     #[test]
@@ -688,5 +707,32 @@ mod tests {
         cfg.replication.gossip_dead_ms = 15000;
         apply_replication_guardrails(&mut cfg);
         assert_eq!(cfg.replication.gossip_dead_ms, 15000);
+    }
+
+    #[test]
+    fn tcp_auth_required_for_non_loopback_bind_in_strict_mode() {
+        let cfg = Config::default();
+        assert!(tcp_client_auth_required(&cfg, "0.0.0.0", false));
+        assert!(tcp_client_auth_required(&cfg, "192.168.1.10", false));
+    }
+
+    #[test]
+    fn tcp_auth_not_required_for_loopback_bind() {
+        let cfg = Config::default();
+        assert!(!tcp_client_auth_required(&cfg, "127.0.0.1", false));
+        assert!(!tcp_client_auth_required(&cfg, "localhost", false));
+    }
+
+    #[test]
+    fn tcp_auth_not_required_when_token_is_configured() {
+        let mut cfg = Config::default();
+        cfg.node.client_auth_token = Some("secret".into());
+        assert!(!tcp_client_auth_required(&cfg, "0.0.0.0", false));
+    }
+
+    #[test]
+    fn tcp_auth_not_required_in_insecure_mode() {
+        let cfg = Config::default();
+        assert!(!tcp_client_auth_required(&cfg, "0.0.0.0", true));
     }
 }

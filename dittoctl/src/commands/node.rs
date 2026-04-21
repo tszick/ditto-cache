@@ -4,6 +4,7 @@ use crate::{
 };
 use anyhow::{bail, Result};
 use clap::Subcommand;
+use std::collections::HashMap;
 
 #[derive(Debug, Subcommand)]
 pub enum NodeCommand {
@@ -711,10 +712,13 @@ pub async fn run(cmd: NodeCommand, cfg: &mut CtlConfig, client: &reqwest::Client
 
         NodeCommand::Doctor { target } => {
             let status_url = format!("{}/api/nodes/{}/status", base, enc(&target));
+            let describe_url = format!("{}/api/nodes/{}/describe", base, enc(&target));
             let cluster_url = format!("{}/api/cluster", base);
             let status_data = mgmt_get(client, &status_url).await?;
+            let describe_data = mgmt_get(client, &describe_url).await?;
             let cluster_data = mgmt_get(client, &cluster_url).await?;
             let nodes = status_data.as_array().cloned().unwrap_or_default();
+            let describe_by_addr = build_describe_property_index(&describe_data);
 
             let mut critical = 0usize;
             let mut warn = 0usize;
@@ -756,23 +760,23 @@ pub async fn run(cmd: NodeCommand, cfg: &mut CtlConfig, client: &reqwest::Client
                 let quota_peak = top_quota_usage_pct(&node["namespace_quota_top_usage"]);
 
                 let mut sev = "OK";
-                let mut reasons: Vec<&str> = Vec::new();
+                let mut reasons: Vec<String> = Vec::new();
 
                 if !reachable {
                     sev = "CRITICAL";
                     critical += 1;
-                    reasons.push("unreachable");
+                    reasons.push("unreachable".to_string());
                 } else {
                     if matches!(status, "Inactive" | "Offline") {
                         sev = "CRITICAL";
                         critical += 1;
-                        reasons.push("status unhealthy");
+                        reasons.push("status unhealthy".to_string());
                     } else if status == "Syncing" {
                         if sev != "CRITICAL" {
                             sev = "WARN";
                         }
                         warn += 1;
-                        reasons.push("status syncing");
+                        reasons.push("status syncing".to_string());
                     }
 
                     if heartbeat > 2_000 {
@@ -780,7 +784,7 @@ pub async fn run(cmd: NodeCommand, cfg: &mut CtlConfig, client: &reqwest::Client
                             sev = "WARN";
                         }
                         warn += 1;
-                        reasons.push("high heartbeat");
+                        reasons.push("high heartbeat".to_string());
                     }
 
                     if matches!(quota_trend, "rising" | "surging")
@@ -791,7 +795,20 @@ pub async fn run(cmd: NodeCommand, cfg: &mut CtlConfig, client: &reqwest::Client
                             sev = "WARN";
                         }
                         warn += 1;
-                        reasons.push("quota pressure");
+                        reasons.push("quota pressure".to_string());
+                    }
+
+                    if let Some(props) = describe_by_addr.get(addr) {
+                        if let Some(reason) = insecure_runtime_reason(props) {
+                            sev = "CRITICAL";
+                            critical += 1;
+                            reasons.push(reason);
+                        }
+                        if let Some(reason) = tcp_doctor_reason(props) {
+                            sev = "CRITICAL";
+                            critical += 1;
+                            reasons.push(reason);
+                        }
                     }
                 }
 
@@ -880,9 +897,87 @@ fn top_quota_usage_pct(v: &serde_json::Value) -> u64 {
         .unwrap_or(0)
 }
 
+fn build_describe_property_index(
+    data: &serde_json::Value,
+) -> HashMap<String, HashMap<String, String>> {
+    let mut index = HashMap::new();
+    let Some(entries) = data.as_array() else {
+        return index;
+    };
+
+    for entry in entries {
+        let Some(addr) = entry["addr"].as_str() else {
+            continue;
+        };
+        if entry.get("error").and_then(|value| value.as_str()).is_some() {
+            continue;
+        }
+        let props = describe_properties(entry);
+        if !props.is_empty() {
+            index.insert(addr.to_string(), props);
+        }
+    }
+
+    index
+}
+
+fn describe_properties(entry: &serde_json::Value) -> HashMap<String, String> {
+    let mut props = HashMap::new();
+    let Some(items) = entry["properties"].as_array() else {
+        return props;
+    };
+
+    for pair in items {
+        let Some(arr) = pair.as_array() else {
+            continue;
+        };
+        let Some(key) = arr.first().and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let Some(value) = arr.get(1).and_then(|value| value.as_str()) else {
+            continue;
+        };
+        props.insert(key.to_string(), value.to_string());
+    }
+
+    props
+}
+
+fn property_bool(props: &HashMap<String, String>, key: &str) -> Option<bool> {
+    match props.get(key).map(String::as_str) {
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        _ => None,
+    }
+}
+
+fn tcp_doctor_reason(props: &HashMap<String, String>) -> Option<String> {
+    if property_bool(props, "tcp-production-safe") != Some(false) {
+        return None;
+    }
+
+    let auth_enabled = property_bool(props, "client-auth-enabled").unwrap_or(false);
+    let loopback_only = property_bool(props, "tcp-client-bind-loopback-only").unwrap_or(false);
+
+    Some(format!(
+        "tcp exposure unsupported (auth-enabled={}, loopback-only={})",
+        auth_enabled, loopback_only
+    ))
+}
+
+fn insecure_runtime_reason(props: &HashMap<String, String>) -> Option<String> {
+    if property_bool(props, "insecure-runtime-enabled") == Some(true) {
+        return Some("insecure runtime bypass enabled".to_string());
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{fmt_namespace_quota_top_usage, fmt_uptime, top_quota_usage_pct};
+    use super::{
+        build_describe_property_index, fmt_namespace_quota_top_usage, fmt_uptime,
+        insecure_runtime_reason, tcp_doctor_reason, top_quota_usage_pct,
+    };
     use serde_json::json;
 
     #[test]
@@ -924,5 +1019,77 @@ mod tests {
     fn top_quota_usage_pct_returns_zero_for_invalid_input() {
         assert_eq!(top_quota_usage_pct(&json!(null)), 0);
         assert_eq!(top_quota_usage_pct(&json!([{ "namespace": "tenant-a" }])), 0);
+    }
+
+    #[test]
+    fn build_describe_property_index_skips_error_entries() {
+        let value = json!([
+            {
+                "addr": "node-a",
+                "properties": [
+                    ["client-auth-enabled", "true"],
+                    ["tcp-production-safe", "true"]
+                ]
+            },
+            {
+                "addr": "node-b",
+                "error": "timeout"
+            }
+        ]);
+
+        let index = build_describe_property_index(&value);
+        assert_eq!(index.len(), 1);
+        assert_eq!(
+            index
+                .get("node-a")
+                .and_then(|props| props.get("client-auth-enabled"))
+                .map(String::as_str),
+            Some("true")
+        );
+        assert!(!index.contains_key("node-b"));
+    }
+
+    #[test]
+    fn tcp_doctor_reason_flags_unsupported_exposure() {
+        let props = std::collections::HashMap::from([
+            ("client-auth-enabled".to_string(), "false".to_string()),
+            (
+                "tcp-client-bind-loopback-only".to_string(),
+                "false".to_string(),
+            ),
+            ("tcp-production-safe".to_string(), "false".to_string()),
+        ]);
+
+        assert_eq!(
+            tcp_doctor_reason(&props).as_deref(),
+            Some("tcp exposure unsupported (auth-enabled=false, loopback-only=false)")
+        );
+    }
+
+    #[test]
+    fn tcp_doctor_reason_ignores_supported_exposure() {
+        let props = std::collections::HashMap::from([
+            ("client-auth-enabled".to_string(), "true".to_string()),
+            (
+                "tcp-client-bind-loopback-only".to_string(),
+                "false".to_string(),
+            ),
+            ("tcp-production-safe".to_string(), "true".to_string()),
+        ]);
+
+        assert_eq!(tcp_doctor_reason(&props), None);
+    }
+
+    #[test]
+    fn insecure_runtime_reason_flags_dev_bypass() {
+        let props = std::collections::HashMap::from([(
+            "insecure-runtime-enabled".to_string(),
+            "true".to_string(),
+        )]);
+
+        assert_eq!(
+            insecure_runtime_reason(&props).as_deref(),
+            Some("insecure runtime bypass enabled")
+        );
     }
 }

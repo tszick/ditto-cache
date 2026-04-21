@@ -26,6 +26,24 @@ fn namespace_from_headers(headers: &HeaderMap) -> Option<String> {
         .map(ToString::to_string)
 }
 
+fn tcp_client_bind_loopback_only(bind_addr: &str) -> bool {
+    ditto_config::is_loopback_bind_addr(bind_addr)
+}
+
+fn tcp_production_safe(bind_addr: &str, client_auth_enabled: bool) -> bool {
+    client_auth_enabled || tcp_client_bind_loopback_only(bind_addr)
+}
+
+fn tcp_supported_topology(bind_addr: &str, client_auth_enabled: bool) -> &'static str {
+    if client_auth_enabled {
+        "token-auth-exposed"
+    } else if tcp_client_bind_loopback_only(bind_addr) {
+        "loopback-only"
+    } else {
+        "unsupported-for-production"
+    }
+}
+
 /// Start the HTTP REST server on `bind`.
 ///
 /// `tls` — if `Some((cert_path, key_path))`, the server listens over HTTPS
@@ -372,6 +390,20 @@ async fn handle_stats(State(node): State<Arc<NodeHandle>>) -> Response {
 async fn handle_health_summary(State(node): State<Arc<NodeHandle>>) -> Response {
     let stats = node.stats().await;
     let availability = availability_for_stats(&stats.status, &stats.circuit_breaker_state);
+    let insecure_runtime_enabled = std::env::var("DITTO_INSECURE")
+        .unwrap_or_default()
+        .eq_ignore_ascii_case("true");
+    let (tcp_client_auth_enabled, tcp_client_bind_loopback_only, tcp_production_safe, tcp_supported_topology) = {
+        let cfg = node.config.lock().unwrap();
+        let auth_enabled = cfg.node.client_auth_token.is_some();
+        let loopback_only = tcp_client_bind_loopback_only(&cfg.node.bind_addr);
+        (
+            auth_enabled,
+            loopback_only,
+            tcp_production_safe(&cfg.node.bind_addr, auth_enabled),
+            tcp_supported_topology(&cfg.node.bind_addr, auth_enabled),
+        )
+    };
 
     let body = serde_json::json!({
         "availability": availability,
@@ -421,6 +453,10 @@ async fn handle_health_summary(State(node): State<Arc<NodeHandle>>) -> Response 
         "client_error_validation_total": stats.client_error_validation_total,
         "client_error_internal_total": stats.client_error_internal_total,
         "client_error_other_total": stats.client_error_other_total,
+        "tcp_client_auth_enabled": tcp_client_auth_enabled,
+        "tcp_client_bind_loopback_only": tcp_client_bind_loopback_only,
+        "tcp_production_safe": tcp_production_safe,
+        "tcp_supported_topology": tcp_supported_topology,
         "read_repair_enabled": stats.read_repair_enabled,
         "read_repair_trigger_total": stats.read_repair_trigger_total,
         "read_repair_throttled_total": stats.read_repair_throttled_total,
@@ -445,6 +481,8 @@ async fn handle_health_summary(State(node): State<Arc<NodeHandle>>) -> Response 
         "snapshot_restore_not_found_total": stats.snapshot_restore_not_found_total,
         "snapshot_restore_policy_block_total": stats.snapshot_restore_policy_block_total,
         "snapshot_restore_success_ratio_pct": stats.snapshot_restore_success_ratio_pct,
+        "insecure_runtime_enabled": insecure_runtime_enabled,
+        "strict_security_enforced": !insecure_runtime_enabled,
     });
 
     Json(body).into_response()
@@ -489,7 +527,10 @@ fn status_for_error(code: &ErrorCode) -> StatusCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{availability_for_stats, status_for_error};
+    use super::{
+        availability_for_stats, status_for_error, tcp_client_bind_loopback_only,
+        tcp_production_safe, tcp_supported_topology,
+    };
     use axum::http::StatusCode;
     use ditto_protocol::{ErrorCode, NodeStatus};
 
@@ -538,6 +579,24 @@ mod tests {
         assert_eq!(
             availability_for_stats(&NodeStatus::Active, "OPEN"),
             "degraded"
+        );
+    }
+
+    #[test]
+    fn tcp_topology_helpers_classify_supported_modes() {
+        assert!(tcp_client_bind_loopback_only("127.0.0.1"));
+        assert!(tcp_client_bind_loopback_only("localhost"));
+        assert!(!tcp_client_bind_loopback_only("0.0.0.0"));
+
+        assert!(tcp_production_safe("127.0.0.1", false));
+        assert!(tcp_production_safe("0.0.0.0", true));
+        assert!(!tcp_production_safe("0.0.0.0", false));
+
+        assert_eq!(tcp_supported_topology("127.0.0.1", false), "loopback-only");
+        assert_eq!(tcp_supported_topology("0.0.0.0", true), "token-auth-exposed");
+        assert_eq!(
+            tcp_supported_topology("0.0.0.0", false),
+            "unsupported-for-production"
         );
     }
 }

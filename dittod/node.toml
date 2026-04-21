@@ -9,7 +9,7 @@ gossip_port          = 7780
 active               = true
 max_message_size_bytes = 134217728  # 128 MiB; overridden by DITTO_MAX_MESSAGE_SIZE_BYTES
 frame_read_timeout_ms  = 60000      # TCP frame read timeout; overridden by DITTO_FRAME_READ_TIMEOUT_MS
-# client_auth_token   = "my-secret-token" # default is unset; overridden by DITTO_CLIENT_AUTH_TOKEN
+# client_auth_token   = "my-secret-token" # required when bind_addr is non-loopback in strict/prod mode; overridden by DITTO_CLIENT_AUTH_TOKEN
 
 [cluster]
 seeds     = ["node-2:7779", "node-3:7779"]

@@ -46,6 +46,22 @@ pub fn resolve_bind_addr(addr: &str) -> Result<String> {
     }
 }
 
+/// Returns true when the given bind address is loopback-only.
+///
+/// Intended for production guardrails that need to distinguish between
+/// local-dev exposure (`localhost`, `127.0.0.1`, `::1`) and non-loopback
+/// client exposure (`0.0.0.0`, private IPs, public IPs).
+pub fn is_loopback_bind_addr(addr: &str) -> bool {
+    let trimmed = addr.trim();
+    if trimmed.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    trimmed
+        .parse::<IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
+}
+
 fn is_private_v4(ip: std::net::Ipv4Addr) -> bool {
     let o = ip.octets();
     matches!(o, [10, ..] | [172, 16..=31, ..] | [192, 168, ..])
@@ -72,5 +88,15 @@ mod tests {
         assert!(is_private_v4(Ipv4Addr::new(192, 168, 1, 100)));
         assert!(!is_private_v4(Ipv4Addr::new(172, 15, 0, 1)));
         assert!(!is_private_v4(Ipv4Addr::new(8, 8, 8, 8)));
+    }
+
+    #[test]
+    fn loopback_bind_detection() {
+        assert!(is_loopback_bind_addr("localhost"));
+        assert!(is_loopback_bind_addr("127.0.0.1"));
+        assert!(is_loopback_bind_addr("::1"));
+        assert!(!is_loopback_bind_addr("0.0.0.0"));
+        assert!(!is_loopback_bind_addr("192.168.1.10"));
+        assert!(!is_loopback_bind_addr("site-local"));
     }
 }

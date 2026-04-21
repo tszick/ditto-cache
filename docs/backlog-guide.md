@@ -1,12 +1,65 @@
 # Ditto Backlog Guide
 
-This document tracks the next major development themes for the distributed cache runtime.
+This document tracks the delivered development themes for the distributed cache runtime and records the hardening closure history.
 
 ## Goals
 
 - Keep production behavior stable by default (feature flags + safe defaults).
 - Prioritize operational value first (resilience, visibility, controlled rollout).
 - Ship each item with tests, docs, and runtime observability.
+
+## Open Development Backlog
+
+Only one development program remains open in this backlog:
+
+1. Production-ready closure program
+- Goal: turn the current dev-hardened state into a production-ready candidate with enforceable gates, explicit security policy, repeatable pre-prod validation, and final release-readiness sign-off.
+- Status: in progress.
+- Current active sprint: Sprint 3.
+
+### Sprint 1: Release gate and source-of-truth alignment
+
+- Make release-readiness gates explicit and enforceable across `ditto-cache` and `ditto-client`.
+- Prevent protocol drift between `ditto-cache` protocol contract and `ditto-client` committed snapshot.
+- Keep release checklist and gate documentation aligned with the actual workflows.
+- Status: completed (repo-side).
+- Completed:
+  - `ditto-client` protocol parity workflow now checks snapshot drift against `ditto-cache`,
+  - `ditto-cache` release gate now includes protocol drift, perf regression, and release-readiness summary jobs.
+  - release-readiness checklist documented in `docs/release-readiness-checklist.md`.
+- Operational note:
+  - GitHub branch protection / required-check configuration must require the documented gate names in both repositories.
+
+### Sprint 2: TCP security policy and startup guardrails
+
+- Close the production policy for client TCP port `7777`.
+- Ensure startup/security behavior matches the supported production topology.
+- Remove ambiguity around insecure/dev-only bypass paths.
+- Status: completed (repo-side).
+- Progress:
+  - `dittod` strict startup now rejects non-loopback TCP client exposure without `client_auth_token`,
+  - `node describe` now surfaces `client-auth-enabled`, `tcp-client-bind-loopback-only`, and `tcp-production-safe`,
+  - `/health/summary` now surfaces `tcp_client_auth_enabled`, `tcp_client_bind_loopback_only`, `tcp_production_safe`, and `tcp_supported_topology`,
+  - `dittoctl node doctor` now reports unsupported TCP exposure as `CRITICAL`,
+  - insecure/dev bypass is now explicit in operator views (`insecure-runtime-enabled`, `strict-security-enforced`), and `dittoctl node doctor` reports insecure runtime bypass as `CRITICAL`,
+  - node/default docs now describe TCP auth as mandatory for non-loopback production exposure.
+
+### Sprint 3: Pre-prod verification and operational readiness
+
+- Stabilize real-run runbook validation.
+- Formalize release go/no-go operational checks.
+- Ensure `dittoctl doctor`, telemetry, and runbooks are sufficient for release decisions.
+
+### Sprint 4: Performance and coverage gates
+
+- Promote report-first quality signals into credible blocking gates where justified.
+- Clarify the meaning of perf gates and raise critical-path coverage enforcement.
+
+### Sprint 5: Final production-readiness pass
+
+- Re-run full release-readiness review after Sprint 1-4 changes.
+- Classify residual gaps as blockers vs near-term improvements.
+- Close documentation and publish final known limitations.
 
 ## Backlog Themes (8 points)
 
@@ -50,7 +103,7 @@ This document tracks the next major development themes for the distributed cache
 - Why: validates safety and recovery behavior before production incidents.
 - Status: delivered (Sprint 4).
 
-## Roadmap (4 sprints)
+## Historical Roadmap (Delivered 4 sprints)
 
 ### Sprint 1 (stability + visibility baseline)
 
@@ -166,9 +219,9 @@ Sprint 3 kickoff update (2026-04-02):
     - Runtime controls: `read-repair-on-miss-enabled`, `read-repair-min-interval-ms`.
     - Env overrides: `DITTO_READ_REPAIR_ON_MISS_ENABLED`, `DITTO_READ_REPAIR_MIN_INTERVAL_MS`.
     - Observability counters in status: trigger/success/throttled totals.
-- Next:
-  - Anti-entropy periodic reconciliation strategy (lag-threshold + key-version sample mismatch trigger done; next step is full shard/keyspace reconciliation).
-  - Rolling-upgrade protocol compatibility negotiation.
+- Follow-up:
+  - anti-entropy full shard/keyspace reconciliation shipped in the Sprint 3 completion update below,
+  - rolling-upgrade compatibility hooks also shipped in the Sprint 3 completion update below.
 
 Sprint 3 completion update (2026-04-02):
 
@@ -199,7 +252,7 @@ Sprint 3 completion update (2026-04-02):
 
 Sprint 4 progress update (2026-04-02):
 
-- In progress:
+- Delivered in the first Sprint 4 slice:
   - Tenant isolation phase 1 delivered:
     - optional namespace-aware keyspace (`tenancy.enabled`, `tenancy.default_namespace`),
     - optional per-namespace key quota (`tenancy.max_keys_per_namespace`),
@@ -277,144 +330,41 @@ Hot-key hardening closure update (2026-04-10):
   - exposed new hot-key fields via node stats, health summary, mgmt node status and `dittoctl node status`,
   - extended tests for follower-timeout stale serving and waiter-cap stale serving behavior.
 
-Next session plan (2026-04-08):
-
-- `ditto-cache` dependency upgrade pass:
-  - update outdated Rust dependencies (`axum`, `bcrypt`, `cron`, `dashmap`, `lz4_flex`, `rand`, `dirs`),
-  - run `cargo test --workspace`,
-  - fix compile/test regressions introduced by major-version bumps.
-- `ditto-client` dependency upgrade pass:
-  - Node client: update `@types/node` and `typescript`,
-  - Java client: update `jackson-databind`,
-  - Python/Go clients: verify current state (stdlib-focused, no runtime third-party deps expected).
-- Client functional parity alignment:
-  - confirm minimum parity contract across Node/Java/Python/Go for core APIs,
-  - decide strategy for `watch/unwatch` + auto-reconnect parity,
-  - define and implement consistent namespace support exposure in client APIs.
-- Documentation sync:
-  - update `ditto-client/docs/client-developer-guide.md` after dependency/parity changes,
-  - update client README sections where behavior/capabilities change.
-
-Next session plan (2026-04-09):
-
-- `ditto-cache` namespace quota observability 2.0:
-  - extend `/health/summary` with top namespace pressure indicators (`top_quota_usage`, reject trend),
-  - align mgmt/CLI output with the new quota-pressure fields,
-  - add tests for empty/partial/full quota telemetry scenarios.
-- `ditto-client` strict-mode parity pass:
-  - define strict-mode request validation rules shared across Node/Java/Python/Go,
-  - implement and test equivalent validation behavior for core APIs (`set/get/delete/list`).
-- `ditto-docker` parity regression pack:
-  - add reproducible parity tests for auth, quota reject, circuit-breaker, rate-limit and unknown-error mappings,
-  - ensure outputs are machine-checkable and CI-friendly across all client lanes.
-- `ditto-cache` `dittoctl doctor` quick diagnostics:
-  - add a first-pass `doctor` command that summarizes node health, cluster peer status, and quota pressure,
-  - return non-zero exit when critical checks fail.
-- `ditto-client` release automation prep:
-  - draft version-bump + changelog generation flow,
-  - add a dry-run workflow to verify multi-language client release steps.
-
-Sprint split update (2026-04-10):
-
-- Phase I completed in this sprint:
-  - 1) `ditto-cache` dependency upgrade pass (workspace verification + regression test run),
-  - 2) `ditto-client` dependency upgrade pass (Node/Java/Python/Go verification and updates where needed),
-  - 3) client functional parity alignment slice (error mapping + namespace handling consistency hardening),
-  - 4) documentation sync (`ditto-client` guide + client README updates).
-- Phase II queued for this sprint:
-  - `ditto-cache` namespace quota observability 2.0 follow-up pass,
-  - `ditto-docker` parity regression pack,
-  - `dittoctl doctor` diagnostics hardening pass,
-  - `ditto-client` release automation prep.
-
-Phase II progress update (2026-04-10):
+Hardening closure update (2026-04-10):
 
 - Completed:
-  - `ditto-client` strict-mode parity follow-up pass:
-    - strict validation aligned for pattern operations (`deleteByPattern`, `setTtlByPattern`) across Node/Java/Python/Go,
-    - TCP watch/unwatch strict validation alignment completed,
-    - parity regression tests added/updated in all four client SDKs.
-  - `ditto-cache` namespace quota observability 2.0 follow-up pass:
-    - `/health/summary` quota pressure telemetry surfaced (`namespace_quota_top_usage`, reject rate/trend),
-    - mgmt/API/CLI alignment completed,
-    - coverage added for empty/partial/full quota telemetry scenarios.
-  - `ditto-docker` parity regression pack:
-    - reproducible auth/quota/rate/circuit/unknown-error mapping checks in all client lanes,
-    - machine-checkable output + strict watch assertion mode (`DITTO_STRICT_WATCH_ASSERT`) documented.
-  - `dittoctl doctor` diagnostics hardening pass:
-    - quick diagnostics summary (`OK/WARN/CRITICAL`) implemented,
-    - non-zero exit on critical findings enabled.
-  - `ditto-client` release automation prep:
-    - release dry-run workflow + changelog/version planning helper added.
-- Remaining in Phase II:
-  - none.
+  - `ditto-cache` dependency upgrade pass (workspace verification + regression test run),
+  - `ditto-client` dependency upgrade pass (Node/Java/Python/Go verification and updates where needed),
+  - client functional parity alignment slice (error mapping + namespace handling consistency hardening),
+  - documentation sync (`ditto-client` guide + client README updates),
+  - namespace quota observability 2.0 follow-up pass (`namespace_quota_top_usage`, reject rate/trend, mgmt/API/CLI alignment, telemetry coverage),
+  - `ditto-docker` parity regression pack for auth/quota/rate/circuit/unknown-error mappings,
+  - `dittoctl doctor` diagnostics hardening pass (`OK/WARN/CRITICAL` summary + non-zero exit on critical findings),
+  - `ditto-client` release automation prep (`release-dry-run.yml`, changelog/version planning helper).
 
-Sprint 5 kickoff plan (2026-04-10) - Coverage quality hardening:
+Coverage hardening status (2026-04-10):
 
-- Scope:
-  - `ditto-client`: establish practical, risk-based test coverage gates (not 100% target).
-  - `ditto-cache`: add consistent coverage tooling and enforce minimum thresholds on critical modules first.
+- Completed in this slice:
+  - coverage report workflows added for both repositories,
+  - Java JaCoCo report generation enabled in `ditto-client`,
+  - targeted critical-path coverage expanded across strict validation, quota/error mapping, `dittoctl doctor`, and watch/reconnect paths,
+  - PR no-regression checks added:
+    - `ditto-client`: Node line coverage and Go statement coverage vs base branch,
+    - `ditto-cache`: Rust total line coverage vs base branch.
+- Remaining gap:
+  - repository-wide and critical-path threshold enforcement is not yet proven as a stable blocking gate,
+  - coverage status should still be treated as partial/report-first hardening rather than fully closed.
 
-- Target thresholds:
-  - `ditto-client` repository baseline:
-    - line coverage >= 75%,
-    - branch coverage >= 60%.
-  - `ditto-cache` repository baseline:
-    - line coverage >= 70%.
-  - Critical-path modules (both repos):
-    - line coverage >= 85%.
+P2 automation and release-gate closure update (2026-04-19 to 2026-04-20):
 
-- Critical-path focus modules:
-  - `ditto-client`: strict validation, error mapping, namespace handling, TCP reconnect/watch flows.
-  - `ditto-cache`: rate limit, circuit breaker, namespace quota, health summary + `dittoctl doctor`, snapshot restore paths.
-
-- Execution phases:
-  - Phase A (tooling + visibility):
-    - unify per-language coverage generation and CI artifacts,
-    - publish per-PR coverage report without failing the build yet.
-  - Phase B (critical-path hardening):
-    - raise critical modules to threshold first,
-    - add targeted unit/integration tests for edge cases.
-  - Phase C (progressive gating):
-    - enable fail-on-regression,
-    - enforce critical-path thresholds,
-    - enforce repository baseline thresholds after stability.
-
-- Acceptance criteria:
-  - coverage metrics are produced automatically in CI for all maintained client/cache lanes,
-  - no coverage regression on PRs relative to moving baseline,
-  - critical-path modules meet threshold before full-repo gate is enforced,
-  - documentation updated with coverage commands, thresholds, and gate policy.
-
-Sprint 5 progress update (2026-04-10):
-
-- Phase A started:
-  - `ditto-client` coverage report workflow added (`.github/workflows/coverage-report.yml`),
-  - `ditto-client` Java lane updated with JaCoCo report generation (`jacocoTestReport`),
-  - `ditto-cache` Rust workspace coverage workflow added (`.github/workflows/coverage-report.yml`),
-  - all new workflows are report-only (no fail gate for threshold misses in Phase A).
-- Phase B started (critical-path targeted tests):
-  - `dittoctl doctor` helper coverage expanded with unit tests (`fmt_uptime`, quota-summary formatting, quota peak extraction),
-  - `ditto-client` Node strict validation coverage expanded with namespace `::` rejection tests on HTTP pattern and TCP watch paths.
-  - `ditto-client` Python strict validation coverage expanded:
-    - namespace `::` reject case added,
-    - strict-mode-off no-op validation case added.
-  - `ditto-client` Java strict validation coverage expanded:
-    - HTTP pattern namespace `::` reject case added,
-    - TCP watch namespace `::` reject case added.
-  - `ditto-client` Go strict validation coverage expanded:
-    - namespace `::` reject case added for pattern operations,
-    - strict-mode-off no-op pattern validation case added,
-    - strict/non-strict namespace normalization edge cases added.
-  - `ditto-cache` health/error mapping edge coverage expanded:
-    - HTTP error mapping asserts extended for `NamespaceQuotaExceeded` and `NoQuorum`,
-    - availability mapping asserts extended for `Offline` and case-insensitive circuit-open state.
-- Phase C started (no-regression gate entry, thresholds still report-first):
-  - `ditto-client` coverage workflow now includes PR no-regression checks:
-    - Node line% vs base branch,
-    - Go statements% vs base branch.
-  - `ditto-cache` coverage workflow now includes PR no-regression check:
-    - Rust total line% vs base branch (`cargo llvm-cov --summary-only`).
+- Completed:
+  - `ditto-client` protocol snapshot / SDK parity gate added and `NamespaceQuotaExceeded` error-code alignment completed (`.github/workflows/protocol-parity.yml`, `contracts/protocol-contract.snapshot.json`),
+  - `ditto-cache` protocol contract drift gate added (`.github/workflows/protocol-contract.yml`),
+  - pre-prod runbook validator added with dry-run CI entrypoint and manual real-run workflow inputs (`.github/workflows/preprod-runbook-validation.yml`, `scripts/preprod-runbook-validate.ps1`),
+  - perf baseline regression gate added (`.github/workflows/perf-gate.yml`, `docs/perf-baseline.json`),
+  - release gate hardened to include runbook validation and repeated flaky-suite passes (`.github/workflows/release-gate.yml`),
+  - runbook validator hardened with multi-node telemetry assertions plus namespace/hot-key probe checks,
+  - recovery telemetry and runbook validation tightened in the node/runtime path.
 
 ## Definition of Done (for each backlog item)
 

@@ -2,6 +2,13 @@
 
 This runbook is for day-2 operations of a running Ditto cluster.
 
+Validation status:
+
+- CI dry-run entrypoint: `.github/workflows/preprod-runbook-validation.yml` -> `./scripts/preprod-runbook-validate.ps1 -DryRun`
+- Manual real-run entrypoint: same workflow with `real_run=true` on a self-hosted Windows runner
+- Release pipeline linkage: `.github/workflows/release-gate.yml` runs dry-run validation, protocol drift, perf regression, Rust quality checks, and a release-readiness summary on push/PR; `main` also runs a real-run gate on a self-hosted Windows runner
+- Release candidate gate list: `docs/release-readiness-checklist.md`
+
 ## 1) Fast Health Triage
 
 Run:
@@ -148,3 +155,13 @@ Tuning notes:
 1. Raise latency thresholds for low-power local machines.
 2. Keep error burn-rate thresholds strict; they detect regressions earlier than absolute counters.
 3. Recalibrate after major traffic-pattern changes (new client rollout, quota policy changes, restore events).
+
+## 7) Runbook Validation Modes
+
+- Dry-run mode:
+  - validates script wiring and expected scenario flow without Docker side effects,
+  - intended for routine CI on push/PR.
+- Real-run mode:
+  - targets the `ditto-docker` environment from a self-hosted Windows runner,
+  - validates node-loss / recovery, restore telemetry, namespace quota telemetry, and namespace/hot-key probe paths,
+  - should be used before production-significant releases or major runtime changes.

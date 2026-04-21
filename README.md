@@ -153,14 +153,13 @@ Produced binaries:
 ```bash
 # Dev-only shortcut:
 # default node.toml/mgmt.toml are rejected by strict security checks unless
-# DITTO_INSECURE=true is set.
-DITTO_INSECURE=true ./target/release/dittod dittod/node.toml
+# DITTO_INSECURE=true is set for `dittod` in a debug/dev build.
+DITTO_INSECURE=true cargo run -p dittod -- dittod/node.toml
 
-# Start the management service
-DITTO_INSECURE=true ./target/release/ditto-mgmt
-
-# Open the web dashboard (plain HTTP when no TLS cert is configured)
-open http://localhost:7781
+# `ditto-mgmt` does not provide an insecure bypass.
+# For local admin/UI usage, configure HTTPS cert/key + admin password hash in
+# `mgmt.toml`, then start:
+# ./target/release/ditto-mgmt /path/to/mgmt.toml
 
 # Test with curl
 curl -X PUT http://localhost:7778/key/hello -d "world"
@@ -231,6 +230,7 @@ Docker deployment files are in the sibling project: `../ditto-docker/`.
 
 Production baseline note:
 - strict security startup checks expect mTLS + HTTP auth to be configured.
+- if `bind_addr` is non-loopback, TCP client auth token is also required for port `7777`.
 - If you keep the relaxed/dev values, start with `DITTO_INSECURE=true` only in local environments.
 
 ```toml
@@ -243,6 +243,7 @@ http_port         = 7778           # HTTP REST API
 cluster_port      = 7779           # inter-node + admin (mTLS optional)
 gossip_port       = 7780           # UDP gossip
 active            = true           # false = maintenance mode
+client_auth_token = "replace-me"   # required when bind_addr is not loopback in strict/prod mode
 
 [cluster]
 seeds     = ["node-2:7779", "node-3:7779"]
@@ -481,6 +482,7 @@ docker start ditto-node-3             # auto-syncs when restarted
 | [docs/backlog-guide.md](docs/backlog-guide.md) | Product backlog + multi-sprint roadmap |
 | [docs/chaos-playbook.md](docs/chaos-playbook.md) | Chaos/fault validation scenarios (partition + delay + restart) |
 | [docs/operations-runbook.md](docs/operations-runbook.md) | Incident response and tenant quota operations |
+| [docs/release-readiness-checklist.md](docs/release-readiness-checklist.md) | Required CI/manual checks for a production-ready candidate |
 
 ---
 
@@ -496,11 +498,17 @@ Current GitHub Actions workflows:
   - Triggers: push/PR on `main` + manual run (`workflow_dispatch`).
   - Command: `./scripts/chaos-smoke.ps1 -DryRun -Iterations 1`
 - `Release Gate` (`.github/workflows/release-gate.yml`)
-  - Purpose: enforce baseline Rust quality gate before merge/release.
-  - Triggers: push/PR on `main`.
-  - Commands: `cargo check`, `cargo test --workspace`, `cargo test -p ditto-protocol`, `cargo audit`
+  - Purpose: enforce the baseline release gate for merge/release, including runbook validation and Rust quality checks.
+  - Triggers: push/PR on `main` + manual run.
+  - Gates:
+    - dry-run runbook validation on all push/PR runs,
+    - real-run runbook validation on `main` via self-hosted Windows runner,
+    - protocol contract drift check,
+    - performance regression gate,
+    - `cargo check`, `cargo test --workspace`, repeated flaky-suite passes, `cargo test -p ditto-protocol`, `cargo audit`,
+    - final release-readiness summary job for the required PR gates.
 - `Protocol Contract` (`.github/workflows/protocol-contract.yml`)
-  - Purpose: enforce schema-first protocol contract sync (`ditto-protocol/schema/protocol-contract.json`).
+  - Purpose: standalone protocol contract drift check for direct invocation and debugging; the same checks also run inside `Release Gate`.
   - Triggers: push/PR on `main`.
   - Commands: `./scripts/generate-protocol-contract.ps1` + drift check.
 - `Pre-Prod Runbook Validation` (`.github/workflows/preprod-runbook-validation.yml`)
@@ -508,17 +516,22 @@ Current GitHub Actions workflows:
   - Triggers: push/PR on `main` + manual run.
   - Default CI command: `./scripts/preprod-runbook-validate.ps1 -DryRun`
   - Manual real-run mode (self-hosted Windows runner): set `real_run=true` and optionally override `compose_dir` / `namespace`.
+  - Real-run validation also exercises multi-node telemetry checks plus namespace/hot-key probe assertions.
 - `Performance Gate` (`.github/workflows/perf-gate.yml`)
-  - Purpose: block regressions on p50/p95/p99 latency against committed baseline.
+  - Purpose: standalone perf regression check for direct invocation and debugging; the same check also runs inside `Release Gate`.
   - Triggers: push/PR on `main` + manual run.
   - Command: `./scripts/perf-gate.ps1 -Samples 80 -Warmup 10`
 
-Manual run (GitHub UI):
+Manual run examples (GitHub UI):
 
 1. Open **Actions** tab.
-2. Select **Chaos Dry Run** workflow.
+2. Select the workflow you want to run.
 3. Click **Run workflow**.
 4. Choose `main` branch and run.
+5. For `Pre-Prod Runbook Validation`, set `real_run=true` only on a self-hosted Windows runner with access to `..\ditto-docker`.
+
+Required gate summary for release candidates:
+- see [docs/release-readiness-checklist.md](docs/release-readiness-checklist.md)
 
 ---
 
@@ -532,8 +545,14 @@ signed by the configured CA.  The TLS server name used for all handshakes is
 Client port 7777 (TCP binary) and gossip (UDP/7780) are not TLS-protected.
 Current default runtime policy is strict security:
 - `dittod` refuses startup without `[tls].enabled=true` and `[http_auth].password_hash`.
+- `dittod` also refuses startup when port `7777` is exposed on a non-loopback bind without `[node].client_auth_token`.
 - `ditto-mgmt` refuses startup without mTLS, admin password hash, and HTTPS cert/key.
-- `DITTO_INSECURE=true` bypasses these checks for local/dev only.
+- `DITTO_INSECURE=true` bypasses `dittod` strict checks for local/dev only, is blocked in release builds, and should be treated as a non-production runtime.
+
+Operator visibility for this policy:
+- `/health/summary` exposes `insecure_runtime_enabled` and `strict_security_enforced`.
+- `dittoctl node describe` exposes `insecure-runtime-enabled` and `strict-security-enforced`.
+- `dittoctl node doctor` reports insecure runtime bypass as `CRITICAL`.
 
 Port 7778 (HTTP REST) and port 7781 (ditto-mgmt) can run HTTPS (server-only TLS)
 and HTTP Basic Auth. In production, keep strict mode enabled.

@@ -5,6 +5,7 @@ on:
     branches:
       - main
   pull_request:
+  workflow_dispatch:
 
 jobs:
   runbook-dry:
@@ -33,9 +34,42 @@ jobs:
           -ComposeDir "..\ditto-docker"
           -Namespace "preprod-release-gate"
 
+  protocol-contract:
+    name: Protocol Contract Drift Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate protocol contract
+        shell: pwsh
+        run: ./scripts/generate-protocol-contract.ps1
+
+      - name: Verify contract is committed
+        shell: bash
+        run: git diff --exit-code -- ditto-protocol/schema/protocol-contract.json
+
+      - name: Contract check mode
+        shell: pwsh
+        run: ./scripts/generate-protocol-contract.ps1 -Check
+
+  perf-gate:
+    name: Perf Baseline Regression Gate
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run performance gate
+        shell: pwsh
+        run: ./scripts/perf-gate.ps1 -Samples 80 -Warmup 10
+
   rust-gate:
     name: Rust Build and Test Gate
-    needs: [runbook-dry]
+    needs: [runbook-dry, protocol-contract, perf-gate]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -66,3 +100,31 @@ jobs:
 
       - name: Security scan (cargo audit)
         run: cargo audit
+
+  release-readiness:
+    name: Release Readiness Summary
+    needs: [runbook-dry, protocol-contract, perf-gate, rust-gate]
+    if: always() && !cancelled()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify required gates passed
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ needs.runbook-dry.result }}" = "success"
+          test "${{ needs.protocol-contract.result }}" = "success"
+          test "${{ needs.perf-gate.result }}" = "success"
+          test "${{ needs.rust-gate.result }}" = "success"
+      - name: Summarize release readiness
+        shell: bash
+        run: |
+          {
+            echo "## Release Readiness Summary"
+            echo ""
+            echo "- runbook-dry: ${{ needs.runbook-dry.result }}"
+            echo "- protocol-contract: ${{ needs.protocol-contract.result }}"
+            echo "- perf-gate: ${{ needs.perf-gate.result }}"
+            echo "- rust-gate: ${{ needs.rust-gate.result }}"
+            echo ""
+            echo "Main branch still requires the separate self-hosted runbook-real gate."
+          } >> "$GITHUB_STEP_SUMMARY"

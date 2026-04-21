@@ -123,8 +123,9 @@ Auth/TLS:
 - Strict by default in this codebase:
   - startup is rejected if cluster/admin mTLS is disabled,
   - startup is rejected if HTTP Basic auth hash is not configured.
-- `DITTO_INSECURE=true` bypasses strict checks for local/dev only.
-- Optional client token auth for TCP (`:7777`).
+  - startup is rejected if TCP port `7777` is bound on a non-loopback address without `client_auth_token`.
+- `DITTO_INSECURE=true` bypasses strict checks for local/dev only, is blocked in release builds, and should be treated as a non-production runtime.
+- TCP client token auth is mandatory for non-loopback exposure of `:7777`.
 
 ### `ditto-mgmt`
 
