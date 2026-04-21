@@ -74,6 +74,15 @@ Only one development program remains open in this backlog:
 - Re-run full release-readiness review after Sprint 1-4 changes.
 - Classify residual gaps as blockers vs near-term improvements.
 - Close documentation and publish final known limitations.
+- Progress:
+  - repo-side production-readiness verdict documented in `docs/production-readiness-review.md`,
+  - repo-side required-check policy documented in `.github/required-checks.json`,
+  - final candidate sign-off template documented in `docs/production-candidate-signoff.md`,
+  - known limitations documented in `docs/known-limitations.md`,
+  - current release blockers are now explicit:
+    - self-hosted real-run validation still needs live execution,
+    - GitHub required-check enforcement still needs confirmation against the repo policy,
+    - final production-candidate sign-off still needs completion on the target release.
 
 ## Backlog Themes (8 points)
 

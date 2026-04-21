@@ -41,13 +41,14 @@ Coverage gate interpretation:
 
 ## Manual / Operator Checks
 
-- Confirm the target branch protection in GitHub requires the CI checks above.
+- Confirm the target branch protection in GitHub requires the CI checks from `.github/required-checks.json`.
 - Confirm no manual runbook validation exceptions are being used for the target release.
 - Confirm any release note / changelog generation flow has been reviewed for the target version.
 - Confirm the latest real-run validator output marks `go_no_go.release_candidate=pass`.
 - Confirm the same real-run validator output marks `strict_security_enforced=pass` and `tcp_topology_supported=pass`.
 - Confirm the same real-run validator output marks `doctor_clean=pass`.
 - Confirm `dittoctl node doctor all` returns no `CRITICAL` findings on the target preprod cluster.
+- Complete `docs/production-candidate-signoff.md` for the target candidate.
 
 ## Supported Production TCP Topology
 
@@ -69,4 +70,11 @@ Coverage gate interpretation:
 - Sprint 1 and Sprint 2 repo-side closure are complete.
 - Sprint 3 repo-side progress is in place, but the real-run validation still needs execution on the self-hosted preprod path.
 - Sprint 4 repo-side closure is in place: perf gate scope is clarified, and the current coverage policy is documented as required base-branch no-regression across the active lanes.
-- The remaining open work is now operational Sprint 3 execution plus the final Sprint 5 production-readiness pass.
+- Sprint 5 review is now documented in `docs/production-readiness-review.md`.
+- Required-check policy is now documented in `.github/required-checks.json`.
+- Final candidate sign-off template now exists in `docs/production-candidate-signoff.md`.
+- Known limitations are now documented in `docs/known-limitations.md`.
+- The remaining open work is now:
+  - operational Sprint 3 execution on the self-hosted preprod path,
+  - confirmation of GitHub required-check enforcement,
+  - final production-candidate sign-off after those blockers are closed.

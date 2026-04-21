@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "policy_name": "ditto-production-ready-required-checks",
+  "description": "Repo-side source of truth for branch protection / required status checks before a production-ready candidate can be declared.",
+  "repositories": {
+    "ditto-cache": {
+      "protected_branches": ["main"],
+      "required_checks": [
+        "Release Readiness Summary",
+        "Runbook Validation (Real Run Gate)"
+      ]
+    },
+    "ditto-client": {
+      "protected_branches": ["main"],
+      "required_checks": [
+        "Snapshot + SDK Parity"
+      ]
+    }
+  },
+  "notes": [
+    "Release Readiness Summary already covers Runbook Validation (Dry Run Gate), Protocol Contract Drift Gate, Perf Baseline Regression Gate, and Rust Build and Test Gate.",
+    "Coverage no-regression gates are part of the conservative quality policy, but are not yet represented here as absolute release-candidate branch-protection requirements."
+  ]
+}
