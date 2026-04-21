@@ -20,10 +20,17 @@ Example:
 [mgmt]
 url = "https://localhost:7781"
 timeout_ms = 3000
+username = "admin"
+password = "replace-me"
+insecure_skip_verify = true
 
 [output]
 format = "binary"
 ```
+
+Notes:
+- `username` / `password` are optional and used for `ditto-mgmt` HTTP Basic Auth.
+- `insecure_skip_verify = true` is intended for self-signed local/dev TLS only.
 
 Local config changes can also be made from CLI:
 

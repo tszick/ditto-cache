@@ -15,7 +15,7 @@ Only one development program remains open in this backlog:
 1. Production-ready closure program
 - Goal: turn the current dev-hardened state into a production-ready candidate with enforceable gates, explicit security policy, repeatable pre-prod validation, and final release-readiness sign-off.
 - Status: in progress.
-- Current active sprint: Sprint 3.
+- Current active sprint: Sprint 5.
 
 ### Sprint 1: Release gate and source-of-truth alignment
 
@@ -49,11 +49,25 @@ Only one development program remains open in this backlog:
 - Stabilize real-run runbook validation.
 - Formalize release go/no-go operational checks.
 - Ensure `dittoctl doctor`, telemetry, and runbooks are sufficient for release decisions.
+- Progress:
+  - real-run runbook validation now asserts strict-security and supported TCP topology from `/health/summary`,
+  - real-run validator now emits a compact `go_no_go` summary block for release-candidate decisions,
+  - `dittoctl` now supports authenticated/self-signed HTTPS access to `ditto-mgmt` for dev/preprod usage,
+  - real-run validator now runs `dittoctl node doctor all` and carries its verdict in the same validation output,
+  - operations/admin/release docs now describe the same release go/no-go path and require `dittoctl node doctor all` to stay free of `CRITICAL` findings.
 
 ### Sprint 4: Performance and coverage gates
 
 - Promote report-first quality signals into credible blocking gates where justified.
 - Clarify the meaning of perf gates and raise critical-path coverage enforcement.
+- Status: completed (repo-side).
+- Progress:
+  - perf gate classification is now explicit in script output and docs: smoke-regression only, debug single-node HTTP path, insecure dev bypass, not production sign-off,
+  - release/admin/readme docs now describe the same scope limit for the current perf baseline gate,
+  - coverage policy is now documented as mixed maturity rather than fully report-first:
+    - `ditto-cache` Rust total line coverage no-regression gate is active on PRs,
+    - `ditto-client` Node.js, Go, Python, and Java no-regression gates are active on PRs,
+    - the current repo-side policy is now explicit: required base-branch no-regression on the active coverage lanes, without claiming global absolute minimum thresholds.
 
 ### Sprint 5: Final production-readiness pass
 

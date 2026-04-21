@@ -217,6 +217,10 @@ try {
     $p99 = Get-PercentileMs -Values $lat.ToArray() -Percentile 99
 
     $result = [ordered]@{
+        gate_mode = "smoke-regression"
+        runtime_profile = "debug-single-node-http"
+        security_profile = "insecure-dev-bypass"
+        release_signoff_ready = $false
         scenario = "single_node_http"
         samples_requested = $Samples
         request_count_measured = $lat.Count
@@ -229,6 +233,10 @@ try {
     if ($WriteBaseline) {
         $baseline = [ordered]@{
             version = 1
+            gate_mode = "smoke-regression"
+            runtime_profile = "debug-single-node-http"
+            security_profile = "insecure-dev-bypass"
+            release_signoff_ready = $false
             scenarios = [ordered]@{
                 single_node_http = [ordered]@{
                     p50_ms_max = [Math]::Ceiling($p50 * 1.15)
@@ -250,8 +258,12 @@ try {
 
     $baseline = Get-Content $baselineFile -Raw | ConvertFrom-Json
     $limits = $baseline.scenarios.single_node_http
+    if ($baseline.PSObject.Properties.Name -contains "release_signoff_ready" -and $baseline.release_signoff_ready) {
+        throw "Perf baseline is incorrectly marked as release_signoff_ready=true. This gate is intended as a smoke regression check only."
+    }
 
     Write-Host (($result | ConvertTo-Json -Depth 6))
+    Write-Host "Perf gate classification: smoke-regression only (debug build, single-node HTTP, insecure dev bypass)."
 
     if ($failures -gt [int]$limits.max_failures) {
         throw "Perf gate failed: failures=$failures > max_failures=$($limits.max_failures)"

@@ -20,6 +20,15 @@ pub struct MgmtConfig {
     pub url: String,
     /// HTTP request timeout in milliseconds.
     pub timeout_ms: u64,
+    /// Optional HTTP Basic Auth username for ditto-mgmt.
+    #[serde(default)]
+    pub username: Option<String>,
+    /// Optional HTTP Basic Auth password for ditto-mgmt.
+    #[serde(default)]
+    pub password: Option<String>,
+    /// Accept invalid/self-signed TLS certs for local/dev management endpoints.
+    #[serde(default)]
+    pub insecure_skip_verify: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +43,9 @@ impl Default for CtlConfig {
             mgmt: MgmtConfig {
                 url: "http://localhost:7781".into(),
                 timeout_ms: 3000,
+                username: None,
+                password: None,
+                insecure_skip_verify: false,
             },
             output: OutputConfig {
                 format: "binary".into(),

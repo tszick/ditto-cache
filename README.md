@@ -518,9 +518,14 @@ Current GitHub Actions workflows:
   - Manual real-run mode (self-hosted Windows runner): set `real_run=true` and optionally override `compose_dir` / `namespace`.
   - Real-run validation also exercises multi-node telemetry checks plus namespace/hot-key probe assertions.
 - `Performance Gate` (`.github/workflows/perf-gate.yml`)
-  - Purpose: standalone perf regression check for direct invocation and debugging; the same check also runs inside `Release Gate`.
+  - Purpose: standalone smoke perf regression check for direct invocation and debugging; the same check also runs inside `Release Gate`.
   - Triggers: push/PR on `main` + manual run.
   - Command: `./scripts/perf-gate.ps1 -Samples 80 -Warmup 10`
+  - Scope limit: debug build + single-node HTTP path + `DITTO_INSECURE=true`; treat it as smoke-regression only, not production perf sign-off.
+- `Cache Coverage Report` (`.github/workflows/coverage-report.yml`)
+  - Purpose: Rust workspace coverage reporting plus PR no-regression enforcement against the base branch.
+  - Current enforced lane: `Rust Coverage No Regression (PR)` on total Rust line coverage.
+  - Scope limit: this is a selective no-regression gate, not yet a full threshold policy for all critical-path categories.
 
 Manual run examples (GitHub UI):
 

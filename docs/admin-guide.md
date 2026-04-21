@@ -104,10 +104,17 @@ Example:
 [mgmt]
 url = "https://localhost:7781"
 timeout_ms = 3000
+username = "admin"
+password = "replace-me"
+insecure_skip_verify = true
 
 [output]
 format = "binary"
 ```
+
+Notes:
+- `username` / `password` are optional and only needed when `ditto-mgmt` Basic Auth is enabled.
+- `insecure_skip_verify = true` is acceptable for local/self-signed dev or preprod labs; keep it `false` for production trust chains.
 
 ## Common admin workflows
 
@@ -240,9 +247,16 @@ dittoctl cache flush local
   - standalone workflow for regenerating `ditto-protocol/schema/protocol-contract.json` and failing on drift.
 - Performance gate: `.github/workflows/perf-gate.yml`
   - standalone workflow that checks latency against `docs/perf-baseline.json`.
+  - current scope is smoke-regression only: debug build, single-node HTTP, and `DITTO_INSECURE=true`.
+  - do not treat it as full production perf sign-off without a separate production-like secure baseline.
+- Coverage gate: `.github/workflows/coverage-report.yml`
+  - uploads Rust workspace coverage artifacts,
+  - currently enforces `Rust Coverage No Regression (PR)` against the base branch,
+  - should be treated as selective no-regression enforcement, not a complete threshold policy.
 - Pre-prod runbook validation: `.github/workflows/preprod-runbook-validation.yml`
   - dry-run by default,
-  - real-run via `real_run=true` on a self-hosted Windows runner with access to `..\ditto-docker`.
+  - real-run via `real_run=true` on a self-hosted Windows runner with access to `..\ditto-docker`,
+  - real-run output now includes a compact `go_no_go` summary for strict security, TCP topology support, `dittoctl node doctor all`, and release-candidate readiness.
 - Release candidate checklist:
   - see `docs/release-readiness-checklist.md` for the required gate names to enforce in GitHub.
   - the same checklist also defines the supported production TCP topology for port `7777`.

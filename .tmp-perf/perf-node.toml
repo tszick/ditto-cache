@@ -1,0 +1,99 @@
+﻿[node]
+id = "perf-dev"
+active = true
+bind_addr = "127.0.0.1"
+client_port = 17777
+http_port = 17778
+cluster_port = 17779
+gossip_port = 17780
+cluster_bind_addr = "127.0.0.1"
+
+[cluster]
+seeds = []
+max_nodes = 3
+
+[cache]
+max_memory_mb = 128
+default_ttl_secs = 0
+eviction_policy = "lfu"
+value_size_limit_bytes = 1048576
+max_keys = 10000
+
+[replication]
+write_timeout_ms = 500
+write_quorum_mode = "majority"
+gossip_interval_ms = 200
+gossip_dead_ms = 15000
+version_check_interval_ms = 0
+read_repair_on_miss_enabled = false
+read_repair_min_interval_ms = 5000
+read_repair_max_per_minute = 30
+anti_entropy_enabled = false
+anti_entropy_interval_ms = 60000
+anti_entropy_min_repair_interval_ms = 30000
+anti_entropy_lag_threshold = 32
+anti_entropy_key_sample_size = 0
+anti_entropy_full_reconcile_every = 0
+anti_entropy_full_reconcile_max_keys = 0
+anti_entropy_budget_max_checks_per_run = 0
+anti_entropy_budget_max_duration_ms = 0
+mixed_version_probe_enabled = false
+mixed_version_probe_interval_ms = 30000
+
+[tls]
+enabled = false
+
+[http_auth]
+
+[backup]
+enabled = false
+schedule = "0 2 * * *"
+path = "./backups"
+format = "binary"
+retain_days = 7
+restore_on_start = false
+
+[persistence]
+platform_allowed = false
+runtime_enabled = false
+backup_allowed = false
+export_allowed = false
+import_allowed = false
+
+[tenancy]
+enabled = false
+default_namespace = "default"
+max_keys_per_namespace = 0
+
+[rate_limit]
+enabled = false
+requests_per_sec = 20000
+burst = 40000
+
+[circuit_breaker]
+enabled = false
+failure_threshold = 50
+open_ms = 5000
+half_open_max_requests = 10
+
+[hot_key]
+enabled = false
+max_waiters = 64
+follower_wait_timeout_ms = 25
+stale_ttl_ms = 0
+stale_max_entries = 128
+adaptive_waiters_enabled = false
+adaptive_min_waiters = 4
+adaptive_success_threshold = 8
+adaptive_state_max_keys = 4096
+
+[compression]
+enabled = false
+threshold_bytes = 4096
+
+[log]
+enabled = false
+path = "./logs"
+rotation = "daily"
+retain_days = 7
+level = "warn"

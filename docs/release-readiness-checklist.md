@@ -16,6 +16,20 @@ This checklist is the repo-side source of truth for what must be green before a 
   - self-hosted Windows runner only
   - validates live `ditto-docker` runbook scenarios against the expected dev/preprod cluster
 
+Perf gate interpretation:
+- `Perf Baseline Regression Gate` is currently a smoke-regression guard, not a production-like performance sign-off.
+- It runs against a debug single-node HTTP path with `DITTO_INSECURE=true`.
+- Use it to catch obvious latency regressions, not to approve production capacity or secure-path readiness by itself.
+
+Coverage gate interpretation:
+- `ditto-cache` coverage is partially enforced today via `Rust Coverage No Regression (PR)`.
+- This is a stable required no-regression gate on Rust total line coverage versus the base branch, not a full repository threshold policy.
+- `ditto-client` coverage now has PR no-regression checks on Node.js, Go, Python, and Java lanes.
+- Current repo-side coverage policy is base-branch no-regression:
+  - `ditto-cache`: Rust total line coverage must not regress on PRs.
+  - `ditto-client`: Node.js, Go, Python, and Java coverage must not regress on PRs.
+- Cross-repo repository-wide absolute minimum thresholds are still not the same thing as these lane-by-lane required no-regression gates.
+
 ### `ditto-client`
 
 - `Snapshot + SDK Parity` from `.github/workflows/protocol-parity.yml`
@@ -30,6 +44,10 @@ This checklist is the repo-side source of truth for what must be green before a 
 - Confirm the target branch protection in GitHub requires the CI checks above.
 - Confirm no manual runbook validation exceptions are being used for the target release.
 - Confirm any release note / changelog generation flow has been reviewed for the target version.
+- Confirm the latest real-run validator output marks `go_no_go.release_candidate=pass`.
+- Confirm the same real-run validator output marks `strict_security_enforced=pass` and `tcp_topology_supported=pass`.
+- Confirm the same real-run validator output marks `doctor_clean=pass`.
+- Confirm `dittoctl node doctor all` returns no `CRITICAL` findings on the target preprod cluster.
 
 ## Supported Production TCP Topology
 
@@ -49,4 +67,6 @@ This checklist is the repo-side source of truth for what must be green before a 
 - This checklist closes Sprint 1: gate alignment and source-of-truth drift protection.
 - It does not by itself make the project production-ready.
 - Sprint 1 and Sprint 2 repo-side closure are complete.
-- Sprint 3 is the next open area: pre-prod verification and operational readiness.
+- Sprint 3 repo-side progress is in place, but the real-run validation still needs execution on the self-hosted preprod path.
+- Sprint 4 repo-side closure is in place: perf gate scope is clarified, and the current coverage policy is documented as required base-branch no-regression across the active lanes.
+- The remaining open work is now operational Sprint 3 execution plus the final Sprint 5 production-readiness pass.

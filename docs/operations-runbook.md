@@ -164,4 +164,24 @@ Tuning notes:
 - Real-run mode:
   - targets the `ditto-docker` environment from a self-hosted Windows runner,
   - validates node-loss / recovery, restore telemetry, namespace quota telemetry, and namespace/hot-key probe paths,
+  - validates release go/no-go security posture from `/health/summary` (`strict_security_enforced`, `insecure_runtime_enabled`, `tcp_production_safe`, `tcp_supported_topology`),
+  - runs `dittoctl node doctor all` against the same preprod cluster using authenticated HTTPS access to `ditto-mgmt`,
   - should be used before production-significant releases or major runtime changes.
+
+## 8) Release Go/No-Go Checklist
+
+Before treating a build as a production-ready candidate, confirm all of these in the same preprod validation window:
+
+- `Runbook Validation (Real Run Gate)` finished successfully on the self-hosted Windows runner.
+- Every node reports `strict_security_enforced=true`.
+- Every node reports `insecure_runtime_enabled=false`.
+- Every node reports `tcp_production_safe=true`.
+- Recovery and probe validation completed without regressions:
+  - node-loss scenario recovered,
+  - snapshot restore counters stayed monotonic,
+  - namespace quota telemetry remained sane,
+  - namespace and hot-key probe traffic appeared in telemetry.
+- `dittoctl node doctor all` returns no `CRITICAL` findings for the target preprod cluster.
+
+The real-run validator now emits a `go_no_go` block in its JSON output so the release decision has a compact, scriptable summary in addition to the detailed scenario results.
+That same JSON output now includes `doctor_output`, which captures the `dittoctl node doctor all` verdict from the same validation window.

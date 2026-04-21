@@ -115,6 +115,16 @@ function Assert-InRange {
     }
 }
 
+function Assert-Condition {
+    param(
+        [bool]$Condition,
+        [string]$Label
+    )
+    if (-not $Condition) {
+        throw $Label
+    }
+}
+
 function Emit-RunbookDiagnostics {
     Write-Host "Runbook diagnostics: collecting node summaries and recent logs..."
     $nodes = @("ditto-node-1", "ditto-node-2", "ditto-node-3", "ditto-mgmt")
@@ -139,6 +149,43 @@ function Emit-RunbookDiagnostics {
     }
 }
 
+function Invoke-DittoctlDoctor {
+    param(
+        [string]$RepoRoot
+    )
+
+    $tempConfig = Join-Path ([System.IO.Path]::GetTempPath()) ("dittoctl-preprod-" + [guid]::NewGuid().ToString("N") + ".toml")
+    $configBody = @"
+[mgmt]
+url = "https://localhost:7781"
+timeout_ms = 5000
+username = "admin"
+password = "qwe123asd"
+insecure_skip_verify = true
+
+[output]
+format = "binary"
+"@
+
+    try {
+        Set-Content -LiteralPath $tempConfig -Value $configBody -Encoding ASCII
+        Push-Location $RepoRoot
+        try {
+            $doctorOutput = & cargo run -q -p dittoctl -- --config $tempConfig node doctor all 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "dittoctl node doctor all failed:`n$($doctorOutput -join "`n")"
+            }
+        } finally {
+            Pop-Location
+        }
+        return ($doctorOutput -join "`n")
+    } finally {
+        if (Test-Path -LiteralPath $tempConfig) {
+            Remove-Item -LiteralPath $tempConfig -Force
+        }
+    }
+}
+
 Write-Host "Runbook validation started (node-loss, restore telemetry, quota/namespace telemetry)."
 Write-Host "ComposeDir=$ComposeDir Namespace=$Namespace DryRun=$DryRun"
 
@@ -146,6 +193,8 @@ $scenario = [ordered]@{
     node_loss = "pending"
     restore_telemetry = "pending"
     quota_namespace_telemetry = "pending"
+    go_no_go_operational_checks = "pending"
+    operator_diagnostics = "pending"
 }
 
 $preSummary = $null
@@ -178,6 +227,8 @@ try {
     if ($DryRun) {
         $scenario.restore_telemetry = "dry-run"
         $scenario.quota_namespace_telemetry = "dry-run"
+        $scenario.go_no_go_operational_checks = "dry-run"
+        $scenario.operator_diagnostics = "dry-run"
     } else {
         $nodeSummaries = @{}
         foreach ($node in @("ditto-node-1", "ditto-node-2", "ditto-node-3")) {
@@ -196,7 +247,13 @@ try {
                 "snapshot_restore_success_ratio_pct",
                 "namespace_quota_reject_total",
                 "namespace_latency_top",
-                "hot_key_top_usage"
+                "hot_key_top_usage",
+                "tcp_client_auth_enabled",
+                "tcp_client_bind_loopback_only",
+                "tcp_production_safe",
+                "tcp_supported_topology",
+                "insecure_runtime_enabled",
+                "strict_security_enforced"
             )) {
                 Assert-HasField -Obj $summary -FieldName $f
             }
@@ -207,6 +264,9 @@ try {
             if ($summary.availability -notin @("ready", "healthy", "degraded", "unavailable")) {
                 throw "$($kv.Key).availability has unexpected value: $($summary.availability)"
             }
+            Assert-Condition -Condition (-not [bool]$summary.insecure_runtime_enabled) -Label "$($kv.Key) is running with insecure runtime bypass enabled"
+            Assert-Condition -Condition ([bool]$summary.strict_security_enforced) -Label "$($kv.Key) is not enforcing strict security"
+            Assert-Condition -Condition ([bool]$summary.tcp_production_safe) -Label "$($kv.Key) reports unsupported TCP production topology"
         }
 
         $probeKey = "runbook_probe_" + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
@@ -239,8 +299,34 @@ try {
             }
         }
 
+        $repoRoot = Split-Path -Parent $PSScriptRoot
+        if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+            throw "cargo is required on the self-hosted runner to execute dittoctl doctor during real-run validation"
+        }
+        $doctorOutput = Invoke-DittoctlDoctor -RepoRoot $repoRoot
+
         $scenario.restore_telemetry = "ok"
         $scenario.quota_namespace_telemetry = "ok"
+        $scenario.go_no_go_operational_checks = "ok"
+        $scenario.operator_diagnostics = "ok"
+    }
+
+    $goNoGo = if ($DryRun) {
+        [ordered]@{
+            strict_security_enforced = "dry-run"
+            tcp_topology_supported = "dry-run"
+            recovery_and_telemetry_validated = "dry-run"
+            doctor_clean = "dry-run"
+            release_candidate = "dry-run"
+        }
+    } else {
+        [ordered]@{
+            strict_security_enforced = "pass"
+            tcp_topology_supported = "pass"
+            recovery_and_telemetry_validated = "pass"
+            doctor_clean = "pass"
+            release_candidate = "pass"
+        }
     }
 
     $result = [ordered]@{
@@ -249,6 +335,8 @@ try {
         namespace = $Namespace
         dry_run = [bool]$DryRun
         scenarios = $scenario
+        go_no_go = $goNoGo
+        doctor_output = if ($DryRun) { "dry-run" } else { $doctorOutput }
     }
 
     $result | ConvertTo-Json -Depth 6 | Write-Host

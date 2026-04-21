@@ -15,9 +15,11 @@ mod commands;
 mod config;
 
 use anyhow::Result;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use clap::{Parser, Subcommand};
 use commands::{cache::CacheCommand, cluster::ClusterCommand, node::NodeCommand};
 use config::CtlConfig;
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 
 /// dittoctl – Ditto cluster admin CLI (talks to ditto-mgmt)
 #[derive(Debug, Parser)]
@@ -72,9 +74,30 @@ async fn main() -> Result<()> {
 
     let mut cfg = CtlConfig::load()?;
 
-    let http_client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(cfg.mgmt.timeout_ms))
-        .build()?;
+    let mut builder =
+        reqwest::Client::builder().timeout(std::time::Duration::from_millis(cfg.mgmt.timeout_ms));
+
+    if cfg.mgmt.insecure_skip_verify {
+        builder = builder.danger_accept_invalid_certs(true);
+    }
+
+    match (&cfg.mgmt.username, &cfg.mgmt.password) {
+        (Some(username), Some(password)) => {
+            let mut headers = HeaderMap::new();
+            let auth = STANDARD.encode(format!("{}:{}", username, password));
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Basic {}", auth))?,
+            );
+            builder = builder.default_headers(headers);
+        }
+        (None, None) => {}
+        _ => anyhow::bail!(
+            "dittoctl config requires both mgmt.username and mgmt.password when Basic Auth is configured"
+        ),
+    }
+
+    let http_client = builder.build()?;
 
     match cli.resource {
         Resource::Node { cmd } => commands::node::run(cmd, &mut cfg, &http_client).await?,
