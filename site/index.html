@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ditto Cache | Fast, consistent distributed cache</title>
+    <meta name="description" content="Ditto is a strongly consistent distributed cache with fast local reads, HTTP and TCP APIs, watch support, namespaces, admin UI, and practical observability.">
+    <meta name="keywords" content="Ditto, cache, distributed cache, strong consistency, TTL, watch, HTTP API, TCP API, namespace, admin UI">
+    <meta property="og:title" content="Ditto Cache">
+    <meta property="og:description" content="Fast, consistent distributed cache that is pleasant to use from both app and ops sides.">
+    <meta property="og:type" content="website">
+    <meta property="og:image" content="assets/images/ditto.png">
+    <link rel="stylesheet" href="assets/css/fonts.css">
+    <link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+    <div class="page-shell">
+        <header class="topbar">
+            <div class="container nav-row">
+                <a class="brand" href="#top" aria-label="Ditto home">
+                    <img src="assets/images/ditto.png" alt="Ditto logo">
+                    <span>Ditto</span>
+                </a>
+                <nav class="nav">
+                    <a href="#why" data-i18n="nav.why">Why Ditto</a>
+                    <a href="#capabilities" data-i18n="nav.capabilities">Capabilities</a>
+                    <a href="#interfaces" data-i18n="nav.interfaces">Interfaces</a>
+                    <a href="#ops" data-i18n="nav.ops">Ops</a>
+                </nav>
+                <button class="lang-toggle" id="langToggle" type="button" aria-label="Switch language">
+                    <span id="langToggleLabel">HU</span>
+                </button>
+            </div>
+        </header>
+
+        <main id="top">
+            <section class="hero">
+                <div class="container hero-grid">
+                    <div class="hero-copy">
+                        <p class="eyebrow" data-i18n="hero.eyebrow">Distributed cache, without the drama</p>
+                        <h1 data-i18n="hero.title">Fast cache. Clear behavior.</h1>
+                        <p class="hero-lead" data-i18n="hero.lead">
+                            Ditto is a strongly consistent distributed in-memory key-value cache built to stay predictable under real usage. The fast path matters, but so do the daily touchpoints: APIs, watch flows, namespaces, admin UI, CLI, and observability.
+                        </p>
+                        <div class="hero-actions">
+                            <a class="button primary" href="#capabilities" data-i18n="hero.primaryCta">Show the capabilities</a>
+                            <a class="button secondary" href="#interfaces" data-i18n="hero.secondaryCta">See how it is used</a>
+                        </div>
+                        <ul class="hero-points">
+                            <li data-i18n="hero.point1">Local reads, strong write consistency</li>
+                            <li data-i18n="hero.point2">HTTP and TCP access to the same cache core</li>
+                            <li data-i18n="hero.point3">TTL, LFU eviction, watch, pattern ops, namespaces</li>
+                        </ul>
+                    </div>
+
+                    <div class="hero-card">
+                        <img class="hero-logo" src="assets/images/ditto.png" alt="Ditto">
+                        <div class="hero-stat-grid">
+                            <article>
+                                <strong>Local reads</strong>
+                                <span data-i18n="hero.signal1">Fast GETs without unnecessary detours.</span>
+                            </article>
+                            <article>
+                                <strong>Strong writes</strong>
+                                <span data-i18n="hero.signal2">A write is done when the system says it is really done.</span>
+                            </article>
+                            <article>
+                                <strong>Dual API</strong>
+                                <span data-i18n="hero.signal3">Binary TCP and HTTP API on the same core behavior.</span>
+                            </article>
+                            <article>
+                                <strong>Operable</strong>
+                                <span data-i18n="hero.signal4">Dashboard, CLI, stats, health summary, admin control.</span>
+                            </article>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="section" id="why">
+                <div class="container">
+                    <div class="section-head">
+                        <p class="eyebrow" data-i18n="why.eyebrow">Why it matters</p>
+                        <h2 data-i18n="why.title">Not just a cache engine, but a cache system that feels usable.</h2>
+                        <p data-i18n="why.lead">
+                            Ditto is not built around "it will probably work somehow". It is built around making the cache layer predictable for applications and manageable for operators. The result is something fast, visible, and developer-friendly at the same time.
+                        </p>
+                    </div>
+
+                    <div class="card-grid three">
+                        <article class="info-card">
+                            <h3 data-i18n="why.card1Title">Predictable reads and writes</h3>
+                            <p data-i18n="why.card1Text">Local reads stay fast, while the write model stays strongly consistent. That is useful when you do not want every cache decision to come with a paragraph of caveats.</p>
+                        </article>
+                        <article class="info-card">
+                            <h3 data-i18n="why.card2Title">Comfortable from the app side</h3>
+                            <p data-i18n="why.card2Text">Alongside basic GET, SET and DELETE, you get batch writes, watch, TTL updates by pattern, deletes by pattern, and namespace support. Less helper code around the cache, more actual product work.</p>
+                        </article>
+                        <article class="info-card">
+                            <h3 data-i18n="why.card3Title">Clear from the ops side</h3>
+                            <p data-i18n="why.card3Text">Node state, health summary, memory usage, evictions, request and error stats, admin UI and CLI together make the system feel manageable instead of mysterious.</p>
+                        </article>
+                    </div>
+                </div>
+            </section>
+
+            <section class="section accent-section" id="capabilities">
+                <div class="container">
+                    <div class="section-head narrow">
+                        <p class="eyebrow" data-i18n="capabilities.eyebrow">Capabilities</p>
+                        <h2 data-i18n="capabilities.title">The things that make Ditto easy to move with.</h2>
+                    </div>
+
+                    <div class="feature-list">
+                        <article class="feature-item">
+                            <h3 data-i18n="capabilities.item1Title">TTL and memory limits</h3>
+                            <p data-i18n="capabilities.item1Text">Per-key TTL, global default TTL, background sweep and LFU eviction. The cache does not just grow forever, it behaves like a system that expects real load.</p>
+                        </article>
+                        <article class="feature-item">
+                            <h3 data-i18n="capabilities.item2Title">Watch flows over TCP</h3>
+                            <p data-i18n="capabilities.item2Text">If you want to follow key changes in near real time, watch and unwatch plus pushed watch events are already part of the model.</p>
+                        </article>
+                        <article class="feature-item">
+                            <h3 data-i18n="capabilities.item3Title">Pattern-based operations</h3>
+                            <p data-i18n="capabilities.item3Text">Delete keys by pattern, or update TTL for a whole key group. Very handy for sessions, feature caches, or tenant-scoped keyspaces.</p>
+                        </article>
+                        <article class="feature-item">
+                            <h3 data-i18n="capabilities.item4Title">Namespaces and quota</h3>
+                            <p data-i18n="capabilities.item4Text">Namespaces separate the cache logically, while quota helps make sure one tenant or use case cannot crowd everyone else out.</p>
+                        </article>
+                        <article class="feature-item">
+                            <h3 data-i18n="capabilities.item5Title">Persistence when you need it</h3>
+                            <p data-i18n="capabilities.item5Text">Backup, export and import paths are part of the story too, so Ditto is not limited to purely in-memory thinking. Persistence can be controlled explicitly instead of being an accidental side effect.</p>
+                        </article>
+                        <article class="feature-item">
+                            <h3 data-i18n="capabilities.item6Title">HTTP and TCP together</h3>
+                            <p data-i18n="capabilities.item6Text">REST API for straightforward integrations, binary TCP when you want a leaner or more interactive model. You do not have to force every client into one style.</p>
+                        </article>
+                        <article class="feature-item">
+                            <h3 data-i18n="capabilities.item7Title">Healthy diagnostics</h3>
+                            <p data-i18n="capabilities.item7Text">Stats, health summary, latency estimates, error breakdowns, quota pressure, hot-key and repair signals. Not a black box, but an observable component.</p>
+                        </article>
+                    </div>
+                </div>
+            </section>
+
+            <section class="section" id="interfaces">
+                <div class="container interface-layout">
+                    <div>
+                        <p class="eyebrow" data-i18n="interfaces.eyebrow">Interfaces</p>
+                        <h2 data-i18n="interfaces.title">You do not need a long explanation to start using it.</h2>
+                        <p class="section-copy" data-i18n="interfaces.lead">
+                            On the data side, Ditto gives you two clear entry points: HTTP and TCP. That means teams can use it in the way that feels natural for them.
+                        </p>
+                    </div>
+
+                    <div class="card-grid two">
+                        <article class="info-card code-card">
+                            <h3 data-i18n="interfaces.httpTitle">HTTP API</h3>
+<pre><code>GET    /ping
+GET    /stats
+GET    /health/summary
+GET    /key/{key}
+PUT    /key/{key}?ttl=60
+DELETE /key/{key}
+POST   /keys/batch
+POST   /keys/delete-by-pattern
+POST   /keys/ttl-by-pattern</code></pre>
+                            <p data-i18n="interfaces.httpText">A good fit when you want quick integrations, scripts, or simple service-to-service communication over REST.</p>
+                        </article>
+
+                        <article class="info-card code-card">
+                            <h3 data-i18n="interfaces.tcpTitle">TCP protocol</h3>
+<pre><code>Ping
+Get / Set / Delete
+Watch / Unwatch
+Wait for watch event
+DeleteByPattern
+SetTtlByPattern
+Optional auth token</code></pre>
+                            <p data-i18n="interfaces.tcpText">A good fit when your application wants a persistent connection, watch events, or lower protocol overhead.</p>
+                        </article>
+                    </div>
+                </div>
+            </section>
+
+            <section class="section dark-section" id="ops">
+                <div class="container">
+                    <div class="section-head">
+                        <p class="eyebrow" data-i18n="ops.eyebrow">For operators</p>
+                        <h2 data-i18n="ops.title">The admin side is part of the product, not an afterthought.</h2>
+                        <p data-i18n="ops.lead">
+                            `ditto-mgmt` gives you a web UI and admin API, while `dittoctl` gives you a scriptable CLI. So the same cache can stay fast and still remain manageable when multiple nodes, namespaces and use cases are involved.
+                        </p>
+                    </div>
+
+                    <div class="card-grid three">
+                        <article class="security-card">
+                            <h3 data-i18n="ops.card1Title">Dashboard and node control</h3>
+                            <p data-i18n="ops.card1Text">Real-time cluster view, node states, memory usage, active and syncing states, and the typical controls operators actually need.</p>
+                        </article>
+                        <article class="security-card">
+                            <h3 data-i18n="ops.card2Title">Health and metrics mindset</h3>
+                            <p data-i18n="ops.card2Text">Health summary and stats do not just answer "is it alive", but also show how the cache behaves under pressure and around failure paths.</p>
+                        </article>
+                        <article class="security-card">
+                            <h3 data-i18n="ops.card3Title">Security and control</h3>
+                            <p data-i18n="ops.card3Text">Auth, TLS, policy gates and admin channels push Ditto toward deliberate, controlled usage instead of accidental exposure. The same goes for persistence: backup and restore paths are there, but they stay explicitly governed.</p>
+                        </article>
+                    </div>
+                </div>
+            </section>
+
+            <section class="section">
+                <div class="container">
+                    <div class="section-head narrow">
+                        <p class="eyebrow" data-i18n="clients.eyebrow">Clients</p>
+                        <h2 data-i18n="clients.title">It is not tied to one language.</h2>
+                        <p data-i18n="clients.lead">
+                            The related Ditto clients live in a separate repository, and there is support for Go, Java, Node.js and Python. For this site, the important part is simply that Ditto can fit multi-language teams without drama.
+                        </p>
+                    </div>
+
+                    <div class="pill-row">
+                        <span data-i18n="clients.pill1">Go client</span>
+                        <span data-i18n="clients.pill2">Java client</span>
+                        <span data-i18n="clients.pill3">Node.js client</span>
+                        <span data-i18n="clients.pill4">Python client</span>
+                        <span data-i18n="clients.pill5">HTTP + TCP</span>
+                        <span data-i18n="clients.pill6">Watch support</span>
+                    </div>
+                </div>
+            </section>
+
+            <footer class="footer-section">
+                <div class="container footer-grid">
+                    <div class="footer-brand">
+                        <img src="assets/images/ditto.png" alt="Ditto logo">
+                        <div>
+                            <strong data-i18n="footer.brand">Ditto Cache</strong>
+                            <p data-i18n="footer.copy">Fast, consistent distributed cache with practical APIs, observability, and admin control.</p>
+                        </div>
+                    </div>
+                    <nav class="footer-links" aria-label="Footer">
+                        <a href="#why" data-i18n="footer.link1">Why Ditto</a>
+                        <a href="#capabilities" data-i18n="footer.link2">Capabilities</a>
+                        <a href="#interfaces" data-i18n="footer.link3">Interfaces</a>
+                        <a href="#ops" data-i18n="footer.link4">Ops</a>
+                    </nav>
+                </div>
+            </footer>
+        </main>
+    </div>
+
+    <script src="assets/js/vendor/i18next.min.js"></script>
+    <script src="assets/js/main.js"></script>
+</body>
+</html>
