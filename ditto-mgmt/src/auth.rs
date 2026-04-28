@@ -12,10 +12,11 @@ use crate::api::SharedState;
 use axum::{
     body::Body,
     extract::State,
-    http::{header, Request, StatusCode},
+    http::{header, Method, Request, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use reqwest::Url;
 
 /// Axum middleware: enforce HTTP Basic Auth when `[admin]` is configured.
 pub async fn basic_auth_middleware(
@@ -23,6 +24,14 @@ pub async fn basic_auth_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
+    if !same_origin_for_unsafe_request(&req) {
+        return (
+            StatusCode::FORBIDDEN,
+            Body::from("cross-origin state-changing request rejected"),
+        )
+            .into_response();
+    }
+
     let (expected_user, expected_hash) = match &state.cfg.admin.password_hash {
         None => return next.run(req).await, // auth not configured → pass through
         Some(hash) => {
@@ -74,5 +83,95 @@ pub async fn basic_auth_middleware(
             Body::empty(),
         )
             .into_response()
+    }
+}
+
+fn same_origin_for_unsafe_request(req: &Request<Body>) -> bool {
+    if matches!(
+        *req.method(),
+        Method::GET | Method::HEAD | Method::OPTIONS | Method::TRACE
+    ) {
+        return true;
+    }
+
+    let Some(host) = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(normalize_authority)
+    else {
+        return false;
+    };
+
+    let origin = req
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .and_then(origin_authority);
+    if let Some(origin) = origin {
+        return origin == host;
+    }
+
+    let referer = req
+        .headers()
+        .get(header::REFERER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(origin_authority);
+    match referer {
+        Some(referer) => referer == host,
+        None => true,
+    }
+}
+
+fn origin_authority(value: &str) -> Option<String> {
+    Url::parse(value)
+        .ok()
+        .and_then(|url| url.host_str().map(|host| (host.to_string(), url.port())))
+        .map(|(host, port)| match port {
+            Some(port) => normalize_authority(&format!("{host}:{port}")),
+            None => normalize_authority(&host),
+        })
+}
+
+fn normalize_authority(value: &str) -> String {
+    value.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::same_origin_for_unsafe_request;
+    use axum::{body::Body, http::Request};
+
+    #[test]
+    fn unsafe_request_rejects_cross_origin_browser_origin() {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/nodes/local/set-active")
+            .header("host", "localhost:7781")
+            .header("origin", "https://evil.example")
+            .body(Body::empty())
+            .unwrap();
+
+        assert!(!same_origin_for_unsafe_request(&req));
+    }
+
+    #[test]
+    fn unsafe_request_allows_same_origin_and_cli_without_origin() {
+        let same_origin = Request::builder()
+            .method("POST")
+            .uri("/api/nodes/local/set-active")
+            .header("host", "localhost:7781")
+            .header("origin", "https://localhost:7781")
+            .body(Body::empty())
+            .unwrap();
+        assert!(same_origin_for_unsafe_request(&same_origin));
+
+        let cli = Request::builder()
+            .method("POST")
+            .uri("/api/nodes/local/set-active")
+            .header("host", "localhost:7781")
+            .body(Body::empty())
+            .unwrap();
+        assert!(same_origin_for_unsafe_request(&cli));
     }
 }

@@ -16,7 +16,7 @@ const MAX_TTL_SECS: u64 = 30 * 24 * 60 * 60;
 /// (CWE-117 / CodeQL rust/log-injection).
 /// Using `String::replace` as recommended by the CodeQL query documentation.
 pub(crate) fn sanitize_for_log(s: &str) -> String {
-    s.replace('\n', "").replace('\r', "")
+    s.replace(['\n', '\r'], "")
 }
 
 /// Hard upper bound on how many bytes an LZ4-compressed entry may expand to
@@ -95,7 +95,7 @@ impl From<&Entry> for ExportEntry {
                 .value
                 .get(..4)
                 .map(|h| u32::from_le_bytes(h.try_into().unwrap()) as u64)
-                .map_or(false, |declared| declared > MAX_DECOMPRESSED_FALLBACK_BYTES);
+                .is_some_and(|declared| declared > MAX_DECOMPRESSED_FALLBACK_BYTES);
             if oversized {
                 // Return the compressed bytes as-is rather than risk a memory bomb.
                 e.value.to_vec()
@@ -555,6 +555,7 @@ impl KvStore {
     /// Returns the number of keys updated.
     pub fn set_ttl_by_pattern(&self, pattern: &str, ttl_secs: Option<u64>) -> usize {
         let mut inner = self.inner.lock().unwrap();
+        let ttl_secs = ttl_secs.map(|s| s.min(MAX_TTL_SECS));
         let expires_at = ttl_secs.map(|s| Instant::now() + Duration::from_secs(s));
         let mut count = 0usize;
         for (key, entry) in inner.data.iter_mut() {
@@ -654,4 +655,30 @@ fn glob_match(pattern: &str, s: &str) -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{KvStore, MAX_TTL_SECS};
+    use bytes::Bytes;
+
+    #[test]
+    fn set_ttl_by_pattern_clamps_extreme_ttl() {
+        let store = KvStore::new(1, 0, 1024, 10, false, 4096);
+        store.set(
+            "tenant::key".to_string(),
+            Bytes::from_static(b"value"),
+            1,
+            None,
+        );
+
+        assert_eq!(store.set_ttl_by_pattern("tenant::*", Some(u64::MAX)), 1);
+
+        let ttl = store
+            .get("tenant::key")
+            .and_then(|entry| entry.ttl_remaining_secs())
+            .expect("ttl should be set");
+        assert!(ttl <= MAX_TTL_SECS);
+        assert!(ttl >= MAX_TTL_SECS.saturating_sub(1));
+    }
 }

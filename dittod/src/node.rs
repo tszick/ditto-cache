@@ -647,21 +647,25 @@ impl NodeHandle {
             | ClientRequest::Watch { namespace, .. }
             | ClientRequest::Unwatch { namespace, .. }
             | ClientRequest::DeleteByPattern { namespace, .. }
-            | ClientRequest::SetTtlByPattern { namespace, .. } => Some(
-                namespace.clone().unwrap_or_else(|| {
+            | ClientRequest::SetTtlByPattern { namespace, .. } => {
+                Some(namespace.clone().unwrap_or_else(|| {
                     self.config
                         .lock()
                         .unwrap()
                         .tenancy
                         .default_namespace
                         .clone()
-                }),
-            ),
+                }))
+            }
             ClientRequest::Ping | ClientRequest::Auth { .. } => None,
         }
     }
 
-    fn request_hot_key_label(&self, req: &ClientRequest, namespace: Option<&str>) -> Option<String> {
+    fn request_hot_key_label(
+        &self,
+        req: &ClientRequest,
+        namespace: Option<&str>,
+    ) -> Option<String> {
         let key = match req {
             ClientRequest::Get { key, .. }
             | ClientRequest::Set { key, .. }
@@ -725,14 +729,8 @@ impl NodeHandle {
             .map(|(namespace, runtime)| NamespaceLatencySummary {
                 namespace: namespace.clone(),
                 request_total: runtime.request_total,
-                latency_p95_estimate_ms: Self::estimated_latency_percentile_ms(
-                    runtime.buckets,
-                    95,
-                ),
-                latency_p99_estimate_ms: Self::estimated_latency_percentile_ms(
-                    runtime.buckets,
-                    99,
-                ),
+                latency_p95_estimate_ms: Self::estimated_latency_percentile_ms(runtime.buckets, 95),
+                latency_p99_estimate_ms: Self::estimated_latency_percentile_ms(runtime.buckets, 99),
             })
             .collect();
         rows.sort_by(|a, b| b.request_total.cmp(&a.request_total));
@@ -1180,6 +1178,7 @@ impl NodeHandle {
     ///
     /// Returns `NodeInactive` immediately when the node is in maintenance mode.
     /// Reads are served locally; writes are coordinated or forwarded to the primary.
+    #[allow(dead_code)]
     pub async fn handle_client(self: &Arc<Self>, req: ClientRequest) -> ClientResponse {
         self.handle_client_with_source(req, ClientRequestSource::Internal)
             .await
@@ -1469,7 +1468,9 @@ impl NodeHandle {
             )
         };
         let required_peer_acks = Self::required_prepare_peer_acks(quorum_mode, peers.len());
-        let prepare_acks = self.broadcast_and_count_acks(&peers, &prepare_msg, timeout).await;
+        let prepare_acks = self
+            .broadcast_and_count_acks(&peers, &prepare_msg, timeout)
+            .await;
 
         if prepare_acks < required_peer_acks {
             warn!("PREPARE timed out for log_index={}", log_index);
@@ -1484,7 +1485,9 @@ impl NodeHandle {
 
         // --- COMMIT phase ---
         let commit_msg = ClusterMessage::Commit { log_index };
-        let _ = self.broadcast_and_count_acks(&peers, &commit_msg, timeout).await;
+        let _ = self
+            .broadcast_and_count_acks(&peers, &commit_msg, timeout)
+            .await;
 
         self.write_log.lock().await.commit(log_index);
         self.active_set.lock().await.set_local_applied(log_index);
@@ -1764,7 +1767,7 @@ impl NodeHandle {
             ClusterMessage::Admin(admin_req) => {
                 let response = Arc::clone(&self).handle_admin(admin_req).await;
                 // Wrap response back into AdminResponse envelope.
-                Some(ClusterMessage::AdminResponse(response))
+                Some(ClusterMessage::AdminResponse(Box::new(response)))
             }
 
             _ => None,
@@ -2360,7 +2363,7 @@ impl NodeHandle {
         match req {
             AdminRequest::Describe => AdminResponse::Properties(self.all_properties().await),
 
-            AdminRequest::GetStats => AdminResponse::Stats(self.stats().await),
+            AdminRequest::GetStats => AdminResponse::Stats(Box::new(self.stats().await)),
 
             AdminRequest::ListKeys { pattern } => {
                 AdminResponse::Keys(self.store.keys(pattern.as_deref()))
@@ -2402,7 +2405,7 @@ impl NodeHandle {
                                 );
                                 AdminResponse::KeyPropertyUpdated
                             }
-                            Err(msg) if msg == "key not found" => AdminResponse::NotFound,
+                            Err("key not found") => AdminResponse::NotFound,
                             Err(msg) => AdminResponse::Error {
                                 message: msg.to_string(),
                             },
@@ -2486,7 +2489,7 @@ impl NodeHandle {
                         message: "Restore is disabled by persistence policy. Require DITTO_PERSISTENCE_PLATFORM_ALLOWED=true, DITTO_PERSISTENCE_IMPORT_ALLOWED=true and runtime property persistence-runtime-enabled=true.".into(),
                     };
                 }
-                match crate::backup::restore_latest_snapshot(&*self, &cfg) {
+                match crate::backup::restore_latest_snapshot(&self, &cfg) {
                     Ok(Some(loaded)) => {
                         self.record_snapshot_restore(
                             loaded.path.clone(),
@@ -3138,14 +3141,12 @@ impl NodeHandle {
             let local_id = set.local_id();
 
             // Try primary first.
-            let primary_addr = primary_id
-                .filter(|pid| *pid != local_id)
-                .and_then(|pid| {
-                    set.all_nodes()
-                        .into_iter()
-                        .find(|n| n.id == pid)
-                        .map(|n| SocketAddr::new(n.addr.ip(), n.cluster_port))
-                });
+            let primary_addr = primary_id.filter(|pid| *pid != local_id).and_then(|pid| {
+                set.all_nodes()
+                    .into_iter()
+                    .find(|n| n.id == pid)
+                    .map(|n| SocketAddr::new(n.addr.ip(), n.cluster_port))
+            });
 
             // Fallback: most advanced known peer (or any known peer when index
             // metadata is still converging immediately after startup).
@@ -3241,7 +3242,7 @@ impl NodeHandle {
     // -----------------------------------------------------------------------
 
     /// Re-sync from peers after a runtime Inactive → Active transition.
-
+    ///
     /// Re-sync from the primary after a runtime Inactive to Active transition,
     /// after a backup, or when the version-check detects lag.
     ///
@@ -3476,7 +3477,7 @@ impl NodeHandle {
     ) -> Option<AdminResponse> {
         let msg = ClusterMessage::Admin(req);
         match send_cluster(addr, &msg, self.tls_connector.as_ref()).await {
-            Ok(Some(ClusterMessage::AdminResponse(resp))) => Some(resp),
+            Ok(Some(ClusterMessage::AdminResponse(resp))) => Some(*resp),
             _ => None,
         }
     }
@@ -3485,7 +3486,11 @@ impl NodeHandle {
         every > 0 && run_no > 0 && run_no.is_multiple_of(every)
     }
 
-    fn should_throttle_anti_entropy_repair(now_ms: u64, last_ms: u64, min_interval_ms: u64) -> bool {
+    fn should_throttle_anti_entropy_repair(
+        now_ms: u64,
+        last_ms: u64,
+        min_interval_ms: u64,
+    ) -> bool {
         now_ms < last_ms.saturating_add(min_interval_ms.max(1))
     }
 
@@ -3495,7 +3500,9 @@ impl NodeHandle {
         }
 
         let window_ms = 60_000;
-        let start_ms = self.read_repair_budget_window_start_ms.load(Ordering::Relaxed);
+        let start_ms = self
+            .read_repair_budget_window_start_ms
+            .load(Ordering::Relaxed);
         if start_ms == 0 || now_ms >= start_ms.saturating_add(window_ms) {
             self.read_repair_budget_window_start_ms
                 .store(now_ms, Ordering::Relaxed);
@@ -3519,9 +3526,7 @@ impl NodeHandle {
         if max_checks > 0 && consumed_checks >= max_checks {
             return true;
         }
-        if max_duration_ms > 0
-            && started_at.elapsed() >= Duration::from_millis(max_duration_ms)
-        {
+        if max_duration_ms > 0 && started_at.elapsed() >= Duration::from_millis(max_duration_ms) {
             return true;
         }
         false
@@ -4083,7 +4088,10 @@ impl NodeHandle {
                     .latency_p99_estimate_ms
                     .map(|v| v.to_string())
                     .unwrap_or_else(|| "-".to_string());
-                format!("{}:{}(p95={},p99={})", r.namespace, r.request_total, p95, p99)
+                format!(
+                    "{}:{}(p95={},p99={})",
+                    r.namespace, r.request_total, p95, p99
+                )
             })
             .collect::<Vec<_>>()
             .join(",")
@@ -4192,16 +4200,17 @@ impl NodeHandle {
             self.snapshot_restore_success_total.load(Ordering::Relaxed);
         let snapshot_restore_failure_total =
             self.snapshot_restore_failure_total.load(Ordering::Relaxed);
-        let snapshot_restore_not_found_total =
-            self.snapshot_restore_not_found_total.load(Ordering::Relaxed);
-        let snapshot_restore_policy_block_total =
-            self.snapshot_restore_policy_block_total.load(Ordering::Relaxed);
+        let snapshot_restore_not_found_total = self
+            .snapshot_restore_not_found_total
+            .load(Ordering::Relaxed);
+        let snapshot_restore_policy_block_total = self
+            .snapshot_restore_policy_block_total
+            .load(Ordering::Relaxed);
         let snapshot_restore_success_ratio_pct = if snapshot_restore_attempt_total == 0 {
             100
         } else {
-            ((snapshot_restore_success_total.saturating_mul(100))
-                / snapshot_restore_attempt_total)
-            .min(100)
+            ((snapshot_restore_success_total.saturating_mul(100)) / snapshot_restore_attempt_total)
+                .min(100)
         };
         let circuit_breaker_state = if circuit_breaker_enabled {
             self.circuit.lock().unwrap().state.as_str().to_string()
@@ -4535,7 +4544,10 @@ mod tests {
 
         let started_old = Instant::now() - Duration::from_millis(20);
         assert!(NodeHandle::anti_entropy_budget_exhausted(
-            started_old, 0, 0, 10
+            started_old,
+            0,
+            0,
+            10
         ));
     }
 
@@ -4650,6 +4662,95 @@ mod tests {
         assert_eq!(stats.snapshot_restore_failure_total, 0);
         assert_eq!(stats.snapshot_restore_not_found_total, 0);
         assert_eq!(stats.snapshot_restore_policy_block_total, 0);
+
+        let _ = std::fs::remove_dir_all(backup_dir);
+    }
+
+    #[tokio::test]
+    async fn restore_snapshot_rejects_file_above_size_limit() {
+        let backup_dir = temp_backup_dir("restore-size-limit");
+        let mut cfg = Config::default();
+        cfg.backup.path = backup_dir.clone();
+        cfg.backup.max_snapshot_bytes = 4;
+        cfg.persistence.platform_allowed = true;
+        cfg.persistence.runtime_enabled = true;
+        cfg.persistence.import_allowed = true;
+        let node = test_node(cfg);
+
+        let snapshot_entries = vec![(
+            "snap:key".to_string(),
+            ExportEntry {
+                value: b"snap-value".to_vec(),
+                version: 42,
+                expires_at_ms: None,
+            },
+        )];
+        let data = bincode::serialize(&snapshot_entries).expect("serialize snapshot");
+        let file =
+            std::path::Path::new(&backup_dir).join("test-node_backup_2099.01.01_00-00-00_UTC.bin");
+        write_snapshot_with_checksum(&file, &data);
+
+        let resp = Arc::clone(&node)
+            .handle_admin(AdminRequest::RestoreLatestSnapshot)
+            .await;
+        match resp {
+            AdminResponse::Error { message } => {
+                assert!(message.contains("max_snapshot_bytes"));
+            }
+            other => panic!("expected AdminResponse::Error, got {:?}", other),
+        }
+
+        let stats = node.stats().await;
+        assert_eq!(stats.snapshot_restore_failure_total, 1);
+
+        let _ = std::fs::remove_dir_all(backup_dir);
+    }
+
+    #[tokio::test]
+    async fn restore_snapshot_rejects_entry_count_above_limit() {
+        let backup_dir = temp_backup_dir("restore-entry-limit");
+        let mut cfg = Config::default();
+        cfg.backup.path = backup_dir.clone();
+        cfg.backup.max_restore_entries = 1;
+        cfg.persistence.platform_allowed = true;
+        cfg.persistence.runtime_enabled = true;
+        cfg.persistence.import_allowed = true;
+        let node = test_node(cfg);
+
+        let snapshot_entries = vec![
+            (
+                "snap:a".to_string(),
+                ExportEntry {
+                    value: b"a".to_vec(),
+                    version: 1,
+                    expires_at_ms: None,
+                },
+            ),
+            (
+                "snap:b".to_string(),
+                ExportEntry {
+                    value: b"b".to_vec(),
+                    version: 2,
+                    expires_at_ms: None,
+                },
+            ),
+        ];
+        let data = bincode::serialize(&snapshot_entries).expect("serialize snapshot");
+        let file =
+            std::path::Path::new(&backup_dir).join("test-node_backup_2099.01.01_00-00-00_UTC.bin");
+        write_snapshot_with_checksum(&file, &data);
+
+        let resp = Arc::clone(&node)
+            .handle_admin(AdminRequest::RestoreLatestSnapshot)
+            .await;
+        match resp {
+            AdminResponse::Error { message } => {
+                assert!(message.contains("max_restore_entries"));
+            }
+            other => panic!("expected AdminResponse::Error, got {:?}", other),
+        }
+        assert!(node.store.get("snap:a").is_none());
+        assert!(node.store.get("snap:b").is_none());
 
         let _ = std::fs::remove_dir_all(backup_dir);
     }
@@ -4814,14 +4915,16 @@ mod tests {
         node.hot_key_adaptive_on_success("k1", true, 16, 2, 2);
         assert_eq!(node.hot_key_adaptive_waiter_limit("k1", true, 16, 2, 64), 3);
 
-        assert!(node
-            .hot_key_adaptive_limit_decrease_total
-            .load(Ordering::Relaxed)
-            >= 3);
-        assert!(node
-            .hot_key_adaptive_limit_increase_total
-            .load(Ordering::Relaxed)
-            >= 1);
+        assert!(
+            node.hot_key_adaptive_limit_decrease_total
+                .load(Ordering::Relaxed)
+                >= 3
+        );
+        assert!(
+            node.hot_key_adaptive_limit_increase_total
+                .load(Ordering::Relaxed)
+                >= 1
+        );
     }
 
     #[tokio::test]

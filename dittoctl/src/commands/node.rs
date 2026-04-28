@@ -48,12 +48,12 @@ pub async fn run(cmd: NodeCommand, cfg: &mut CtlConfig, client: &reqwest::Client
                     println!("  Error: {}", err);
                     continue;
                 }
-                println!("  {:<22} {}", "property", "value");
+                println!("  {:<22} value", "property");
                 println!("  {}", "─".repeat(50));
                 if let Some(props) = entry["properties"].as_array() {
                     for pair in props {
                         if let Some(arr) = pair.as_array() {
-                            let k = arr.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                            let k = arr.first().and_then(|v| v.as_str()).unwrap_or("");
                             let v = arr.get(1).and_then(|v| v.as_str()).unwrap_or("");
                             println!("  {:<22} {}", k, v);
                         }
@@ -148,7 +148,7 @@ pub async fn run(cmd: NodeCommand, cfg: &mut CtlConfig, client: &reqwest::Client
                     if let Some(props) = entry["properties"].as_array() {
                         for pair in props {
                             if let Some(arr) = pair.as_array() {
-                                let k = arr.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                                let k = arr.first().and_then(|v| v.as_str()).unwrap_or("");
                                 let v = arr.get(1).and_then(|v| v.as_str()).unwrap_or("");
                                 if k.contains("port") {
                                     println!("  {:<22} {}", k, v);
@@ -909,7 +909,11 @@ fn build_describe_property_index(
         let Some(addr) = entry["addr"].as_str() else {
             continue;
         };
-        if entry.get("error").and_then(|value| value.as_str()).is_some() {
+        if entry
+            .get("error")
+            .and_then(|value| value.as_str())
+            .is_some()
+        {
             continue;
         }
         let props = describe_properties(entry);
@@ -1018,7 +1022,10 @@ mod tests {
     #[test]
     fn top_quota_usage_pct_returns_zero_for_invalid_input() {
         assert_eq!(top_quota_usage_pct(&json!(null)), 0);
-        assert_eq!(top_quota_usage_pct(&json!([{ "namespace": "tenant-a" }])), 0);
+        assert_eq!(
+            top_quota_usage_pct(&json!([{ "namespace": "tenant-a" }])),
+            0
+        );
     }
 
     #[test]

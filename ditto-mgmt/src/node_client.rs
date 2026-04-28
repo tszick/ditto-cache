@@ -48,7 +48,7 @@ pub async fn admin_rpc(
     };
 
     match response {
-        ClusterMessage::AdminResponse(resp) => Ok(resp),
+        ClusterMessage::AdminResponse(resp) => Ok(*resp),
         other => anyhow::bail!("unexpected cluster message: {:?}", other),
     }
 }
@@ -110,6 +110,25 @@ pub fn is_valid_target(target: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
+fn is_configured_target(target: &str, cluster_port: u16, seeds: &[String]) -> bool {
+    if matches!(target, "local" | "all") {
+        return true;
+    }
+
+    let (target_host, target_port) = split_host_port(target, cluster_port);
+    seeds.iter().any(|seed| {
+        let (seed_host, seed_port) = split_host_port(seed, cluster_port);
+        target_port == seed_port && normalize_host(&target_host) == normalize_host(&seed_host)
+    })
+}
+
+fn normalize_host(host: &str) -> String {
+    host.trim()
+        .trim_end_matches('.')
+        .replace("localhost", "127.0.0.1")
+        .to_ascii_lowercase()
+}
+
 /// Resolve a target string to cluster-port SocketAddrs.
 ///
 /// | Target        | Resolution                                                  |
@@ -126,6 +145,13 @@ pub async fn resolve_target(target: &str, cluster_port: u16, seeds: &[String]) -
     // any DNS lookup (SSRF guard â€“ CodeQL rust/request-forgery #3 / #4).
     if !is_valid_target(target) {
         eprintln!("Warning: rejecting invalid target '{}'", target);
+        return vec![];
+    }
+    if !is_configured_target(target, cluster_port, seeds) {
+        eprintln!(
+            "Warning: rejecting target outside configured seeds '{}'",
+            target
+        );
         return vec![];
     }
 
@@ -243,7 +269,7 @@ pub fn http_authority_for_target(
         target
     };
 
-    if !is_valid_target(raw) {
+    if !is_valid_target(raw) || !is_configured_target(raw, cluster_port, seeds) {
         return None;
     }
 
@@ -260,4 +286,37 @@ fn split_host_port(input: &str, default_port: u16) -> (String, u16) {
         }
     }
     (normalised, default_port)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{http_authority_for_target, is_configured_target};
+
+    #[test]
+    fn configured_target_allows_only_seed_hosts_by_default() {
+        let seeds = vec!["node-1:7779".to_string(), "127.0.0.1:7779".to_string()];
+
+        assert!(is_configured_target("local", 7779, &seeds));
+        assert!(is_configured_target("all", 7779, &seeds));
+        assert!(is_configured_target("node-1", 7779, &seeds));
+        assert!(is_configured_target("node-1:7779", 7779, &seeds));
+        assert!(is_configured_target("localhost:7779", 7779, &seeds));
+
+        assert!(!is_configured_target("node-2:7779", 7779, &seeds));
+        assert!(!is_configured_target("169.254.169.254:7779", 7779, &seeds));
+    }
+
+    #[test]
+    fn http_authority_rejects_targets_outside_seeds() {
+        let seeds = vec!["node-1:7779".to_string()];
+
+        assert_eq!(
+            http_authority_for_target("node-1", 7779, &seeds),
+            Some("node-1:7778".to_string())
+        );
+        assert_eq!(
+            http_authority_for_target("169.254.169.254:7779", 7779, &seeds),
+            None
+        );
+    }
 }

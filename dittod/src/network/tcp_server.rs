@@ -62,7 +62,6 @@ async fn handle_client(mut stream: TcpStream, node: Arc<NodeHandle>) -> anyhow::
             read_result = read_frame(
                 &mut stream,
                 max_message_size,
-                expected_token.is_some() && !authenticated,
                 frame_read_timeout,
             ) => {
                 let payload = match read_result {
@@ -142,22 +141,14 @@ async fn handle_client(mut stream: TcpStream, node: Arc<NodeHandle>) -> anyhow::
 async fn read_frame(
     stream: &mut TcpStream,
     max_size: usize,
-    use_timeout: bool,
     frame_read_timeout: Duration,
 ) -> anyhow::Result<Option<Vec<u8>>> {
     let mut len_buf = [0u8; 4];
-    if use_timeout {
-        match tokio::time::timeout(frame_read_timeout, stream.read_exact(&mut len_buf)).await {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-            Ok(Err(e)) => return Err(e.into()),
-            Err(_) => anyhow::bail!("timed out waiting for frame header"),
-        }
-    } else if let Err(e) = stream.read_exact(&mut len_buf).await {
-        if e.kind() == std::io::ErrorKind::UnexpectedEof {
-            return Ok(None);
-        }
-        return Err(e.into());
+    match tokio::time::timeout(frame_read_timeout, stream.read_exact(&mut len_buf)).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Ok(Err(e)) => return Err(e.into()),
+        Err(_) => anyhow::bail!("timed out waiting for frame header"),
     }
 
     let len = u32::from_be_bytes(len_buf) as usize;
@@ -165,14 +156,9 @@ async fn read_frame(
         anyhow::bail!("message length {} exceeds max {}", len, max_size);
     }
     let mut payload = vec![0u8; len];
-    if use_timeout {
-        match tokio::time::timeout(frame_read_timeout, stream.read_exact(&mut payload)).await {
-            Ok(Ok(_)) => Ok(Some(payload)),
-            Ok(Err(e)) => Err(e.into()),
-            Err(_) => anyhow::bail!("timed out waiting for frame payload"),
-        }
-    } else {
-        stream.read_exact(&mut payload).await?;
-        Ok(Some(payload))
+    match tokio::time::timeout(frame_read_timeout, stream.read_exact(&mut payload)).await {
+        Ok(Ok(_)) => Ok(Some(payload)),
+        Ok(Err(e)) => Err(e.into()),
+        Err(_) => anyhow::bail!("timed out waiting for frame payload"),
     }
 }

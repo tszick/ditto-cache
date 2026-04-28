@@ -393,7 +393,12 @@ async fn handle_health_summary(State(node): State<Arc<NodeHandle>>) -> Response 
     let insecure_runtime_enabled = std::env::var("DITTO_INSECURE")
         .unwrap_or_default()
         .eq_ignore_ascii_case("true");
-    let (tcp_client_auth_enabled, tcp_client_bind_loopback_only, tcp_production_safe, tcp_supported_topology) = {
+    let (
+        tcp_client_auth_enabled,
+        tcp_client_bind_loopback_only,
+        tcp_production_safe,
+        tcp_supported_topology,
+    ) = {
         let cfg = node.config.lock().unwrap();
         let auth_enabled = cfg.node.client_auth_token.is_some();
         let loopback_only = tcp_client_bind_loopback_only(&cfg.node.bind_addr);
@@ -593,7 +598,10 @@ mod tests {
         assert!(!tcp_production_safe("0.0.0.0", false));
 
         assert_eq!(tcp_supported_topology("127.0.0.1", false), "loopback-only");
-        assert_eq!(tcp_supported_topology("0.0.0.0", true), "token-auth-exposed");
+        assert_eq!(
+            tcp_supported_topology("0.0.0.0", true),
+            "token-auth-exposed"
+        );
         assert_eq!(
             tcp_supported_topology("0.0.0.0", false),
             "unsupported-for-production"

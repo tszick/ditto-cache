@@ -8,7 +8,7 @@ use rand::RngExt;
 use sha2::{Digest, Sha256};
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{atomic::Ordering, Arc},
     time::{Duration, SystemTime},
 };
@@ -26,8 +26,8 @@ pub struct SnapshotLoadResult {
     pub duration_ms: u64,
 }
 
-fn checksum_sidecar_path(path: &PathBuf) -> PathBuf {
-    let mut sidecar = path.clone();
+fn checksum_sidecar_path(path: &Path) -> PathBuf {
+    let mut sidecar = path.to_path_buf();
     let sidecar_ext = match path.extension().and_then(|e| e.to_str()) {
         Some(ext) if !ext.is_empty() => format!("{ext}.sha256"),
         _ => "sha256".to_string(),
@@ -42,14 +42,14 @@ fn checksum_hex(data: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
-fn write_checksum_sidecar(path: &PathBuf, data: &[u8]) -> anyhow::Result<()> {
+fn write_checksum_sidecar(path: &Path, data: &[u8]) -> anyhow::Result<()> {
     let sidecar = checksum_sidecar_path(path);
     let digest = checksum_hex(data);
     fs::write(&sidecar, format!("{digest}\n"))?;
     Ok(())
 }
 
-fn verify_checksum_sidecar(path: &PathBuf, data: &[u8]) -> anyhow::Result<()> {
+fn verify_checksum_sidecar(path: &Path, data: &[u8]) -> anyhow::Result<()> {
     let sidecar = checksum_sidecar_path(path);
     if !sidecar.exists() {
         anyhow::bail!(
@@ -112,7 +112,7 @@ pub async fn run_backup(node: Arc<NodeHandle>, cfg: &BackupConfig) -> anyhow::Re
     }
 
     // --- 2. Export ---
-    let result = write_snapshot(&*node, cfg).await;
+    let result = write_snapshot(&node, cfg).await;
 
     // --- 3. Sync from primary and reactivate ---
     if was_active {
@@ -179,6 +179,17 @@ pub fn restore_latest_snapshot(
         .and_then(|n| n.to_str())
         .ok_or_else(|| anyhow::anyhow!("snapshot filename is not valid UTF-8"))?
         .to_string();
+    if cfg.max_snapshot_bytes > 0 {
+        let file_len = fs::metadata(&path)?.len();
+        if file_len > cfg.max_snapshot_bytes {
+            anyhow::bail!(
+                "snapshot file {} exceeds backup.max_snapshot_bytes ({} > {})",
+                path.to_string_lossy(),
+                file_len,
+                cfg.max_snapshot_bytes
+            );
+        }
+    }
     let data = fs::read(&path)?;
     verify_checksum_sidecar(&path, &data)?;
 
@@ -190,12 +201,32 @@ pub fn restore_latest_snapshot(
     } else {
         data
     };
+    if cfg.max_snapshot_bytes > 0 && raw.len() as u64 > cfg.max_snapshot_bytes {
+        anyhow::bail!(
+            "snapshot payload exceeds backup.max_snapshot_bytes ({} > {})",
+            raw.len(),
+            cfg.max_snapshot_bytes
+        );
+    }
 
     let entries: Vec<(String, ExportEntry)> = if filename.contains(".json") {
         serde_json::from_slice(&raw)?
+    } else if cfg.max_snapshot_bytes > 0 {
+        use bincode::Options;
+        bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_limit(cfg.max_snapshot_bytes)
+            .deserialize(&raw)?
     } else {
         bincode::deserialize(&raw)?
     };
+    if cfg.max_restore_entries > 0 && entries.len() > cfg.max_restore_entries {
+        anyhow::bail!(
+            "snapshot entry count exceeds backup.max_restore_entries ({} > {})",
+            entries.len(),
+            cfg.max_restore_entries
+        );
+    }
     let count = entries.len();
     node.store.restore(entries);
 
@@ -343,10 +374,8 @@ fn rotate_old_backups(path: &str, node_id: &str, retain_days: u64) {
         }
         if let Ok(meta) = entry.metadata() {
             if let Ok(modified) = meta.modified() {
-                if modified < cutoff {
-                    if fs::remove_file(entry.path()).is_ok() {
-                        tracing::info!("Backup rotation: removed {:?}", entry.path());
-                    }
+                if modified < cutoff && fs::remove_file(entry.path()).is_ok() {
+                    tracing::info!("Backup rotation: removed {:?}", entry.path());
                 }
             }
         }
@@ -356,8 +385,8 @@ fn rotate_old_backups(path: &str, node_id: &str, retain_days: u64) {
 /// Long-running task: fires a backup on the cron schedule.
 /// Keeps running until the process exits.
 pub async fn run_scheduler(node: Arc<NodeHandle>, cfg: BackupConfig) {
-    use cronexpr::{parse_crontab_with, FallbackTimezoneOption, ParseOptions};
     use cronexpr::jiff::Timestamp;
+    use cronexpr::{parse_crontab_with, FallbackTimezoneOption, ParseOptions};
 
     if !cfg.enabled {
         tracing::info!("Backup scheduler disabled (enabled = false in config).");
@@ -386,7 +415,10 @@ pub async fn run_scheduler(node: Arc<NodeHandle>, cfg: BackupConfig) {
         let next = match schedule.find_next(now) {
             Ok(t) => t,
             Err(e) => {
-                tracing::warn!("Backup schedule has no future occurrences ({}). Stopping.", e);
+                tracing::warn!(
+                    "Backup schedule has no future occurrences ({}). Stopping.",
+                    e
+                );
                 break;
             }
         };

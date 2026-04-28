@@ -127,7 +127,7 @@ impl Default for CompressionConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TlsConfig {
     /// Enable mTLS on the cluster/admin port (7779).
     #[serde(default)]
@@ -141,17 +141,6 @@ pub struct TlsConfig {
     /// Path to this node's private key (PEM).
     #[serde(default)]
     pub key: String,
-}
-
-impl Default for TlsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            ca_cert: String::new(),
-            cert: String::new(),
-            key: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,6 +170,12 @@ pub struct BackupConfig {
     /// When absent, backups are written as plain binary/json (no encryption).
     #[serde(default)]
     pub encryption_key: Option<String>,
+    /// Maximum snapshot file size accepted during restore. 0 = unlimited.
+    #[serde(default = "default_backup_max_snapshot_bytes")]
+    pub max_snapshot_bytes: u64,
+    /// Maximum number of entries accepted during restore. 0 = unlimited.
+    #[serde(default = "default_backup_max_restore_entries")]
+    pub max_restore_entries: usize,
 }
 
 impl Default for BackupConfig {
@@ -193,6 +188,8 @@ impl Default for BackupConfig {
             retain_days: default_retain_days(),
             restore_on_start: false,
             encryption_key: None,
+            max_snapshot_bytes: default_backup_max_snapshot_bytes(),
+            max_restore_entries: default_backup_max_restore_entries(),
         }
     }
 }
@@ -551,6 +548,12 @@ fn default_backup_format() -> String {
 fn default_retain_days() -> u64 {
     30
 }
+fn default_backup_max_snapshot_bytes() -> u64 {
+    512 * 1024 * 1024
+}
+fn default_backup_max_restore_entries() -> usize {
+    100_000
+}
 fn default_log_path() -> String {
     "./logs".into()
 }
@@ -663,8 +666,7 @@ impl Default for Config {
                 ),
                 anti_entropy_budget_max_checks_per_run:
                     default_anti_entropy_budget_max_checks_per_run(),
-                anti_entropy_budget_max_duration_ms:
-                    default_anti_entropy_budget_max_duration_ms(),
+                anti_entropy_budget_max_duration_ms: default_anti_entropy_budget_max_duration_ms(),
                 mixed_version_probe_enabled: true,
                 mixed_version_probe_interval_ms: default_mixed_version_probe_interval_ms(),
             },

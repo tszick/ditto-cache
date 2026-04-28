@@ -323,6 +323,8 @@ password_hash = "$2b$12$..."  # generate with: dittoctl hash-password
 | `DITTO_HTTP_AUTH_USER` | `http_auth.username` |
 | `DITTO_HTTP_AUTH_PASSWORD_HASH` | `http_auth.password_hash` |
 | `DITTO_BACKUP_ENCRYPTION_KEY` | `backup.encryption_key` (hex-encoded 32-byte AES-256-GCM key) |
+| `DITTO_BACKUP_MAX_SNAPSHOT_BYTES` | `backup.max_snapshot_bytes` |
+| `DITTO_BACKUP_MAX_RESTORE_ENTRIES` | `backup.max_restore_entries` |
 | `DITTO_SNAPSHOT_RESTORE_ON_START` | `backup.restore_on_start` |
 | `DITTO_PERSISTENCE_PLATFORM_ALLOWED` | global platform gate for persistence features |
 | `DITTO_PERSISTENCE_BACKUP_ALLOWED` | platform gate for backup |

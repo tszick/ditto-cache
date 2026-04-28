@@ -225,6 +225,16 @@ async fn main() -> Result<()> {
     if let Ok(v) = std::env::var("DITTO_BACKUP_ENCRYPTION_KEY") {
         config.backup.encryption_key = Some(v);
     }
+    if let Ok(v) = std::env::var("DITTO_BACKUP_MAX_SNAPSHOT_BYTES") {
+        if let Ok(n) = v.parse::<u64>() {
+            config.backup.max_snapshot_bytes = n;
+        }
+    }
+    if let Ok(v) = std::env::var("DITTO_BACKUP_MAX_RESTORE_ENTRIES") {
+        if let Ok(n) = v.parse::<usize>() {
+            config.backup.max_restore_entries = n;
+        }
+    }
     if let Some(v) = parse_bool_env("DITTO_SNAPSHOT_RESTORE_ON_START")
         .or_else(|| parse_bool_env("SNAPSHOT_RESTORE_ON_START"))
     {
@@ -494,7 +504,7 @@ async fn main() -> Result<()> {
     );
 
     if config.backup.restore_on_start {
-        match backup::restore_latest_snapshot(&*node, &config.backup) {
+        match backup::restore_latest_snapshot(&node, &config.backup) {
             Ok(Some(loaded)) => {
                 node.record_snapshot_restore(
                     loaded.path.clone(),

@@ -25,8 +25,8 @@ pub async fn run(cmd: ClusterCommand, cfg: &CtlConfig, client: &reqwest::Client)
                 let data = mgmt_get(client, &format!("{}/api/cluster", base)).await?;
                 let nodes = data["nodes"].as_array().cloned().unwrap_or_default();
                 println!(
-                    "  {:<38} {:<12} {:<10} {}",
-                    "node-id", "status", "primary", "committed"
+                    "  {:<38} {:<12} {:<10} committed",
+                    "node-id", "status", "primary"
                 );
                 println!("  {}", "─".repeat(76));
                 for n in &nodes {

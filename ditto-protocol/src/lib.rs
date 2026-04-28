@@ -214,7 +214,7 @@ pub enum ClusterMessage {
     // --- Admin (also on port 7779) ---
     Admin(AdminRequest),
     /// Node → admin client: response to an Admin request.
-    AdminResponse(AdminResponse),
+    AdminResponse(Box<AdminResponse>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -288,7 +288,7 @@ pub enum AdminRequest {
 pub enum AdminResponse {
     Properties(Vec<(String, String)>),
     Keys(Vec<String>),
-    Stats(NodeStats),
+    Stats(Box<NodeStats>),
     /// Response to GetKeyInfo.
     KeyInfo {
         key: String,
