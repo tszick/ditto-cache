@@ -1949,10 +1949,17 @@
                                    ],
                      "Snapshot":  [
                                       {
+                                          "name":  "version",
+                                          "type":  "uint32",
+                                          "repeated":  false,
+                                          "tag":  1,
+                                          "oneof":  false
+                                      },
+                                      {
                                           "name":  "entries",
                                           "type":  "SnapshotEntry",
                                           "repeated":  true,
-                                          "tag":  1,
+                                          "tag":  2,
                                           "oneof":  false
                                       }
                                   ],

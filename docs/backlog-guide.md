@@ -401,34 +401,68 @@ Wire format migration (2026-04-29):
     drift gate (`.github/workflows/protocol-contract.yml`),
   - migrated backup snapshots to protobuf (`pb::Snapshot`); JSON snapshots
     remain only as a debug option (`backup.format = "json"`).
-- Open follow-ups:
-  - **Snapshot payload version header (cache repo)**: `pb::Snapshot` currently
-    has no in-payload format version field — restore selects the codec from the
-    file extension (`.json` vs `.pb`). Add an explicit `uint32 version` (or a
-    `SnapshotHeader` sub-message) to `ditto.proto`, populate on write, and
-    validate on restore so future format changes can be detected without
-    relying on filenames. Tracks the Sprint 2 risk note ("snapshot format drift
+- Follow-ups completed (2026-04-29):
+  - **Snapshot payload version header (cache repo)**: `pb::Snapshot` now
+    carries `uint32 version = 1` (with `repeated SnapshotEntry entries = 2`),
+    `dittod/src/backup.rs` stamps `SNAPSHOT_VERSION = 1` on write and the
+    decoder rejects any payload whose version is not in
+    `SUPPORTED_SNAPSHOT_VERSIONS` — so a stale build cannot silently restore
+    an unknown future format and a legacy unversioned payload (version=0)
+    is also rejected. Round-trip + future-version + legacy-unversioned tests
+    cover the path; closes the Sprint 2 risk note ("snapshot format drift
     over versions").
-  - **SDK wire migration (`ditto-client` repo)**: Node.js, Python, Java, and Go
-    TCP clients still encode/decode bincode and are wire-incompatible with the
-    new prost server. See the cross-repo follow-up section below.
+  - **SDK wire migration (`ditto-client` repo)**: Node.js, Python, Java, and
+    Go TCP clients all migrated to the protobuf `Envelope` codec — see the
+    cross-repo follow-up section below.
 
 Cross-repo follow-up — `ditto-client` SDK wire migration:
 
-- Status (2026-04-29):
-  - **Node.js: done** — `ditto-nodejs-client/src/wire.ts` replaces `bincode.ts`
-    with a hand-rolled protobuf `Envelope` codec; `tcp-client.ts` switched over,
-    `bincode-error-codes.test.mjs` rewritten as `wire-error-codes.test.mjs`,
-    `tcp-watch-flow.test.mjs` rewritten to forge protobuf frames; live smoke
-    test against a local `dittod` build verified ping/get/set/delete + pattern
-    delete + watch round-trip.
-  - **Python, Java, Go: open**.
-- Scope (open SDKs):
-  - `ditto-python-client/src/ditto_client/bincode.py` + `tcp_client.py`,
-  - `ditto-java-client/src/main/java/io/ditto/client/DittoTcpClient.java`
-    (+ namespace encoding smoke test),
-  - `ditto-go-client/bincode.go` + `tcp_client.go`,
-  - corresponding bincode tests in each remaining SDK.
+- Status (2026-04-29): **all four SDKs migrated to protobuf wire**.
+  - **Node.js**: `ditto-nodejs-client/src/wire.ts` (hand-rolled protobuf
+    `Envelope` codec) replaces `bincode.ts`; `tcp-client.ts` switched over;
+    `bincode-error-codes.test.mjs` rewritten as `wire-error-codes.test.mjs`;
+    `tcp-watch-flow.test.mjs` rewritten to forge protobuf frames; 9/9 tests
+    green; live smoke against `dittod` verified ping/get/set/delete + pattern
+    + watch.
+  - **Python**: `ditto-python-client/src/ditto_client/wire.py` replaces
+    `bincode.py`; `tcp_client.py` import updated; `test_bincode.py` rewritten
+    as `test_wire.py`; `test_tcp_reconnect.py` and `test_tcp_watch_flow.py`
+    mock servers updated to use protobuf helpers; 11/11 tests green; live
+    smoke verified.
+  - **Go**: `ditto-go-client/wire.go` replaces `bincode.go` (keeps the
+    `responseKind` / `tcpResponse` types so `tcp_client.go` is unchanged);
+    `bincode_test.go` rewritten as `wire_test.go`; `tcp_reconnect_test.go`
+    and `tcp_watch_flow_test.go` updated; full `go test ./...` green; live
+    smoke verified.
+  - **Java**: `DittoTcpClient.java` rewritten with a nested static `Wire`
+    helper class that encodes/decodes the protobuf `Envelope`;
+    `DittoTcpClientNamespaceEncodingSmokeTest.java` rewritten;
+    `DittoTcpClientAutoReconnectSmokeTest.java` and
+    `DittoTcpClientWatchFlowSmokeTest.java` updated via a new package-private
+    `ProtoTestSupport` test helper; `./gradlew test` 15/15 green; live smoke
+    verified.
+- Cross-cutting work also completed (2026-04-29):
+  - `ditto-client/contracts/protocol-contract.snapshot.json` regenerated
+    via `scripts/sync_protocol_snapshot.py` from the cache-side
+    `ditto-protocol/schema/protocol-contract.json`,
+  - `ditto-client/scripts/validate_protocol_snapshot.py` rewritten for the
+    proto3 schema shape (`enums` + `messages` with field objects),
+  - `ditto-client/scripts/check_sdk_protocol_parity.py` updated to strip the
+    `ERROR_CODE_` proto enum prefix so SDK-side camel-case names are matched,
+  - `.github/workflows/protocol-parity.yml` works unchanged on top of the
+    refreshed scripts and snapshot,
+  - `ditto-client/docs/client-developer-guide.md` updated to describe the
+    protobuf `Envelope` TCP wire and point to the `.proto` source of truth.
+- Release-time closure (2026-04-29):
+  - the only consumer is a single dev client that will be migrated alongside
+    this change, so no cross-version compatibility window is required —
+    pre-migration SDK builds are intentionally orphaned,
+  - SDK source versions bumped to mark the wire-migration release:
+    Node.js `0.2.0`, Python `0.2.0`, Java `1.1.0`,
+  - Go module follows the `client-v*` git tag convention; no source bump
+    needed,
+  - `bash scripts/release-dry-run.sh 0.2.0` confirms the planned bump
+    targets and emits a changelog preview against `HEAD`.
 - Required changes per SDK:
   - generate protobuf bindings from `ditto-protocol/proto/ditto.proto`
     (Node: `protobufjs` / `ts-proto`; Python: `protoc` + `protobuf`; Java:

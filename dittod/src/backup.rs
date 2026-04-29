@@ -21,6 +21,15 @@ const VERSION: u8 = 0x01;
 /// AES-256-GCM nonce length (96 bits).
 const NONCE_LEN: usize = 12;
 
+/// Current `pb::Snapshot.version` written by this build.
+///
+/// Bumped whenever the on-disk snapshot payload semantics change in a
+/// non-backwards-compatible way. The decoder rejects snapshots whose
+/// `version` is not in `SUPPORTED_SNAPSHOT_VERSIONS` so a stale build
+/// cannot silently restore a payload it doesn't understand.
+const SNAPSHOT_VERSION: u32 = 1;
+const SUPPORTED_SNAPSHOT_VERSIONS: &[u32] = &[SNAPSHOT_VERSION];
+
 pub struct SnapshotLoadResult {
     pub path: String,
     pub entries: usize,
@@ -45,6 +54,7 @@ fn checksum_hex(data: &[u8]) -> String {
 
 fn encode_snapshot(entries: &[(String, ExportEntry)]) -> Vec<u8> {
     let snapshot = pb::Snapshot {
+        version: SNAPSHOT_VERSION,
         entries: entries
             .iter()
             .map(|(key, entry)| pb::SnapshotEntry {
@@ -62,6 +72,13 @@ fn encode_snapshot(entries: &[(String, ExportEntry)]) -> Vec<u8> {
 
 fn decode_snapshot(raw: &[u8]) -> anyhow::Result<Vec<(String, ExportEntry)>> {
     let snapshot = pb::Snapshot::decode(raw)?;
+    if !SUPPORTED_SNAPSHOT_VERSIONS.contains(&snapshot.version) {
+        anyhow::bail!(
+            "unsupported snapshot version {} (this build supports {:?})",
+            snapshot.version,
+            SUPPORTED_SNAPSHOT_VERSIONS
+        );
+    }
     Ok(snapshot
         .entries
         .into_iter()
@@ -478,5 +495,92 @@ pub async fn run_scheduler(node: Arc<NodeHandle>, cfg: BackupConfig) {
         if let Err(e) = run_backup(node.clone(), &cfg).await {
             tracing::error!("Scheduled backup failed: {}", e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_entries() -> Vec<(String, ExportEntry)> {
+        vec![
+            (
+                "alpha".to_string(),
+                ExportEntry {
+                    value: b"hello".to_vec(),
+                    version: 7,
+                    expires_at_ms: Some(1_700_000_000_000),
+                },
+            ),
+            (
+                "beta".to_string(),
+                ExportEntry {
+                    value: b"world".to_vec(),
+                    version: 11,
+                    expires_at_ms: None,
+                },
+            ),
+        ]
+    }
+
+    #[test]
+    fn snapshot_encode_decode_round_trip() {
+        let original = sample_entries();
+        let encoded = encode_snapshot(&original);
+        let decoded = decode_snapshot(&encoded).expect("decode current-version snapshot");
+        assert_eq!(decoded.len(), original.len());
+        for (got, want) in decoded.iter().zip(original.iter()) {
+            assert_eq!(got.0, want.0);
+            assert_eq!(got.1.value, want.1.value);
+            assert_eq!(got.1.version, want.1.version);
+            assert_eq!(got.1.expires_at_ms, want.1.expires_at_ms);
+        }
+    }
+
+    #[test]
+    fn snapshot_writer_stamps_current_version() {
+        let encoded = encode_snapshot(&sample_entries());
+        let snapshot = pb::Snapshot::decode(encoded.as_slice()).expect("re-decode raw protobuf");
+        assert_eq!(snapshot.version, SNAPSHOT_VERSION);
+    }
+
+    #[test]
+    fn snapshot_decoder_rejects_future_version() {
+        let mut snapshot = pb::Snapshot {
+            version: SNAPSHOT_VERSION + 1,
+            entries: vec![],
+        };
+        snapshot.entries.push(pb::SnapshotEntry {
+            key: "k".into(),
+            value: b"v".to_vec(),
+            version: 1,
+            expires_at_ms: None,
+        });
+        let raw = snapshot.encode_to_vec();
+        let err = decode_snapshot(&raw).expect_err("future-version snapshot must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unsupported snapshot version"),
+            "unexpected error message: {msg}"
+        );
+    }
+
+    #[test]
+    fn snapshot_decoder_rejects_unversioned_legacy_payload() {
+        // Pre-versioning snapshots had no `version` field; with the new schema
+        // the field defaults to 0, which is not in SUPPORTED_SNAPSHOT_VERSIONS.
+        // The decoder must reject these rather than silently restoring them.
+        let legacy = pb::Snapshot {
+            version: 0,
+            entries: vec![pb::SnapshotEntry {
+                key: "k".into(),
+                value: b"v".to_vec(),
+                version: 1,
+                expires_at_ms: None,
+            }],
+        };
+        let raw = legacy.encode_to_vec();
+        let err = decode_snapshot(&raw).expect_err("legacy unversioned snapshot must be rejected");
+        assert!(err.to_string().contains("unsupported snapshot version"));
     }
 }

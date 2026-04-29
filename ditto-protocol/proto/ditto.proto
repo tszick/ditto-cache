@@ -450,7 +450,8 @@ message NodeStats {
 }
 
 message Snapshot {
-  repeated SnapshotEntry entries = 1;
+  uint32 version = 1;
+  repeated SnapshotEntry entries = 2;
 }
 
 message SnapshotEntry {
