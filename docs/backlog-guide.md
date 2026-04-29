@@ -415,13 +415,20 @@ Wire format migration (2026-04-29):
 
 Cross-repo follow-up — `ditto-client` SDK wire migration:
 
-- Scope:
-  - `ditto-nodejs-client/src/bincode.ts` + `tcp-client.ts`,
+- Status (2026-04-29):
+  - **Node.js: done** — `ditto-nodejs-client/src/wire.ts` replaces `bincode.ts`
+    with a hand-rolled protobuf `Envelope` codec; `tcp-client.ts` switched over,
+    `bincode-error-codes.test.mjs` rewritten as `wire-error-codes.test.mjs`,
+    `tcp-watch-flow.test.mjs` rewritten to forge protobuf frames; live smoke
+    test against a local `dittod` build verified ping/get/set/delete + pattern
+    delete + watch round-trip.
+  - **Python, Java, Go: open**.
+- Scope (open SDKs):
   - `ditto-python-client/src/ditto_client/bincode.py` + `tcp_client.py`,
   - `ditto-java-client/src/main/java/io/ditto/client/DittoTcpClient.java`
     (+ namespace encoding smoke test),
   - `ditto-go-client/bincode.go` + `tcp_client.go`,
-  - corresponding bincode tests across all four SDKs.
+  - corresponding bincode tests in each remaining SDK.
 - Required changes per SDK:
   - generate protobuf bindings from `ditto-protocol/proto/ditto.proto`
     (Node: `protobufjs` / `ts-proto`; Python: `protoc` + `protobuf`; Java:
