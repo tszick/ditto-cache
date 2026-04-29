@@ -244,7 +244,7 @@ dittoctl cache flush local
   - self-hosted real-run runbook validation on `main`,
   - Rust build/test, repeated flaky-suite passes, protocol compatibility, `cargo audit`, and a release-readiness summary job.
 - Protocol contract drift gate: `.github/workflows/protocol-contract.yml`
-  - standalone workflow for regenerating `ditto-protocol/schema/protocol-contract.json` and failing on drift.
+  - standalone workflow for regenerating `ditto-protocol/schema/protocol-contract.json` from `ditto-protocol/proto/ditto.proto` and failing on drift.
 - Performance gate: `.github/workflows/perf-gate.yml`
   - standalone workflow that checks latency against `docs/perf-baseline.json`.
   - current scope is smoke-regression only: debug build, single-node HTTP, and `DITTO_INSECURE=true`.

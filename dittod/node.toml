@@ -63,7 +63,7 @@ username = "ditto" # overridden by DITTO_HTTP_AUTH_USER
 enabled          = false
 schedule         = "0 2 * * *"  # daily at 02:00 UTC (cron: min hour dom month dow)
 path             = "./backups"
-format           = "binary"      # binary | json
+format           = "protobuf"    # protobuf | json
 retain_days      = 30
 restore_on_start = false         # load newest local snapshot on startup before recovery
 max_snapshot_bytes = 536870912   # 512 MiB restore read limit; 0 = unlimited

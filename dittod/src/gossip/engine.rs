@@ -1,5 +1,5 @@
 use crate::replication::ActiveSet;
-use ditto_protocol::{GossipMessage, NodeInfo};
+use ditto_protocol::{decode_gossip, encode_gossip, GossipMessage, NodeInfo};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{net::UdpSocket, sync::Mutex};
 use tracing::{debug, info, warn};
@@ -77,13 +77,10 @@ impl GossipEngine {
                 }
             };
 
-            // NOTE: use raw bincode (no length prefix) for UDP.
+            // NOTE: use raw prost envelope bytes (no length prefix) for UDP.
             // The ditto_protocol::encode() helper prepends a 4-byte TCP framing
             // header that decode() does NOT strip – it would silently corrupt UDP.
-            // Use fixint encoding explicitly so sender and receiver agree on wire format.
-            use bincode::Options;
-            let codec = bincode::DefaultOptions::new().with_fixint_encoding();
-            if let Ok(bytes) = codec.serialize(&msg) {
+            if let Ok(bytes) = encode_gossip(&msg) {
                 // Send to already-discovered peers.
                 for peer in &known_peers {
                     let _ = self.socket.send_to(&bytes, peer).await;
@@ -108,14 +105,8 @@ impl GossipEngine {
                 }
                 Ok((len, src)) => {
                     let slice = &buf[..len];
-                    // Raw bincode – no length prefix (unlike TCP frames).
-                    // Must use fixint encoding to match the sender.
-                    use bincode::Options;
-                    let options = bincode::DefaultOptions::new()
-                        .with_fixint_encoding()
-                        .with_limit(65535)
-                        .allow_trailing_bytes();
-                    match options.deserialize::<GossipMessage>(slice) {
+                    // Raw prost envelope – no length prefix (unlike TCP frames).
+                    match decode_gossip(slice, 65535) {
                         Err(e) => {
                             warn!("Gossip decode error from {}: {}", src, e);
                             continue;

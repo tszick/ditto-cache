@@ -155,7 +155,7 @@ pub struct BackupConfig {
     /// Directory where backup files are written.
     #[serde(default = "default_backup_path")]
     pub path: String,
-    /// Serialization format: "binary" or "json".
+    /// Snapshot serialization format: "protobuf" or "json".
     #[serde(default = "default_backup_format")]
     pub format: String,
     /// Delete backup files older than this many days (0 = never delete).
@@ -167,7 +167,7 @@ pub struct BackupConfig {
     /// Hex-encoded 32-byte AES-256-GCM key for backup file encryption.
     /// When set, backup files are encrypted and get an `.enc` suffix.
     /// Generate with: `openssl rand -hex 32`
-    /// When absent, backups are written as plain binary/json (no encryption).
+    /// When absent, backups are written as plain JSON (no encryption).
     #[serde(default)]
     pub encryption_key: Option<String>,
     /// Maximum snapshot file size accepted during restore. 0 = unlimited.
@@ -543,7 +543,7 @@ fn default_backup_path() -> String {
     "./backups".into()
 }
 fn default_backup_format() -> String {
-    "binary".into()
+    "protobuf".into()
 }
 fn default_retain_days() -> u64 {
     30

@@ -90,8 +90,9 @@ in-memory store without any inter-node round-trip.
 ```
 ditto/src/
 ├── Cargo.toml              Cargo workspace
-├── ditto-protocol/         Shared wire types (Client, Cluster, Gossip, Admin)
-│   └── src/lib.rs          Protocol enums + encode/decode helpers
+├── ditto-protocol/         Shared protobuf contract + wire helpers
+│   ├── proto/ditto.proto   Client, Cluster, Gossip, Admin, Snapshot contract
+│   └── src/lib.rs          Domain types + prost mapping + encode/decode helpers
 ├── dittod/                 Node daemon
 │   ├── src/
 │   │   ├── main.rs         Startup, server bootstrap
@@ -513,6 +514,7 @@ Current GitHub Actions workflows:
   - Purpose: standalone protocol contract drift check for direct invocation and debugging; the same checks also run inside `Release Gate`.
   - Triggers: push/PR on `main`.
   - Commands: `./scripts/generate-protocol-contract.ps1` + drift check.
+  - Source of truth: `ditto-protocol/proto/ditto.proto`.
 - `Pre-Prod Runbook Validation` (`.github/workflows/preprod-runbook-validation.yml`)
   - Purpose: automate runbook scenario validation entrypoint (node-loss / restore telemetry / quota telemetry).
   - Triggers: push/PR on `main` + manual run.
@@ -574,6 +576,10 @@ is independent of the TLS certificates.  Generate a key with:
 ```bash
 openssl rand -hex 32
 ```
+
+Backups default to protobuf snapshots (`backup.format = "protobuf"`). JSON
+snapshots remain available by setting `backup.format = "json"` for debugging or
+manual inspection.
 
 Backup integrity:
 - every backup payload now has a SHA-256 checksum sidecar (`*.sha256`),

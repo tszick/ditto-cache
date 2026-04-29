@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
     [switch]$Check
 )
@@ -6,163 +6,138 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$protocolPath = Join-Path $RepoRoot "ditto-protocol/src/lib.rs"
-$nodePath = Join-Path $RepoRoot "dittod/src/node.rs"
+$protoPath = Join-Path $RepoRoot "ditto-protocol/proto/ditto.proto"
 $outPath = Join-Path $RepoRoot "ditto-protocol/schema/protocol-contract.json"
 
-if (-not (Test-Path $protocolPath)) {
-    throw "Protocol source not found: $protocolPath"
-}
-if (-not (Test-Path $nodePath)) {
-    throw "Node source not found: $nodePath"
+if (-not (Test-Path $protoPath)) {
+    throw "Protocol source not found: $protoPath"
 }
 
-function Get-BraceDelta {
+function Clean-Line {
     param([string]$Line)
-    $open = ([regex]::Matches($Line, "\{")).Count
-    $close = ([regex]::Matches($Line, "\}")).Count
-    return ($open - $close)
+    return ($Line -replace "//.*$", "").Trim()
 }
 
-function Get-EnumVariants {
-    param(
-        [string[]]$Lines,
-        [string]$EnumName
-    )
+function Proto-Depth-Delta {
+    param([string]$Line)
+    return (([regex]::Matches($Line, "\{")).Count - ([regex]::Matches($Line, "\}")).Count)
+}
 
-    $start = -1
-    for ($i = 0; $i -lt $Lines.Length; $i++) {
-        if ($Lines[$i] -match "^\s*pub\s+enum\s+$([regex]::Escape($EnumName))\b") {
-            $start = $i
-            break
+function Enum-Values {
+    param([string[]]$Body)
+    $values = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in $Body) {
+        if ($line -match "^([A-Z][A-Z0-9_]*)\s*=\s*\d+\s*;") {
+            $values.Add($Matches[1])
         }
     }
-    if ($start -lt 0) {
-        throw "Enum not found: $EnumName"
-    }
+    return $values.ToArray()
+}
 
-    $variants = [System.Collections.Generic.List[string]]::new()
-    $depth = 0
-    $started = $false
-
-    for ($i = $start; $i -lt $Lines.Length; $i++) {
-        $line = $Lines[$i]
-        if (-not $started) {
-            if ($line -match "\{") {
-                $started = $true
-                $depth += (Get-BraceDelta -Line $line)
+function Message-Fields {
+    param([string[]]$Body)
+    $fields = [System.Collections.Generic.List[object]]::new()
+    $oneofDepth = 0
+    foreach ($line in $Body) {
+        if ($line -match "^oneof\s+[A-Za-z_][A-Za-z0-9_]*\s*\{") {
+            $oneofDepth += 1
+            continue
+        }
+        if ($line -match "^\}") {
+            if ($oneofDepth -gt 0) {
+                $oneofDepth -= 1
             }
             continue
         }
-
-        if ($depth -eq 1) {
-            if ($line -match "^\s*([A-Za-z][A-Za-z0-9_]*)\s*(?:\{|\(|,)") {
-                $variants.Add($Matches[1])
-            }
-        }
-
-        $depth += (Get-BraceDelta -Line $line)
-        if ($depth -le 0) {
-            break
+        if ($line -match "^(repeated\s+)?([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d+)\s*;") {
+            $fields.Add([ordered]@{
+                name = $Matches[3]
+                type = $Matches[2]
+                repeated = [bool]$Matches[1]
+                tag = [int]$Matches[4]
+                oneof = ($oneofDepth -gt 0)
+            })
         }
     }
-
-    return $variants.ToArray()
-}
-
-function Get-StructFields {
-    param(
-        [string[]]$Lines,
-        [string]$StructName
-    )
-
-    $start = -1
-    for ($i = 0; $i -lt $Lines.Length; $i++) {
-        if ($Lines[$i] -match "^\s*pub\s+struct\s+$([regex]::Escape($StructName))\b") {
-            $start = $i
-            break
-        }
-    }
-    if ($start -lt 0) {
-        throw "Struct not found: $StructName"
-    }
-
-    $fields = [System.Collections.Generic.List[string]]::new()
-    $depth = 0
-    $started = $false
-
-    for ($i = $start; $i -lt $Lines.Length; $i++) {
-        $line = $Lines[$i]
-        if (-not $started) {
-            if ($line -match "\{") {
-                $started = $true
-                $depth += (Get-BraceDelta -Line $line)
-            }
-            continue
-        }
-
-        if ($depth -eq 1) {
-            if ($line -match "^\s*pub\s+([A-Za-z_][A-Za-z0-9_]*)\s*:") {
-                $fields.Add($Matches[1])
-            }
-        }
-
-        $depth += (Get-BraceDelta -Line $line)
-        if ($depth -le 0) {
-            break
-        }
-    }
-
     return $fields.ToArray()
 }
 
-$protocolLines = Get-Content $protocolPath
-$nodeRaw = Get-Content $nodePath -Raw
-$versionMatch = [regex]::Match($nodeRaw, "const\s+PROTOCOL_VERSION\s*:\s*u16\s*=\s*(\d+)\s*;")
-if (-not $versionMatch.Success) {
-    throw "Could not parse PROTOCOL_VERSION from $nodePath"
+$protoLines = Get-Content $protoPath
+$protoRaw = Get-Content $protoPath -Raw
+
+$packageMatch = [regex]::Match($protoRaw, "package\s+ditto\.protocol\.v(\d+)\s*;")
+if (-not $packageMatch.Success) {
+    throw "Could not parse protocol package version from $protoPath"
 }
-$protocolVersion = [int]$versionMatch.Groups[1].Value
+$protocolVersion = [int]$packageMatch.Groups[1].Value
 
 $enums = [ordered]@{}
-foreach ($name in @(
-    "ClientRequest",
-    "ClientResponse",
-    "ErrorCode",
-    "ClusterMessage",
-    "GossipMessage",
-    "AdminRequest",
-    "AdminResponse",
-    "NodeStatus"
-)) {
-    $enums[$name] = @((Get-EnumVariants -Lines $protocolLines -EnumName $name))
-}
+$messages = [ordered]@{}
 
-$structs = [ordered]@{}
-foreach ($name in @(
-    "NamespaceQuotaUsage",
-    "NamespaceLatencySummary",
-    "HotKeyUsage",
-    "NodeStats"
-)) {
-    $structs[$name] = @((Get-StructFields -Lines $protocolLines -StructName $name))
+$currentKind = $null
+$currentName = $null
+$currentBody = [System.Collections.Generic.List[string]]::new()
+$depth = 0
+
+foreach ($rawLine in $protoLines) {
+    $line = Clean-Line -Line $rawLine
+    if ($line.Length -eq 0) {
+        continue
+    }
+
+    if ($null -eq $currentKind) {
+        if ($line -match "^(enum|message)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{") {
+            $currentKind = $Matches[1]
+            $currentName = $Matches[2]
+            $currentBody.Clear()
+            $depth = Proto-Depth-Delta -Line $line
+            if ($depth -le 0) {
+                if ($currentKind -eq "enum") {
+                    $enums[$currentName] = @()
+                } else {
+                    $messages[$currentName] = @()
+                }
+                $currentKind = $null
+                $currentName = $null
+            }
+        }
+        continue
+    }
+
+    $delta = Proto-Depth-Delta -Line $line
+    if (-not ($line -match "^\}" -and ($depth + $delta) -le 0)) {
+        $currentBody.Add($line)
+    }
+    $depth += $delta
+
+    if ($depth -le 0) {
+        if ($currentKind -eq "enum") {
+            $enums[$currentName] = @((Enum-Values -Body $currentBody.ToArray()))
+        } else {
+            $messages[$currentName] = @((Message-Fields -Body $currentBody.ToArray()))
+        }
+        $currentKind = $null
+        $currentName = $null
+        $currentBody.Clear()
+    }
 }
 
 $doc = [ordered]@{
     protocol_version = $protocolVersion
-    source = "ditto-protocol/src/lib.rs"
+    source = "ditto-protocol/proto/ditto.proto"
+    package = "ditto.protocol.v$protocolVersion"
     enums = $enums
-    structs = $structs
+    messages = $messages
 }
 
-$json = $doc | ConvertTo-Json -Depth 8
+$json = $doc | ConvertTo-Json -Depth 12
 
 if ($Check) {
     if (-not (Test-Path $outPath)) {
         throw "Contract file missing: $outPath"
     }
     $currentObj = Get-Content $outPath -Raw | ConvertFrom-Json
-    $current = $currentObj | ConvertTo-Json -Depth 8
+    $current = $currentObj | ConvertTo-Json -Depth 12
     if ($current.Trim() -ne $json.Trim()) {
         throw "Protocol contract drift detected. Run: pwsh ./scripts/generate-protocol-contract.ps1"
     }

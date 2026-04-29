@@ -103,22 +103,20 @@ fn same_origin_for_unsafe_request(req: &Request<Body>) -> bool {
         return false;
     };
 
-    let origin = req
+    let origin_header = req
         .headers()
         .get(header::ORIGIN)
-        .and_then(|v| v.to_str().ok())
-        .and_then(origin_authority);
-    if let Some(origin) = origin {
-        return origin == host;
+        .and_then(|v| v.to_str().ok());
+    if let Some(origin) = origin_header {
+        return origin_authority(origin).is_some_and(|origin| origin == host);
     }
 
-    let referer = req
+    let referer_header = req
         .headers()
         .get(header::REFERER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(origin_authority);
-    match referer {
-        Some(referer) => referer == host,
+        .and_then(|v| v.to_str().ok());
+    match referer_header {
+        Some(referer) => origin_authority(referer).is_some_and(|referer| referer == host),
         None => true,
     }
 }
@@ -173,5 +171,26 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert!(same_origin_for_unsafe_request(&cli));
+    }
+
+    #[test]
+    fn unsafe_request_rejects_malformed_origin_or_referer() {
+        let malformed_origin = Request::builder()
+            .method("POST")
+            .uri("/api/nodes/local/set-active")
+            .header("host", "localhost:7781")
+            .header("origin", "not a url")
+            .body(Body::empty())
+            .unwrap();
+        assert!(!same_origin_for_unsafe_request(&malformed_origin));
+
+        let malformed_referer = Request::builder()
+            .method("POST")
+            .uri("/api/nodes/local/set-active")
+            .header("host", "localhost:7781")
+            .header("referer", "not a url")
+            .body(Body::empty())
+            .unwrap();
+        assert!(!same_origin_for_unsafe_request(&malformed_referer));
     }
 }

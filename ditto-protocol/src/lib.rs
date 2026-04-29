@@ -6,13 +6,26 @@
 //! - **Gossip protocol** (port 7780 UDP): `GossipMessage`
 //! - **Admin protocol** (embedded in `ClusterMessage::Admin`): `AdminRequest`, `AdminResponse`
 //!
-//! Messages are serialised with `bincode` and framed with a 4-byte big-endian length prefix
-//! using the [`encode`] / [`decode`] helpers.
+//! Messages are serialised into a prost envelope and framed with a 4-byte big-endian
+//! length prefix using the [`encode`] / [`decode`] helpers.
 
 use bytes::Bytes;
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use uuid::Uuid;
+
+#[allow(clippy::large_enum_variant)]
+pub mod pb {
+    include!(concat!(env!("OUT_DIR"), "/ditto.protocol.v1.rs"));
+}
+
+const PROTOCOL_VERSION: u32 = 1;
+
+pub trait WireMessage: Sized {
+    fn into_payload(self) -> pb::envelope::Payload;
+    fn from_payload(payload: pb::envelope::Payload) -> anyhow::Result<Self>;
+}
 
 // ---------------------------------------------------------------------------
 // Common
@@ -86,6 +99,19 @@ pub enum ClientRequest {
     },
 }
 
+impl WireMessage for ClientRequest {
+    fn into_payload(self) -> pb::envelope::Payload {
+        pb::envelope::Payload::ClientRequest(self.into())
+    }
+
+    fn from_payload(payload: pb::envelope::Payload) -> anyhow::Result<Self> {
+        match payload {
+            pb::envelope::Payload::ClientRequest(msg) => msg.try_into(),
+            _ => anyhow::bail!("unexpected protobuf payload for ClientRequest"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientResponse {
     Value {
@@ -123,6 +149,19 @@ pub enum ClientResponse {
     PatternTtlUpdated {
         updated: usize,
     },
+}
+
+impl WireMessage for ClientResponse {
+    fn into_payload(self) -> pb::envelope::Payload {
+        pb::envelope::Payload::ClientResponse(self.into())
+    }
+
+    fn from_payload(payload: pb::envelope::Payload) -> anyhow::Result<Self> {
+        match payload {
+            pb::envelope::Payload::ClientResponse(msg) => msg.try_into(),
+            _ => anyhow::bail!("unexpected protobuf payload for ClientResponse"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -217,6 +256,19 @@ pub enum ClusterMessage {
     AdminResponse(Box<AdminResponse>),
 }
 
+impl WireMessage for ClusterMessage {
+    fn into_payload(self) -> pb::envelope::Payload {
+        pb::envelope::Payload::ClusterMessage(self.into())
+    }
+
+    fn from_payload(payload: pb::envelope::Payload) -> anyhow::Result<Self> {
+        match payload {
+            pb::envelope::Payload::ClusterMessage(msg) => msg.try_into(),
+            _ => anyhow::bail!("unexpected protobuf payload for ClusterMessage"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogEntry {
     pub index: u64,
@@ -242,6 +294,19 @@ pub enum GossipMessage {
     },
     /// Triggered when active-set membership changes.
     ActiveSetUpdate { active_nodes: Vec<NodeInfo> },
+}
+
+impl WireMessage for GossipMessage {
+    fn into_payload(self) -> pb::envelope::Payload {
+        pb::envelope::Payload::GossipMessage(self.into())
+    }
+
+    fn from_payload(payload: pb::envelope::Payload) -> anyhow::Result<Self> {
+        match payload {
+            pb::envelope::Payload::GossipMessage(msg) => msg.try_into(),
+            _ => anyhow::bail!("unexpected protobuf payload for GossipMessage"),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -540,16 +605,1043 @@ pub struct NodeStats {
     pub client_error_other_total: u64,
 }
 
+fn opt_string(value: Option<String>) -> Option<pb::OptionalString> {
+    value.map(|value| pb::OptionalString { value })
+}
+
+fn from_opt_string(value: Option<pb::OptionalString>) -> Option<String> {
+    value.map(|value| value.value)
+}
+
+fn opt_u64(value: Option<u64>) -> Option<pb::OptionalUint64> {
+    value.map(|value| pb::OptionalUint64 { value })
+}
+
+fn from_opt_u64(value: Option<pb::OptionalUint64>) -> Option<u64> {
+    value.map(|value| value.value)
+}
+
+fn opt_bytes(value: Option<Bytes>) -> Option<pb::OptionalBytes> {
+    value.map(|value| pb::OptionalBytes {
+        value: value.to_vec(),
+    })
+}
+
+fn from_opt_bytes(value: Option<pb::OptionalBytes>) -> Option<Bytes> {
+    value.map(|value| Bytes::from(value.value))
+}
+
+fn uuid_to_string(value: Uuid) -> String {
+    value.to_string()
+}
+
+fn uuid_from_string(value: String) -> anyhow::Result<Uuid> {
+    Ok(Uuid::parse_str(&value)?)
+}
+
+fn socket_to_string(value: SocketAddr) -> String {
+    value.to_string()
+}
+
+fn socket_from_string(value: String) -> anyhow::Result<SocketAddr> {
+    Ok(value.parse()?)
+}
+
+impl From<NodeStatus> for pb::NodeStatus {
+    fn from(value: NodeStatus) -> Self {
+        match value {
+            NodeStatus::Active => Self::Active,
+            NodeStatus::Syncing => Self::Syncing,
+            NodeStatus::Offline => Self::Offline,
+            NodeStatus::Inactive => Self::Inactive,
+        }
+    }
+}
+
+impl TryFrom<i32> for NodeStatus {
+    type Error = anyhow::Error;
+
+    fn try_from(value: i32) -> anyhow::Result<Self> {
+        match pb::NodeStatus::try_from(value)? {
+            pb::NodeStatus::Active => Ok(Self::Active),
+            pb::NodeStatus::Syncing => Ok(Self::Syncing),
+            pb::NodeStatus::Offline => Ok(Self::Offline),
+            pb::NodeStatus::Inactive => Ok(Self::Inactive),
+        }
+    }
+}
+
+impl From<ErrorCode> for pb::ErrorCode {
+    fn from(value: ErrorCode) -> Self {
+        match value {
+            ErrorCode::NodeInactive => Self::NodeInactive,
+            ErrorCode::NoQuorum => Self::NoQuorum,
+            ErrorCode::KeyNotFound => Self::KeyNotFound,
+            ErrorCode::InternalError => Self::InternalError,
+            ErrorCode::WriteTimeout => Self::WriteTimeout,
+            ErrorCode::ValueTooLarge => Self::ValueTooLarge,
+            ErrorCode::KeyLimitReached => Self::KeyLimitReached,
+            ErrorCode::RateLimited => Self::RateLimited,
+            ErrorCode::CircuitOpen => Self::CircuitOpen,
+            ErrorCode::NamespaceQuotaExceeded => Self::NamespaceQuotaExceeded,
+            ErrorCode::AuthFailed => Self::AuthFailed,
+        }
+    }
+}
+
+impl TryFrom<i32> for ErrorCode {
+    type Error = anyhow::Error;
+
+    fn try_from(value: i32) -> anyhow::Result<Self> {
+        match pb::ErrorCode::try_from(value)? {
+            pb::ErrorCode::NodeInactive => Ok(Self::NodeInactive),
+            pb::ErrorCode::NoQuorum => Ok(Self::NoQuorum),
+            pb::ErrorCode::KeyNotFound => Ok(Self::KeyNotFound),
+            pb::ErrorCode::InternalError => Ok(Self::InternalError),
+            pb::ErrorCode::WriteTimeout => Ok(Self::WriteTimeout),
+            pb::ErrorCode::ValueTooLarge => Ok(Self::ValueTooLarge),
+            pb::ErrorCode::KeyLimitReached => Ok(Self::KeyLimitReached),
+            pb::ErrorCode::RateLimited => Ok(Self::RateLimited),
+            pb::ErrorCode::CircuitOpen => Ok(Self::CircuitOpen),
+            pb::ErrorCode::NamespaceQuotaExceeded => Ok(Self::NamespaceQuotaExceeded),
+            pb::ErrorCode::AuthFailed => Ok(Self::AuthFailed),
+        }
+    }
+}
+
+impl From<NodeInfo> for pb::NodeInfo {
+    fn from(value: NodeInfo) -> Self {
+        Self {
+            id: uuid_to_string(value.id),
+            addr: socket_to_string(value.addr),
+            cluster_port: value.cluster_port as u32,
+            status: pb::NodeStatus::from(value.status) as i32,
+            last_applied: value.last_applied,
+        }
+    }
+}
+
+impl TryFrom<pb::NodeInfo> for NodeInfo {
+    type Error = anyhow::Error;
+
+    fn try_from(value: pb::NodeInfo) -> anyhow::Result<Self> {
+        Ok(Self {
+            id: uuid_from_string(value.id)?,
+            addr: socket_from_string(value.addr)?,
+            cluster_port: u16::try_from(value.cluster_port)?,
+            status: value.status.try_into()?,
+            last_applied: value.last_applied,
+        })
+    }
+}
+
+impl From<LogEntry> for pb::LogEntry {
+    fn from(value: LogEntry) -> Self {
+        Self {
+            index: value.index,
+            key: value.key,
+            value: opt_bytes(value.value),
+            ttl_secs: opt_u64(value.ttl_secs),
+            ts_ms: value.ts_ms,
+        }
+    }
+}
+
+impl TryFrom<pb::LogEntry> for LogEntry {
+    type Error = anyhow::Error;
+
+    fn try_from(value: pb::LogEntry) -> anyhow::Result<Self> {
+        Ok(Self {
+            index: value.index,
+            key: value.key,
+            value: from_opt_bytes(value.value),
+            ttl_secs: from_opt_u64(value.ttl_secs),
+            ts_ms: value.ts_ms,
+        })
+    }
+}
+
+impl From<ClientRequest> for pb::ClientRequest {
+    fn from(value: ClientRequest) -> Self {
+        use pb::client_request::Request;
+        let request = match value {
+            ClientRequest::Get { key, namespace } => Request::Get(pb::KeyNamespace {
+                key,
+                namespace: opt_string(namespace),
+            }),
+            ClientRequest::Set {
+                key,
+                value,
+                ttl_secs,
+                namespace,
+            } => Request::Set(pb::SetRequest {
+                key,
+                value: value.to_vec(),
+                ttl_secs: opt_u64(ttl_secs),
+                namespace: opt_string(namespace),
+            }),
+            ClientRequest::Delete { key, namespace } => Request::Delete(pb::KeyNamespace {
+                key,
+                namespace: opt_string(namespace),
+            }),
+            ClientRequest::Ping => Request::Ping(pb::Empty {}),
+            ClientRequest::Auth { token } => Request::Auth(pb::AuthRequest { token }),
+            ClientRequest::Watch { key, namespace } => Request::Watch(pb::KeyNamespace {
+                key,
+                namespace: opt_string(namespace),
+            }),
+            ClientRequest::Unwatch { key, namespace } => Request::Unwatch(pb::KeyNamespace {
+                key,
+                namespace: opt_string(namespace),
+            }),
+            ClientRequest::DeleteByPattern { pattern, namespace } => {
+                Request::DeleteByPattern(pb::PatternNamespace {
+                    pattern,
+                    namespace: opt_string(namespace),
+                })
+            }
+            ClientRequest::SetTtlByPattern {
+                pattern,
+                ttl_secs,
+                namespace,
+            } => Request::SetTtlByPattern(pb::SetTtlByPatternRequest {
+                pattern,
+                ttl_secs: opt_u64(ttl_secs),
+                namespace: opt_string(namespace),
+            }),
+        };
+        Self {
+            request: Some(request),
+        }
+    }
+}
+
+impl TryFrom<pb::ClientRequest> for ClientRequest {
+    type Error = anyhow::Error;
+
+    fn try_from(value: pb::ClientRequest) -> anyhow::Result<Self> {
+        use pb::client_request::Request;
+        let request = value
+            .request
+            .ok_or_else(|| anyhow::anyhow!("missing client request payload"))?;
+        Ok(match request {
+            Request::Get(v) => Self::Get {
+                key: v.key,
+                namespace: from_opt_string(v.namespace),
+            },
+            Request::Set(v) => Self::Set {
+                key: v.key,
+                value: Bytes::from(v.value),
+                ttl_secs: from_opt_u64(v.ttl_secs),
+                namespace: from_opt_string(v.namespace),
+            },
+            Request::Delete(v) => Self::Delete {
+                key: v.key,
+                namespace: from_opt_string(v.namespace),
+            },
+            Request::Ping(_) => Self::Ping,
+            Request::Auth(v) => Self::Auth { token: v.token },
+            Request::Watch(v) => Self::Watch {
+                key: v.key,
+                namespace: from_opt_string(v.namespace),
+            },
+            Request::Unwatch(v) => Self::Unwatch {
+                key: v.key,
+                namespace: from_opt_string(v.namespace),
+            },
+            Request::DeleteByPattern(v) => Self::DeleteByPattern {
+                pattern: v.pattern,
+                namespace: from_opt_string(v.namespace),
+            },
+            Request::SetTtlByPattern(v) => Self::SetTtlByPattern {
+                pattern: v.pattern,
+                ttl_secs: from_opt_u64(v.ttl_secs),
+                namespace: from_opt_string(v.namespace),
+            },
+        })
+    }
+}
+
+impl From<ClientResponse> for pb::ClientResponse {
+    fn from(value: ClientResponse) -> Self {
+        use pb::client_response::Response;
+        let response = match value {
+            ClientResponse::Value {
+                key,
+                value,
+                version,
+            } => Response::Value(pb::ValueResponse {
+                key,
+                value: value.to_vec(),
+                version,
+            }),
+            ClientResponse::Ok { version } => Response::Ok(pb::VersionResponse { version }),
+            ClientResponse::Deleted => Response::Deleted(pb::Empty {}),
+            ClientResponse::NotFound => Response::NotFound(pb::Empty {}),
+            ClientResponse::Pong => Response::Pong(pb::Empty {}),
+            ClientResponse::AuthOk => Response::AuthOk(pb::Empty {}),
+            ClientResponse::Error { code, message } => Response::Error(pb::ErrorResponse {
+                code: pb::ErrorCode::from(code) as i32,
+                message,
+            }),
+            ClientResponse::Watching => Response::Watching(pb::Empty {}),
+            ClientResponse::Unwatched => Response::Unwatched(pb::Empty {}),
+            ClientResponse::WatchEvent {
+                key,
+                value,
+                version,
+            } => Response::WatchEvent(pb::WatchEvent {
+                key,
+                value: opt_bytes(value),
+                version,
+            }),
+            ClientResponse::PatternDeleted { deleted } => {
+                Response::PatternDeleted(pb::CountResponse {
+                    count: deleted as u64,
+                })
+            }
+            ClientResponse::PatternTtlUpdated { updated } => {
+                Response::PatternTtlUpdated(pb::CountResponse {
+                    count: updated as u64,
+                })
+            }
+        };
+        Self {
+            response: Some(response),
+        }
+    }
+}
+
+impl TryFrom<pb::ClientResponse> for ClientResponse {
+    type Error = anyhow::Error;
+
+    fn try_from(value: pb::ClientResponse) -> anyhow::Result<Self> {
+        use pb::client_response::Response;
+        let response = value
+            .response
+            .ok_or_else(|| anyhow::anyhow!("missing client response payload"))?;
+        Ok(match response {
+            Response::Value(v) => Self::Value {
+                key: v.key,
+                value: Bytes::from(v.value),
+                version: v.version,
+            },
+            Response::Ok(v) => Self::Ok { version: v.version },
+            Response::Deleted(_) => Self::Deleted,
+            Response::NotFound(_) => Self::NotFound,
+            Response::Pong(_) => Self::Pong,
+            Response::AuthOk(_) => Self::AuthOk,
+            Response::Error(v) => Self::Error {
+                code: v.code.try_into()?,
+                message: v.message,
+            },
+            Response::Watching(_) => Self::Watching,
+            Response::Unwatched(_) => Self::Unwatched,
+            Response::WatchEvent(v) => Self::WatchEvent {
+                key: v.key,
+                value: from_opt_bytes(v.value),
+                version: v.version,
+            },
+            Response::PatternDeleted(v) => Self::PatternDeleted {
+                deleted: usize::try_from(v.count)?,
+            },
+            Response::PatternTtlUpdated(v) => Self::PatternTtlUpdated {
+                updated: usize::try_from(v.count)?,
+            },
+        })
+    }
+}
+
+impl From<AdminRequest> for pb::AdminRequest {
+    fn from(value: AdminRequest) -> Self {
+        use pb::admin_request::Request;
+        let request = match value {
+            AdminRequest::Describe => Request::Describe(pb::Empty {}),
+            AdminRequest::GetProperty { name } => Request::GetProperty(pb::Named { name }),
+            AdminRequest::SetProperty { name, value } => {
+                Request::SetProperty(pb::PropertyUpdate { name, value })
+            }
+            AdminRequest::ListKeys { pattern } => Request::ListKeys(pb::ListKeys {
+                pattern: opt_string(pattern),
+            }),
+            AdminRequest::GetStats => Request::GetStats(pb::Empty {}),
+            AdminRequest::GetKeyInfo { key } => Request::GetKeyInfo(pb::KeyOnly { key }),
+            AdminRequest::SetKeyProperty { key, name, value } => {
+                Request::SetKeyProperty(pb::KeyPropertyUpdate { key, name, value })
+            }
+            AdminRequest::FlushCache => Request::FlushCache(pb::Empty {}),
+            AdminRequest::ClusterStatus => Request::ClusterStatus(pb::Empty {}),
+            AdminRequest::BackupNow => Request::BackupNow(pb::Empty {}),
+            AdminRequest::RestoreLatestSnapshot => Request::RestoreLatestSnapshot(pb::Empty {}),
+            AdminRequest::SetKeysTtl { pattern, ttl_secs } => {
+                Request::SetKeysTtl(pb::SetKeysTtl {
+                    pattern,
+                    ttl_secs: opt_u64(ttl_secs),
+                })
+            }
+        };
+        Self {
+            request: Some(request),
+        }
+    }
+}
+
+impl TryFrom<pb::AdminRequest> for AdminRequest {
+    type Error = anyhow::Error;
+
+    fn try_from(value: pb::AdminRequest) -> anyhow::Result<Self> {
+        use pb::admin_request::Request;
+        let request = value
+            .request
+            .ok_or_else(|| anyhow::anyhow!("missing admin request payload"))?;
+        Ok(match request {
+            Request::Describe(_) => Self::Describe,
+            Request::GetProperty(v) => Self::GetProperty { name: v.name },
+            Request::SetProperty(v) => Self::SetProperty {
+                name: v.name,
+                value: v.value,
+            },
+            Request::ListKeys(v) => Self::ListKeys {
+                pattern: from_opt_string(v.pattern),
+            },
+            Request::GetStats(_) => Self::GetStats,
+            Request::GetKeyInfo(v) => Self::GetKeyInfo { key: v.key },
+            Request::SetKeyProperty(v) => Self::SetKeyProperty {
+                key: v.key,
+                name: v.name,
+                value: v.value,
+            },
+            Request::FlushCache(_) => Self::FlushCache,
+            Request::ClusterStatus(_) => Self::ClusterStatus,
+            Request::BackupNow(_) => Self::BackupNow,
+            Request::RestoreLatestSnapshot(_) => Self::RestoreLatestSnapshot,
+            Request::SetKeysTtl(v) => Self::SetKeysTtl {
+                pattern: v.pattern,
+                ttl_secs: from_opt_u64(v.ttl_secs),
+            },
+        })
+    }
+}
+
+impl From<ClusterMessage> for pb::ClusterMessage {
+    fn from(value: ClusterMessage) -> Self {
+        use pb::cluster_message::Message;
+        let message = match value {
+            ClusterMessage::Prepare {
+                log_index,
+                key,
+                value,
+                ttl_secs,
+            } => Message::Prepare(pb::Prepare {
+                log_index,
+                key,
+                value: opt_bytes(value),
+                ttl_secs: opt_u64(ttl_secs),
+            }),
+            ClusterMessage::PrepareAck { log_index, node_id } => Message::PrepareAck(pb::LogAck {
+                log_index,
+                node_id: uuid_to_string(node_id),
+            }),
+            ClusterMessage::Commit { log_index } => Message::Commit(pb::Commit { log_index }),
+            ClusterMessage::CommitAck { log_index, node_id } => Message::CommitAck(pb::LogAck {
+                log_index,
+                node_id: uuid_to_string(node_id),
+            }),
+            ClusterMessage::Forward {
+                request,
+                origin_node,
+            } => Message::Forward(pb::Forward {
+                request: Some(request.into()),
+                origin_node: uuid_to_string(origin_node),
+            }),
+            ClusterMessage::RequestLog { from_index } => {
+                Message::RequestLog(pb::RequestLog { from_index })
+            }
+            ClusterMessage::LogEntries { entries } => Message::LogEntries(pb::LogEntries {
+                entries: entries.into_iter().map(Into::into).collect(),
+            }),
+            ClusterMessage::Synced {
+                node_id,
+                last_applied,
+            } => Message::Synced(pb::Synced {
+                node_id: uuid_to_string(node_id),
+                last_applied,
+            }),
+            ClusterMessage::ForwardResponse(resp) => Message::ForwardResponse(resp.into()),
+            ClusterMessage::ForcePrimary { node_id } => Message::ForcePrimary(pb::ForcePrimary {
+                node_id: uuid_to_string(node_id),
+            }),
+            ClusterMessage::Admin(req) => Message::Admin(req.into()),
+            ClusterMessage::AdminResponse(resp) => Message::AdminResponse((*resp).into()),
+        };
+        Self {
+            message: Some(message),
+        }
+    }
+}
+
+impl TryFrom<pb::ClusterMessage> for ClusterMessage {
+    type Error = anyhow::Error;
+
+    fn try_from(value: pb::ClusterMessage) -> anyhow::Result<Self> {
+        use pb::cluster_message::Message;
+        let message = value
+            .message
+            .ok_or_else(|| anyhow::anyhow!("missing cluster message payload"))?;
+        Ok(match message {
+            Message::Prepare(v) => Self::Prepare {
+                log_index: v.log_index,
+                key: v.key,
+                value: from_opt_bytes(v.value),
+                ttl_secs: from_opt_u64(v.ttl_secs),
+            },
+            Message::PrepareAck(v) => Self::PrepareAck {
+                log_index: v.log_index,
+                node_id: uuid_from_string(v.node_id)?,
+            },
+            Message::Commit(v) => Self::Commit {
+                log_index: v.log_index,
+            },
+            Message::CommitAck(v) => Self::CommitAck {
+                log_index: v.log_index,
+                node_id: uuid_from_string(v.node_id)?,
+            },
+            Message::Forward(v) => Self::Forward {
+                request: v
+                    .request
+                    .ok_or_else(|| anyhow::anyhow!("missing forwarded request"))?
+                    .try_into()?,
+                origin_node: uuid_from_string(v.origin_node)?,
+            },
+            Message::RequestLog(v) => Self::RequestLog {
+                from_index: v.from_index,
+            },
+            Message::LogEntries(v) => Self::LogEntries {
+                entries: v
+                    .entries
+                    .into_iter()
+                    .map(TryInto::try_into)
+                    .collect::<anyhow::Result<Vec<_>>>()?,
+            },
+            Message::Synced(v) => Self::Synced {
+                node_id: uuid_from_string(v.node_id)?,
+                last_applied: v.last_applied,
+            },
+            Message::ForwardResponse(v) => Self::ForwardResponse(v.try_into()?),
+            Message::ForcePrimary(v) => Self::ForcePrimary {
+                node_id: uuid_from_string(v.node_id)?,
+            },
+            Message::Admin(v) => Self::Admin(v.try_into()?),
+            Message::AdminResponse(v) => Self::AdminResponse(Box::new(v.try_into()?)),
+        })
+    }
+}
+
+impl From<GossipMessage> for pb::GossipMessage {
+    fn from(value: GossipMessage) -> Self {
+        use pb::gossip_message::Message;
+        let message = match value {
+            GossipMessage::Heartbeat {
+                node_id,
+                addr,
+                cluster_port,
+                status,
+                last_applied,
+            } => Message::Heartbeat(pb::Heartbeat {
+                node_id: uuid_to_string(node_id),
+                addr: socket_to_string(addr),
+                cluster_port: cluster_port as u32,
+                status: pb::NodeStatus::from(status) as i32,
+                last_applied,
+            }),
+            GossipMessage::ActiveSetUpdate { active_nodes } => {
+                Message::ActiveSetUpdate(pb::ActiveSetUpdate {
+                    active_nodes: active_nodes.into_iter().map(Into::into).collect(),
+                })
+            }
+        };
+        Self {
+            message: Some(message),
+        }
+    }
+}
+
+impl TryFrom<pb::GossipMessage> for GossipMessage {
+    type Error = anyhow::Error;
+
+    fn try_from(value: pb::GossipMessage) -> anyhow::Result<Self> {
+        use pb::gossip_message::Message;
+        let message = value
+            .message
+            .ok_or_else(|| anyhow::anyhow!("missing gossip message payload"))?;
+        Ok(match message {
+            Message::Heartbeat(v) => Self::Heartbeat {
+                node_id: uuid_from_string(v.node_id)?,
+                addr: socket_from_string(v.addr)?,
+                cluster_port: u16::try_from(v.cluster_port)?,
+                status: v.status.try_into()?,
+                last_applied: v.last_applied,
+            },
+            Message::ActiveSetUpdate(v) => Self::ActiveSetUpdate {
+                active_nodes: v
+                    .active_nodes
+                    .into_iter()
+                    .map(TryInto::try_into)
+                    .collect::<anyhow::Result<Vec<_>>>()?,
+            },
+        })
+    }
+}
+
+impl From<NamespaceQuotaUsage> for pb::NamespaceQuotaUsage {
+    fn from(value: NamespaceQuotaUsage) -> Self {
+        Self {
+            namespace: value.namespace,
+            key_count: value.key_count,
+            quota_limit: value.quota_limit,
+            usage_pct: value.usage_pct,
+            remaining_keys: value.remaining_keys,
+        }
+    }
+}
+
+impl From<pb::NamespaceQuotaUsage> for NamespaceQuotaUsage {
+    fn from(value: pb::NamespaceQuotaUsage) -> Self {
+        Self {
+            namespace: value.namespace,
+            key_count: value.key_count,
+            quota_limit: value.quota_limit,
+            usage_pct: value.usage_pct,
+            remaining_keys: value.remaining_keys,
+        }
+    }
+}
+
+impl From<NamespaceLatencySummary> for pb::NamespaceLatencySummary {
+    fn from(value: NamespaceLatencySummary) -> Self {
+        Self {
+            namespace: value.namespace,
+            request_total: value.request_total,
+            latency_p95_estimate_ms: opt_u64(value.latency_p95_estimate_ms),
+            latency_p99_estimate_ms: opt_u64(value.latency_p99_estimate_ms),
+        }
+    }
+}
+
+impl From<pb::NamespaceLatencySummary> for NamespaceLatencySummary {
+    fn from(value: pb::NamespaceLatencySummary) -> Self {
+        Self {
+            namespace: value.namespace,
+            request_total: value.request_total,
+            latency_p95_estimate_ms: from_opt_u64(value.latency_p95_estimate_ms),
+            latency_p99_estimate_ms: from_opt_u64(value.latency_p99_estimate_ms),
+        }
+    }
+}
+
+impl From<HotKeyUsage> for pb::HotKeyUsage {
+    fn from(value: HotKeyUsage) -> Self {
+        Self {
+            key: value.key,
+            request_total: value.request_total,
+        }
+    }
+}
+
+impl From<pb::HotKeyUsage> for HotKeyUsage {
+    fn from(value: pb::HotKeyUsage) -> Self {
+        Self {
+            key: value.key,
+            request_total: value.request_total,
+        }
+    }
+}
+
+impl From<NodeStats> for pb::NodeStats {
+    fn from(value: NodeStats) -> Self {
+        Self {
+            node_id: uuid_to_string(value.node_id),
+            status: pb::NodeStatus::from(value.status) as i32,
+            is_primary: value.is_primary,
+            committed_index: value.committed_index,
+            key_count: value.key_count,
+            memory_used_bytes: value.memory_used_bytes,
+            memory_max_bytes: value.memory_max_bytes,
+            evictions: value.evictions,
+            hit_count: value.hit_count,
+            miss_count: value.miss_count,
+            uptime_secs: value.uptime_secs,
+            value_size_limit_bytes: value.value_size_limit_bytes,
+            max_keys_limit: value.max_keys_limit,
+            compression_enabled: value.compression_enabled,
+            compression_threshold_bytes: value.compression_threshold_bytes,
+            node_name: value.node_name,
+            backup_dir_bytes: value.backup_dir_bytes,
+            snapshot_last_load_path: opt_string(value.snapshot_last_load_path),
+            snapshot_last_load_duration_ms: value.snapshot_last_load_duration_ms,
+            snapshot_last_load_entries: value.snapshot_last_load_entries,
+            snapshot_last_load_age_secs: opt_u64(value.snapshot_last_load_age_secs),
+            snapshot_restore_attempt_total: value.snapshot_restore_attempt_total,
+            snapshot_restore_success_total: value.snapshot_restore_success_total,
+            snapshot_restore_failure_total: value.snapshot_restore_failure_total,
+            snapshot_restore_not_found_total: value.snapshot_restore_not_found_total,
+            snapshot_restore_policy_block_total: value.snapshot_restore_policy_block_total,
+            snapshot_restore_success_ratio_pct: value.snapshot_restore_success_ratio_pct,
+            persistence_platform_allowed: value.persistence_platform_allowed,
+            persistence_runtime_enabled: value.persistence_runtime_enabled,
+            persistence_enabled: value.persistence_enabled,
+            persistence_backup_enabled: value.persistence_backup_enabled,
+            persistence_export_enabled: value.persistence_export_enabled,
+            persistence_import_enabled: value.persistence_import_enabled,
+            tenancy_enabled: value.tenancy_enabled,
+            tenancy_default_namespace: value.tenancy_default_namespace,
+            tenancy_max_keys_per_namespace: value.tenancy_max_keys_per_namespace as u64,
+            rate_limit_enabled: value.rate_limit_enabled,
+            rate_limited_requests_total: value.rate_limited_requests_total,
+            circuit_breaker_enabled: value.circuit_breaker_enabled,
+            hot_key_enabled: value.hot_key_enabled,
+            hot_key_adaptive_waiters_enabled: value.hot_key_adaptive_waiters_enabled,
+            read_repair_enabled: value.read_repair_enabled,
+            hot_key_coalesced_hits_total: value.hot_key_coalesced_hits_total,
+            hot_key_fallback_exec_total: value.hot_key_fallback_exec_total,
+            hot_key_wait_timeout_total: value.hot_key_wait_timeout_total,
+            hot_key_stale_served_total: value.hot_key_stale_served_total,
+            hot_key_inflight_keys: value.hot_key_inflight_keys,
+            hot_key_stale_cache_entries: value.hot_key_stale_cache_entries,
+            hot_key_adaptive_state_keys: value.hot_key_adaptive_state_keys,
+            hot_key_adaptive_limit_increase_total: value.hot_key_adaptive_limit_increase_total,
+            hot_key_adaptive_limit_decrease_total: value.hot_key_adaptive_limit_decrease_total,
+            read_repair_trigger_total: value.read_repair_trigger_total,
+            read_repair_success_total: value.read_repair_success_total,
+            read_repair_throttled_total: value.read_repair_throttled_total,
+            read_repair_budget_exhausted_total: value.read_repair_budget_exhausted_total,
+            namespace_quota_reject_total: value.namespace_quota_reject_total,
+            namespace_quota_reject_rate_per_min: value.namespace_quota_reject_rate_per_min,
+            namespace_quota_reject_trend: value.namespace_quota_reject_trend,
+            namespace_quota_top_usage: value
+                .namespace_quota_top_usage
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            namespace_latency_top: value
+                .namespace_latency_top
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            hot_key_top_usage: value.hot_key_top_usage.into_iter().map(Into::into).collect(),
+            anti_entropy_runs_total: value.anti_entropy_runs_total,
+            anti_entropy_repair_trigger_total: value.anti_entropy_repair_trigger_total,
+            anti_entropy_repair_throttled_total: value.anti_entropy_repair_throttled_total,
+            anti_entropy_last_detected_lag: value.anti_entropy_last_detected_lag,
+            anti_entropy_key_checks_total: value.anti_entropy_key_checks_total,
+            anti_entropy_key_mismatch_total: value.anti_entropy_key_mismatch_total,
+            anti_entropy_full_reconcile_runs_total: value.anti_entropy_full_reconcile_runs_total,
+            anti_entropy_full_reconcile_key_checks_total: value
+                .anti_entropy_full_reconcile_key_checks_total,
+            anti_entropy_full_reconcile_mismatch_total: value
+                .anti_entropy_full_reconcile_mismatch_total,
+            anti_entropy_budget_exhausted_total: value.anti_entropy_budget_exhausted_total,
+            mixed_version_probe_runs_total: value.mixed_version_probe_runs_total,
+            mixed_version_peers_detected_total: value.mixed_version_peers_detected_total,
+            mixed_version_probe_errors_total: value.mixed_version_probe_errors_total,
+            mixed_version_last_detected_peer_count: value.mixed_version_last_detected_peer_count,
+            circuit_breaker_state: value.circuit_breaker_state,
+            circuit_breaker_open_total: value.circuit_breaker_open_total,
+            circuit_breaker_reject_total: value.circuit_breaker_reject_total,
+            client_requests_total: value.client_requests_total,
+            client_requests_tcp_total: value.client_requests_tcp_total,
+            client_requests_http_total: value.client_requests_http_total,
+            client_requests_internal_total: value.client_requests_internal_total,
+            client_request_latency_le_1ms_total: value.client_request_latency_le_1ms_total,
+            client_request_latency_le_5ms_total: value.client_request_latency_le_5ms_total,
+            client_request_latency_le_20ms_total: value.client_request_latency_le_20ms_total,
+            client_request_latency_le_100ms_total: value.client_request_latency_le_100ms_total,
+            client_request_latency_le_500ms_total: value.client_request_latency_le_500ms_total,
+            client_request_latency_gt_500ms_total: value.client_request_latency_gt_500ms_total,
+            client_latency_p50_estimate_ms: opt_u64(value.client_latency_p50_estimate_ms),
+            client_latency_p90_estimate_ms: opt_u64(value.client_latency_p90_estimate_ms),
+            client_latency_p95_estimate_ms: opt_u64(value.client_latency_p95_estimate_ms),
+            client_latency_p99_estimate_ms: opt_u64(value.client_latency_p99_estimate_ms),
+            client_error_total: value.client_error_total,
+            client_errors_tcp_total: value.client_errors_tcp_total,
+            client_errors_http_total: value.client_errors_http_total,
+            client_errors_internal_total: value.client_errors_internal_total,
+            client_error_auth_total: value.client_error_auth_total,
+            client_error_throttle_total: value.client_error_throttle_total,
+            client_error_availability_total: value.client_error_availability_total,
+            client_error_validation_total: value.client_error_validation_total,
+            client_error_internal_total: value.client_error_internal_total,
+            client_error_other_total: value.client_error_other_total,
+        }
+    }
+}
+
+impl TryFrom<pb::NodeStats> for NodeStats {
+    type Error = anyhow::Error;
+
+    fn try_from(value: pb::NodeStats) -> anyhow::Result<Self> {
+        Ok(Self {
+            node_id: uuid_from_string(value.node_id)?,
+            status: value.status.try_into()?,
+            is_primary: value.is_primary,
+            committed_index: value.committed_index,
+            key_count: value.key_count,
+            memory_used_bytes: value.memory_used_bytes,
+            memory_max_bytes: value.memory_max_bytes,
+            evictions: value.evictions,
+            hit_count: value.hit_count,
+            miss_count: value.miss_count,
+            uptime_secs: value.uptime_secs,
+            value_size_limit_bytes: value.value_size_limit_bytes,
+            max_keys_limit: value.max_keys_limit,
+            compression_enabled: value.compression_enabled,
+            compression_threshold_bytes: value.compression_threshold_bytes,
+            node_name: value.node_name,
+            backup_dir_bytes: value.backup_dir_bytes,
+            snapshot_last_load_path: from_opt_string(value.snapshot_last_load_path),
+            snapshot_last_load_duration_ms: value.snapshot_last_load_duration_ms,
+            snapshot_last_load_entries: value.snapshot_last_load_entries,
+            snapshot_last_load_age_secs: from_opt_u64(value.snapshot_last_load_age_secs),
+            snapshot_restore_attempt_total: value.snapshot_restore_attempt_total,
+            snapshot_restore_success_total: value.snapshot_restore_success_total,
+            snapshot_restore_failure_total: value.snapshot_restore_failure_total,
+            snapshot_restore_not_found_total: value.snapshot_restore_not_found_total,
+            snapshot_restore_policy_block_total: value.snapshot_restore_policy_block_total,
+            snapshot_restore_success_ratio_pct: value.snapshot_restore_success_ratio_pct,
+            persistence_platform_allowed: value.persistence_platform_allowed,
+            persistence_runtime_enabled: value.persistence_runtime_enabled,
+            persistence_enabled: value.persistence_enabled,
+            persistence_backup_enabled: value.persistence_backup_enabled,
+            persistence_export_enabled: value.persistence_export_enabled,
+            persistence_import_enabled: value.persistence_import_enabled,
+            tenancy_enabled: value.tenancy_enabled,
+            tenancy_default_namespace: value.tenancy_default_namespace,
+            tenancy_max_keys_per_namespace: usize::try_from(value.tenancy_max_keys_per_namespace)?,
+            rate_limit_enabled: value.rate_limit_enabled,
+            rate_limited_requests_total: value.rate_limited_requests_total,
+            circuit_breaker_enabled: value.circuit_breaker_enabled,
+            hot_key_enabled: value.hot_key_enabled,
+            hot_key_adaptive_waiters_enabled: value.hot_key_adaptive_waiters_enabled,
+            read_repair_enabled: value.read_repair_enabled,
+            hot_key_coalesced_hits_total: value.hot_key_coalesced_hits_total,
+            hot_key_fallback_exec_total: value.hot_key_fallback_exec_total,
+            hot_key_wait_timeout_total: value.hot_key_wait_timeout_total,
+            hot_key_stale_served_total: value.hot_key_stale_served_total,
+            hot_key_inflight_keys: value.hot_key_inflight_keys,
+            hot_key_stale_cache_entries: value.hot_key_stale_cache_entries,
+            hot_key_adaptive_state_keys: value.hot_key_adaptive_state_keys,
+            hot_key_adaptive_limit_increase_total: value.hot_key_adaptive_limit_increase_total,
+            hot_key_adaptive_limit_decrease_total: value.hot_key_adaptive_limit_decrease_total,
+            read_repair_trigger_total: value.read_repair_trigger_total,
+            read_repair_success_total: value.read_repair_success_total,
+            read_repair_throttled_total: value.read_repair_throttled_total,
+            read_repair_budget_exhausted_total: value.read_repair_budget_exhausted_total,
+            namespace_quota_reject_total: value.namespace_quota_reject_total,
+            namespace_quota_reject_rate_per_min: value.namespace_quota_reject_rate_per_min,
+            namespace_quota_reject_trend: value.namespace_quota_reject_trend,
+            namespace_quota_top_usage: value
+                .namespace_quota_top_usage
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            namespace_latency_top: value
+                .namespace_latency_top
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            hot_key_top_usage: value.hot_key_top_usage.into_iter().map(Into::into).collect(),
+            anti_entropy_runs_total: value.anti_entropy_runs_total,
+            anti_entropy_repair_trigger_total: value.anti_entropy_repair_trigger_total,
+            anti_entropy_repair_throttled_total: value.anti_entropy_repair_throttled_total,
+            anti_entropy_last_detected_lag: value.anti_entropy_last_detected_lag,
+            anti_entropy_key_checks_total: value.anti_entropy_key_checks_total,
+            anti_entropy_key_mismatch_total: value.anti_entropy_key_mismatch_total,
+            anti_entropy_full_reconcile_runs_total: value.anti_entropy_full_reconcile_runs_total,
+            anti_entropy_full_reconcile_key_checks_total: value
+                .anti_entropy_full_reconcile_key_checks_total,
+            anti_entropy_full_reconcile_mismatch_total: value
+                .anti_entropy_full_reconcile_mismatch_total,
+            anti_entropy_budget_exhausted_total: value.anti_entropy_budget_exhausted_total,
+            mixed_version_probe_runs_total: value.mixed_version_probe_runs_total,
+            mixed_version_peers_detected_total: value.mixed_version_peers_detected_total,
+            mixed_version_probe_errors_total: value.mixed_version_probe_errors_total,
+            mixed_version_last_detected_peer_count: value.mixed_version_last_detected_peer_count,
+            circuit_breaker_state: value.circuit_breaker_state,
+            circuit_breaker_open_total: value.circuit_breaker_open_total,
+            circuit_breaker_reject_total: value.circuit_breaker_reject_total,
+            client_requests_total: value.client_requests_total,
+            client_requests_tcp_total: value.client_requests_tcp_total,
+            client_requests_http_total: value.client_requests_http_total,
+            client_requests_internal_total: value.client_requests_internal_total,
+            client_request_latency_le_1ms_total: value.client_request_latency_le_1ms_total,
+            client_request_latency_le_5ms_total: value.client_request_latency_le_5ms_total,
+            client_request_latency_le_20ms_total: value.client_request_latency_le_20ms_total,
+            client_request_latency_le_100ms_total: value.client_request_latency_le_100ms_total,
+            client_request_latency_le_500ms_total: value.client_request_latency_le_500ms_total,
+            client_request_latency_gt_500ms_total: value.client_request_latency_gt_500ms_total,
+            client_latency_p50_estimate_ms: from_opt_u64(value.client_latency_p50_estimate_ms),
+            client_latency_p90_estimate_ms: from_opt_u64(value.client_latency_p90_estimate_ms),
+            client_latency_p95_estimate_ms: from_opt_u64(value.client_latency_p95_estimate_ms),
+            client_latency_p99_estimate_ms: from_opt_u64(value.client_latency_p99_estimate_ms),
+            client_error_total: value.client_error_total,
+            client_errors_tcp_total: value.client_errors_tcp_total,
+            client_errors_http_total: value.client_errors_http_total,
+            client_errors_internal_total: value.client_errors_internal_total,
+            client_error_auth_total: value.client_error_auth_total,
+            client_error_throttle_total: value.client_error_throttle_total,
+            client_error_availability_total: value.client_error_availability_total,
+            client_error_validation_total: value.client_error_validation_total,
+            client_error_internal_total: value.client_error_internal_total,
+            client_error_other_total: value.client_error_other_total,
+        })
+    }
+}
+
+impl From<AdminResponse> for pb::AdminResponse {
+    fn from(value: AdminResponse) -> Self {
+        use pb::admin_response::Response;
+        let response = match value {
+            AdminResponse::Properties(items) => Response::Properties(pb::Properties {
+                items: items
+                    .into_iter()
+                    .map(|(key, value)| pb::PropertyPair { key, value })
+                    .collect(),
+            }),
+            AdminResponse::Keys(keys) => Response::Keys(pb::Keys { keys }),
+            AdminResponse::Stats(stats) => Response::Stats((*stats).into()),
+            AdminResponse::KeyInfo {
+                key,
+                value,
+                version,
+                ttl_remaining_secs,
+                freq_count,
+                compressed,
+            } => Response::KeyInfo(pb::KeyInfo {
+                key,
+                value: value.to_vec(),
+                version,
+                ttl_remaining_secs: opt_u64(ttl_remaining_secs),
+                freq_count,
+                compressed,
+            }),
+            AdminResponse::KeyPropertyUpdated => Response::KeyPropertyUpdated(pb::Empty {}),
+            AdminResponse::Flushed => Response::Flushed(pb::Empty {}),
+            AdminResponse::ClusterView(nodes) => Response::ClusterView(pb::ClusterView {
+                nodes: nodes.into_iter().map(Into::into).collect(),
+            }),
+            AdminResponse::BackupResult { path, bytes } => {
+                Response::BackupResult(pb::BackupResult { path, bytes })
+            }
+            AdminResponse::RestoreResult {
+                path,
+                entries,
+                duration_ms,
+            } => Response::RestoreResult(pb::RestoreResult {
+                path,
+                entries,
+                duration_ms,
+            }),
+            AdminResponse::TtlUpdated { updated } => Response::TtlUpdated(pb::CountResponse {
+                count: updated as u64,
+            }),
+            AdminResponse::Ok => Response::Ok(pb::Empty {}),
+            AdminResponse::NotFound => Response::NotFound(pb::Empty {}),
+            AdminResponse::Error { message } => {
+                Response::Error(pb::ErrorMessage { message })
+            }
+        };
+        Self {
+            response: Some(response),
+        }
+    }
+}
+
+impl TryFrom<pb::AdminResponse> for AdminResponse {
+    type Error = anyhow::Error;
+
+    fn try_from(value: pb::AdminResponse) -> anyhow::Result<Self> {
+        use pb::admin_response::Response;
+        let response = value
+            .response
+            .ok_or_else(|| anyhow::anyhow!("missing admin response payload"))?;
+        Ok(match response {
+            Response::Properties(v) => Self::Properties(
+                v.items
+                    .into_iter()
+                    .map(|item| (item.key, item.value))
+                    .collect(),
+            ),
+            Response::Keys(v) => Self::Keys(v.keys),
+            Response::Stats(v) => Self::Stats(Box::new(v.try_into()?)),
+            Response::KeyInfo(v) => Self::KeyInfo {
+                key: v.key,
+                value: Bytes::from(v.value),
+                version: v.version,
+                ttl_remaining_secs: from_opt_u64(v.ttl_remaining_secs),
+                freq_count: v.freq_count,
+                compressed: v.compressed,
+            },
+            Response::KeyPropertyUpdated(_) => Self::KeyPropertyUpdated,
+            Response::Flushed(_) => Self::Flushed,
+            Response::ClusterView(v) => Self::ClusterView(
+                v.nodes
+                    .into_iter()
+                    .map(TryInto::try_into)
+                    .collect::<anyhow::Result<Vec<_>>>()?,
+            ),
+            Response::BackupResult(v) => Self::BackupResult {
+                path: v.path,
+                bytes: v.bytes,
+            },
+            Response::RestoreResult(v) => Self::RestoreResult {
+                path: v.path,
+                entries: v.entries,
+                duration_ms: v.duration_ms,
+            },
+            Response::TtlUpdated(v) => Self::TtlUpdated {
+                updated: usize::try_from(v.count)?,
+            },
+            Response::Ok(_) => Self::Ok,
+            Response::NotFound(_) => Self::NotFound,
+            Response::Error(v) => Self::Error { message: v.message },
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Wire framing helpers
 // ---------------------------------------------------------------------------
 
-/// Encode any serialisable message to length-prefixed bytes (4-byte BE length).
-pub fn encode<T: Serialize>(msg: &T) -> anyhow::Result<Vec<u8>> {
-    use bincode::Options;
-    let payload = bincode::DefaultOptions::new()
-        .with_fixint_encoding()
-        .serialize(msg)?;
+fn encode_payload<T: WireMessage>(msg: T) -> Vec<u8> {
+    let envelope = pb::Envelope {
+        version: PROTOCOL_VERSION,
+        payload: Some(msg.into_payload()),
+    };
+    envelope.encode_to_vec()
+}
+
+fn decode_payload<T: WireMessage>(buf: &[u8], max_size: u64) -> anyhow::Result<T> {
+    if buf.len() as u64 > max_size {
+        anyhow::bail!("message length {} exceeds max {}", buf.len(), max_size);
+    }
+
+    let envelope = pb::Envelope::decode(buf)?;
+    if envelope.version != PROTOCOL_VERSION {
+        anyhow::bail!(
+            "unsupported protocol version {} (expected {})",
+            envelope.version,
+            PROTOCOL_VERSION
+        );
+    }
+    let payload = envelope
+        .payload
+        .ok_or_else(|| anyhow::anyhow!("missing protobuf envelope payload"))?;
+    T::from_payload(payload)
+}
+
+/// Encode any protocol message to length-prefixed bytes (4-byte BE length).
+pub fn encode<T: WireMessage + Clone>(msg: &T) -> anyhow::Result<Vec<u8>> {
+    let payload = encode_payload(msg.clone());
     let mut out = Vec::with_capacity(4 + payload.len());
     out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     out.extend_from_slice(&payload);
@@ -557,11 +1649,16 @@ pub fn encode<T: Serialize>(msg: &T) -> anyhow::Result<Vec<u8>> {
 }
 
 /// Decode a length-prefixed message from a byte slice with limits.
-pub fn decode<T: for<'de> Deserialize<'de>>(buf: &[u8], max_size: u64) -> anyhow::Result<T> {
-    use bincode::Options;
-    let options = bincode::DefaultOptions::new()
-        .with_fixint_encoding()
-        .with_limit(max_size)
-        .allow_trailing_bytes();
-    Ok(options.deserialize(buf)?)
+pub fn decode<T: WireMessage>(buf: &[u8], max_size: u64) -> anyhow::Result<T> {
+    decode_payload(buf, max_size)
+}
+
+/// Encode a gossip datagram payload without TCP length framing.
+pub fn encode_gossip(msg: &GossipMessage) -> anyhow::Result<Vec<u8>> {
+    Ok(encode_payload(msg.clone()))
+}
+
+/// Decode a gossip datagram payload without TCP length framing.
+pub fn decode_gossip(buf: &[u8], max_size: u64) -> anyhow::Result<GossipMessage> {
+    decode_payload(buf, max_size)
 }

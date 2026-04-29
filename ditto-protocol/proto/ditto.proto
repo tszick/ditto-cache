@@ -1,0 +1,461 @@
+syntax = "proto3";
+
+package ditto.protocol.v1;
+
+message Envelope {
+  uint32 version = 1;
+  oneof payload {
+    ClientRequest client_request = 2;
+    ClientResponse client_response = 3;
+    ClusterMessage cluster_message = 4;
+    GossipMessage gossip_message = 5;
+  }
+}
+
+message OptionalString {
+  string value = 1;
+}
+
+message OptionalBytes {
+  bytes value = 1;
+}
+
+message OptionalUint64 {
+  uint64 value = 1;
+}
+
+enum NodeStatus {
+  NODE_STATUS_ACTIVE = 0;
+  NODE_STATUS_SYNCING = 1;
+  NODE_STATUS_OFFLINE = 2;
+  NODE_STATUS_INACTIVE = 3;
+}
+
+enum ErrorCode {
+  ERROR_CODE_NODE_INACTIVE = 0;
+  ERROR_CODE_NO_QUORUM = 1;
+  ERROR_CODE_KEY_NOT_FOUND = 2;
+  ERROR_CODE_INTERNAL_ERROR = 3;
+  ERROR_CODE_WRITE_TIMEOUT = 4;
+  ERROR_CODE_VALUE_TOO_LARGE = 5;
+  ERROR_CODE_KEY_LIMIT_REACHED = 6;
+  ERROR_CODE_RATE_LIMITED = 7;
+  ERROR_CODE_CIRCUIT_OPEN = 8;
+  ERROR_CODE_NAMESPACE_QUOTA_EXCEEDED = 9;
+  ERROR_CODE_AUTH_FAILED = 10;
+}
+
+message NodeInfo {
+  string id = 1;
+  string addr = 2;
+  uint32 cluster_port = 3;
+  NodeStatus status = 4;
+  uint64 last_applied = 5;
+}
+
+message ClientRequest {
+  oneof request {
+    KeyNamespace get = 1;
+    SetRequest set = 2;
+    KeyNamespace delete = 3;
+    Empty ping = 4;
+    AuthRequest auth = 5;
+    KeyNamespace watch = 6;
+    KeyNamespace unwatch = 7;
+    PatternNamespace delete_by_pattern = 8;
+    SetTtlByPatternRequest set_ttl_by_pattern = 9;
+  }
+}
+
+message ClientResponse {
+  oneof response {
+    ValueResponse value = 1;
+    VersionResponse ok = 2;
+    Empty deleted = 3;
+    Empty not_found = 4;
+    Empty pong = 5;
+    Empty auth_ok = 6;
+    ErrorResponse error = 7;
+    Empty watching = 8;
+    Empty unwatched = 9;
+    WatchEvent watch_event = 10;
+    CountResponse pattern_deleted = 11;
+    CountResponse pattern_ttl_updated = 12;
+  }
+}
+
+message ClusterMessage {
+  oneof message {
+    Prepare prepare = 1;
+    LogAck prepare_ack = 2;
+    Commit commit = 3;
+    LogAck commit_ack = 4;
+    Forward forward = 5;
+    RequestLog request_log = 6;
+    LogEntries log_entries = 7;
+    Synced synced = 8;
+    ClientResponse forward_response = 9;
+    ForcePrimary force_primary = 10;
+    AdminRequest admin = 11;
+    AdminResponse admin_response = 12;
+  }
+}
+
+message GossipMessage {
+  oneof message {
+    Heartbeat heartbeat = 1;
+    ActiveSetUpdate active_set_update = 2;
+  }
+}
+
+message AdminRequest {
+  oneof request {
+    Empty describe = 1;
+    Named get_property = 2;
+    PropertyUpdate set_property = 3;
+    ListKeys list_keys = 4;
+    Empty get_stats = 5;
+    KeyOnly get_key_info = 6;
+    KeyPropertyUpdate set_key_property = 7;
+    Empty flush_cache = 8;
+    Empty cluster_status = 9;
+    Empty backup_now = 10;
+    Empty restore_latest_snapshot = 11;
+    SetKeysTtl set_keys_ttl = 12;
+  }
+}
+
+message AdminResponse {
+  oneof response {
+    Properties properties = 1;
+    Keys keys = 2;
+    NodeStats stats = 3;
+    KeyInfo key_info = 4;
+    Empty key_property_updated = 5;
+    Empty flushed = 6;
+    ClusterView cluster_view = 7;
+    BackupResult backup_result = 8;
+    RestoreResult restore_result = 9;
+    CountResponse ttl_updated = 10;
+    Empty ok = 11;
+    Empty not_found = 12;
+    ErrorMessage error = 13;
+  }
+}
+
+message Empty {}
+
+message KeyNamespace {
+  string key = 1;
+  OptionalString namespace = 2;
+}
+
+message PatternNamespace {
+  string pattern = 1;
+  OptionalString namespace = 2;
+}
+
+message SetRequest {
+  string key = 1;
+  bytes value = 2;
+  OptionalUint64 ttl_secs = 3;
+  OptionalString namespace = 4;
+}
+
+message AuthRequest {
+  string token = 1;
+}
+
+message SetTtlByPatternRequest {
+  string pattern = 1;
+  OptionalUint64 ttl_secs = 2;
+  OptionalString namespace = 3;
+}
+
+message ValueResponse {
+  string key = 1;
+  bytes value = 2;
+  uint64 version = 3;
+}
+
+message VersionResponse {
+  uint64 version = 1;
+}
+
+message ErrorResponse {
+  ErrorCode code = 1;
+  string message = 2;
+}
+
+message WatchEvent {
+  string key = 1;
+  OptionalBytes value = 2;
+  uint64 version = 3;
+}
+
+message CountResponse {
+  uint64 count = 1;
+}
+
+message Prepare {
+  uint64 log_index = 1;
+  string key = 2;
+  OptionalBytes value = 3;
+  OptionalUint64 ttl_secs = 4;
+}
+
+message LogAck {
+  uint64 log_index = 1;
+  string node_id = 2;
+}
+
+message Commit {
+  uint64 log_index = 1;
+}
+
+message Forward {
+  ClientRequest request = 1;
+  string origin_node = 2;
+}
+
+message RequestLog {
+  uint64 from_index = 1;
+}
+
+message LogEntry {
+  uint64 index = 1;
+  string key = 2;
+  OptionalBytes value = 3;
+  OptionalUint64 ttl_secs = 4;
+  uint64 ts_ms = 5;
+}
+
+message LogEntries {
+  repeated LogEntry entries = 1;
+}
+
+message Synced {
+  string node_id = 1;
+  uint64 last_applied = 2;
+}
+
+message ForcePrimary {
+  string node_id = 1;
+}
+
+message Heartbeat {
+  string node_id = 1;
+  string addr = 2;
+  uint32 cluster_port = 3;
+  NodeStatus status = 4;
+  uint64 last_applied = 5;
+}
+
+message ActiveSetUpdate {
+  repeated NodeInfo active_nodes = 1;
+}
+
+message Named {
+  string name = 1;
+}
+
+message PropertyUpdate {
+  string name = 1;
+  string value = 2;
+}
+
+message ListKeys {
+  OptionalString pattern = 1;
+}
+
+message KeyOnly {
+  string key = 1;
+}
+
+message KeyPropertyUpdate {
+  string key = 1;
+  string name = 2;
+  string value = 3;
+}
+
+message SetKeysTtl {
+  string pattern = 1;
+  OptionalUint64 ttl_secs = 2;
+}
+
+message PropertyPair {
+  string key = 1;
+  string value = 2;
+}
+
+message Properties {
+  repeated PropertyPair items = 1;
+}
+
+message Keys {
+  repeated string keys = 1;
+}
+
+message KeyInfo {
+  string key = 1;
+  bytes value = 2;
+  uint64 version = 3;
+  OptionalUint64 ttl_remaining_secs = 4;
+  uint64 freq_count = 5;
+  bool compressed = 6;
+}
+
+message ClusterView {
+  repeated NodeInfo nodes = 1;
+}
+
+message BackupResult {
+  string path = 1;
+  uint64 bytes = 2;
+}
+
+message RestoreResult {
+  string path = 1;
+  uint64 entries = 2;
+  uint64 duration_ms = 3;
+}
+
+message ErrorMessage {
+  string message = 1;
+}
+
+message NamespaceQuotaUsage {
+  string namespace = 1;
+  uint64 key_count = 2;
+  uint64 quota_limit = 3;
+  uint64 usage_pct = 4;
+  uint64 remaining_keys = 5;
+}
+
+message NamespaceLatencySummary {
+  string namespace = 1;
+  uint64 request_total = 2;
+  OptionalUint64 latency_p95_estimate_ms = 3;
+  OptionalUint64 latency_p99_estimate_ms = 4;
+}
+
+message HotKeyUsage {
+  string key = 1;
+  uint64 request_total = 2;
+}
+
+message NodeStats {
+  string node_id = 1;
+  NodeStatus status = 2;
+  bool is_primary = 3;
+  uint64 committed_index = 4;
+  uint64 key_count = 5;
+  uint64 memory_used_bytes = 6;
+  uint64 memory_max_bytes = 7;
+  uint64 evictions = 8;
+  uint64 hit_count = 9;
+  uint64 miss_count = 10;
+  uint64 uptime_secs = 11;
+  uint64 value_size_limit_bytes = 12;
+  uint64 max_keys_limit = 13;
+  bool compression_enabled = 14;
+  uint64 compression_threshold_bytes = 15;
+  string node_name = 16;
+  uint64 backup_dir_bytes = 17;
+  OptionalString snapshot_last_load_path = 18;
+  uint64 snapshot_last_load_duration_ms = 19;
+  uint64 snapshot_last_load_entries = 20;
+  OptionalUint64 snapshot_last_load_age_secs = 21;
+  uint64 snapshot_restore_attempt_total = 22;
+  uint64 snapshot_restore_success_total = 23;
+  uint64 snapshot_restore_failure_total = 24;
+  uint64 snapshot_restore_not_found_total = 25;
+  uint64 snapshot_restore_policy_block_total = 26;
+  uint64 snapshot_restore_success_ratio_pct = 27;
+  bool persistence_platform_allowed = 28;
+  bool persistence_runtime_enabled = 29;
+  bool persistence_enabled = 30;
+  bool persistence_backup_enabled = 31;
+  bool persistence_export_enabled = 32;
+  bool persistence_import_enabled = 33;
+  bool tenancy_enabled = 34;
+  string tenancy_default_namespace = 35;
+  uint64 tenancy_max_keys_per_namespace = 36;
+  bool rate_limit_enabled = 37;
+  uint64 rate_limited_requests_total = 38;
+  bool circuit_breaker_enabled = 39;
+  bool hot_key_enabled = 40;
+  bool hot_key_adaptive_waiters_enabled = 41;
+  bool read_repair_enabled = 42;
+  uint64 hot_key_coalesced_hits_total = 43;
+  uint64 hot_key_fallback_exec_total = 44;
+  uint64 hot_key_wait_timeout_total = 45;
+  uint64 hot_key_stale_served_total = 46;
+  uint64 hot_key_inflight_keys = 47;
+  uint64 hot_key_stale_cache_entries = 48;
+  uint64 hot_key_adaptive_state_keys = 49;
+  uint64 hot_key_adaptive_limit_increase_total = 50;
+  uint64 hot_key_adaptive_limit_decrease_total = 51;
+  uint64 read_repair_trigger_total = 52;
+  uint64 read_repair_success_total = 53;
+  uint64 read_repair_throttled_total = 54;
+  uint64 read_repair_budget_exhausted_total = 55;
+  uint64 namespace_quota_reject_total = 56;
+  uint64 namespace_quota_reject_rate_per_min = 57;
+  string namespace_quota_reject_trend = 58;
+  repeated NamespaceQuotaUsage namespace_quota_top_usage = 59;
+  repeated NamespaceLatencySummary namespace_latency_top = 60;
+  repeated HotKeyUsage hot_key_top_usage = 61;
+  uint64 anti_entropy_runs_total = 62;
+  uint64 anti_entropy_repair_trigger_total = 63;
+  uint64 anti_entropy_repair_throttled_total = 64;
+  uint64 anti_entropy_last_detected_lag = 65;
+  uint64 anti_entropy_key_checks_total = 66;
+  uint64 anti_entropy_key_mismatch_total = 67;
+  uint64 anti_entropy_full_reconcile_runs_total = 68;
+  uint64 anti_entropy_full_reconcile_key_checks_total = 69;
+  uint64 anti_entropy_full_reconcile_mismatch_total = 70;
+  uint64 anti_entropy_budget_exhausted_total = 71;
+  uint64 mixed_version_probe_runs_total = 72;
+  uint64 mixed_version_peers_detected_total = 73;
+  uint64 mixed_version_probe_errors_total = 74;
+  uint64 mixed_version_last_detected_peer_count = 75;
+  string circuit_breaker_state = 76;
+  uint64 circuit_breaker_open_total = 77;
+  uint64 circuit_breaker_reject_total = 78;
+  uint64 client_requests_total = 79;
+  uint64 client_requests_tcp_total = 80;
+  uint64 client_requests_http_total = 81;
+  uint64 client_requests_internal_total = 82;
+  uint64 client_request_latency_le_1ms_total = 83;
+  uint64 client_request_latency_le_5ms_total = 84;
+  uint64 client_request_latency_le_20ms_total = 85;
+  uint64 client_request_latency_le_100ms_total = 86;
+  uint64 client_request_latency_le_500ms_total = 87;
+  uint64 client_request_latency_gt_500ms_total = 88;
+  OptionalUint64 client_latency_p50_estimate_ms = 89;
+  OptionalUint64 client_latency_p90_estimate_ms = 90;
+  OptionalUint64 client_latency_p95_estimate_ms = 91;
+  OptionalUint64 client_latency_p99_estimate_ms = 92;
+  uint64 client_error_total = 93;
+  uint64 client_errors_tcp_total = 94;
+  uint64 client_errors_http_total = 95;
+  uint64 client_errors_internal_total = 96;
+  uint64 client_error_auth_total = 97;
+  uint64 client_error_throttle_total = 98;
+  uint64 client_error_availability_total = 99;
+  uint64 client_error_validation_total = 100;
+  uint64 client_error_internal_total = 101;
+  uint64 client_error_other_total = 102;
+}
+
+message Snapshot {
+  repeated SnapshotEntry entries = 1;
+}
+
+message SnapshotEntry {
+  string key = 1;
+  bytes value = 2;
+  uint64 version = 3;
+  OptionalUint64 expires_at_ms = 4;
+}

@@ -13,7 +13,7 @@ ditto-protocol = { path = "../ditto-protocol" }
 
 tokio         = { workspace = true }
 serde         = { workspace = true }
-bincode       = { workspace = true }
+prost         = { workspace = true }
 bytes         = { workspace = true }
 uuid          = { workspace = true }
 tracing          = { workspace = true }
@@ -29,7 +29,7 @@ base64        = { workspace = true }
 lz4_flex       = "0.13"
 tokio-rustls   = { workspace = true }
 rustls         = { workspace = true }
-rustls-pemfile = { workspace = true }
+rustls-pki-types = { workspace = true }
 dashmap       = "6.1"
 serde_json    = "1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

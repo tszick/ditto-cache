@@ -145,6 +145,8 @@ dittoctl node backup <target>
 ```
 
 Backup works only when persistence backup is enabled by policy (platform allow + runtime enabled).
+Node snapshots default to protobuf format; set `backup.format = "json"` only when
+you need manually inspectable snapshot files.
 
 ### Restore Latest Snapshot
 

@@ -1,220 +1,1990 @@
 ﻿{
     "protocol_version":  1,
-    "source":  "ditto-protocol/src/lib.rs",
+    "source":  "ditto-protocol/proto/ditto.proto",
+    "package":  "ditto.protocol.v1",
     "enums":  {
-                  "ClientRequest":  [
-                                        "Get",
-                                        "Set",
-                                        "Delete",
-                                        "Ping",
-                                        "Auth",
-                                        "Watch",
-                                        "Unwatch",
-                                        "DeleteByPattern",
-                                        "SetTtlByPattern"
-                                    ],
-                  "ClientResponse":  [
-                                         "Value",
-                                         "Ok",
-                                         "Deleted",
-                                         "NotFound",
-                                         "Pong",
-                                         "AuthOk",
-                                         "Error",
-                                         "Watching",
-                                         "Unwatched",
-                                         "WatchEvent",
-                                         "PatternDeleted",
-                                         "PatternTtlUpdated"
-                                     ],
-                  "ErrorCode":  [
-                                    "NodeInactive",
-                                    "NoQuorum",
-                                    "KeyNotFound",
-                                    "InternalError",
-                                    "WriteTimeout",
-                                    "ValueTooLarge",
-                                    "KeyLimitReached",
-                                    "RateLimited",
-                                    "CircuitOpen",
-                                    "NamespaceQuotaExceeded",
-                                    "AuthFailed"
-                                ],
-                  "ClusterMessage":  [
-                                         "Prepare",
-                                         "PrepareAck",
-                                         "Commit",
-                                         "CommitAck",
-                                         "Forward",
-                                         "RequestLog",
-                                         "LogEntries",
-                                         "Synced",
-                                         "ForwardResponse",
-                                         "ForcePrimary",
-                                         "Admin",
-                                         "AdminResponse"
-                                     ],
-                  "GossipMessage":  [
-                                        "Heartbeat",
-                                        "ActiveSetUpdate"
-                                    ],
-                  "AdminRequest":  [
-                                       "Describe",
-                                       "GetProperty",
-                                       "SetProperty",
-                                       "ListKeys",
-                                       "GetStats",
-                                       "GetKeyInfo",
-                                       "SetKeyProperty",
-                                       "FlushCache",
-                                       "ClusterStatus",
-                                       "BackupNow",
-                                       "RestoreLatestSnapshot",
-                                       "SetKeysTtl"
-                                   ],
-                  "AdminResponse":  [
-                                        "Properties",
-                                        "Keys",
-                                        "Stats",
-                                        "KeyInfo",
-                                        "KeyPropertyUpdated",
-                                        "Flushed",
-                                        "ClusterView",
-                                        "BackupResult",
-                                        "RestoreResult",
-                                        "TtlUpdated",
-                                        "Ok",
-                                        "NotFound",
-                                        "Error"
-                                    ],
                   "NodeStatus":  [
-                                     "Active",
-                                     "Syncing",
-                                     "Offline",
-                                     "Inactive"
-                                 ]
+                                     "NODE_STATUS_ACTIVE",
+                                     "NODE_STATUS_SYNCING",
+                                     "NODE_STATUS_OFFLINE",
+                                     "NODE_STATUS_INACTIVE"
+                                 ],
+                  "ErrorCode":  [
+                                    "ERROR_CODE_NODE_INACTIVE",
+                                    "ERROR_CODE_NO_QUORUM",
+                                    "ERROR_CODE_KEY_NOT_FOUND",
+                                    "ERROR_CODE_INTERNAL_ERROR",
+                                    "ERROR_CODE_WRITE_TIMEOUT",
+                                    "ERROR_CODE_VALUE_TOO_LARGE",
+                                    "ERROR_CODE_KEY_LIMIT_REACHED",
+                                    "ERROR_CODE_RATE_LIMITED",
+                                    "ERROR_CODE_CIRCUIT_OPEN",
+                                    "ERROR_CODE_NAMESPACE_QUOTA_EXCEEDED",
+                                    "ERROR_CODE_AUTH_FAILED"
+                                ]
               },
-    "structs":  {
-                    "NamespaceQuotaUsage":  [
-                                                "namespace",
-                                                "key_count",
-                                                "quota_limit",
-                                                "usage_pct",
-                                                "remaining_keys"
-                                            ],
-                    "NamespaceLatencySummary":  [
-                                                    "namespace",
-                                                    "request_total",
-                                                    "latency_p95_estimate_ms",
-                                                    "latency_p99_estimate_ms"
-                                                ],
-                    "HotKeyUsage":  [
-                                        "key",
-                                        "request_total"
+    "messages":  {
+                     "Envelope":  [
+                                      {
+                                          "name":  "version",
+                                          "type":  "uint32",
+                                          "repeated":  false,
+                                          "tag":  1,
+                                          "oneof":  false
+                                      },
+                                      {
+                                          "name":  "client_request",
+                                          "type":  "ClientRequest",
+                                          "repeated":  false,
+                                          "tag":  2,
+                                          "oneof":  true
+                                      },
+                                      {
+                                          "name":  "client_response",
+                                          "type":  "ClientResponse",
+                                          "repeated":  false,
+                                          "tag":  3,
+                                          "oneof":  true
+                                      },
+                                      {
+                                          "name":  "cluster_message",
+                                          "type":  "ClusterMessage",
+                                          "repeated":  false,
+                                          "tag":  4,
+                                          "oneof":  true
+                                      },
+                                      {
+                                          "name":  "gossip_message",
+                                          "type":  "GossipMessage",
+                                          "repeated":  false,
+                                          "tag":  5,
+                                          "oneof":  true
+                                      }
+                                  ],
+                     "OptionalString":  [
+                                            {
+                                                "name":  "value",
+                                                "type":  "string",
+                                                "repeated":  false,
+                                                "tag":  1,
+                                                "oneof":  false
+                                            }
+                                        ],
+                     "OptionalBytes":  [
+                                           {
+                                               "name":  "value",
+                                               "type":  "bytes",
+                                               "repeated":  false,
+                                               "tag":  1,
+                                               "oneof":  false
+                                           }
+                                       ],
+                     "OptionalUint64":  [
+                                            {
+                                                "name":  "value",
+                                                "type":  "uint64",
+                                                "repeated":  false,
+                                                "tag":  1,
+                                                "oneof":  false
+                                            }
+                                        ],
+                     "NodeInfo":  [
+                                      {
+                                          "name":  "id",
+                                          "type":  "string",
+                                          "repeated":  false,
+                                          "tag":  1,
+                                          "oneof":  false
+                                      },
+                                      {
+                                          "name":  "addr",
+                                          "type":  "string",
+                                          "repeated":  false,
+                                          "tag":  2,
+                                          "oneof":  false
+                                      },
+                                      {
+                                          "name":  "cluster_port",
+                                          "type":  "uint32",
+                                          "repeated":  false,
+                                          "tag":  3,
+                                          "oneof":  false
+                                      },
+                                      {
+                                          "name":  "status",
+                                          "type":  "NodeStatus",
+                                          "repeated":  false,
+                                          "tag":  4,
+                                          "oneof":  false
+                                      },
+                                      {
+                                          "name":  "last_applied",
+                                          "type":  "uint64",
+                                          "repeated":  false,
+                                          "tag":  5,
+                                          "oneof":  false
+                                      }
+                                  ],
+                     "ClientRequest":  [
+                                           {
+                                               "name":  "get",
+                                               "type":  "KeyNamespace",
+                                               "repeated":  false,
+                                               "tag":  1,
+                                               "oneof":  true
+                                           },
+                                           {
+                                               "name":  "set",
+                                               "type":  "SetRequest",
+                                               "repeated":  false,
+                                               "tag":  2,
+                                               "oneof":  true
+                                           },
+                                           {
+                                               "name":  "delete",
+                                               "type":  "KeyNamespace",
+                                               "repeated":  false,
+                                               "tag":  3,
+                                               "oneof":  true
+                                           },
+                                           {
+                                               "name":  "ping",
+                                               "type":  "Empty",
+                                               "repeated":  false,
+                                               "tag":  4,
+                                               "oneof":  true
+                                           },
+                                           {
+                                               "name":  "auth",
+                                               "type":  "AuthRequest",
+                                               "repeated":  false,
+                                               "tag":  5,
+                                               "oneof":  true
+                                           },
+                                           {
+                                               "name":  "watch",
+                                               "type":  "KeyNamespace",
+                                               "repeated":  false,
+                                               "tag":  6,
+                                               "oneof":  true
+                                           },
+                                           {
+                                               "name":  "unwatch",
+                                               "type":  "KeyNamespace",
+                                               "repeated":  false,
+                                               "tag":  7,
+                                               "oneof":  true
+                                           },
+                                           {
+                                               "name":  "delete_by_pattern",
+                                               "type":  "PatternNamespace",
+                                               "repeated":  false,
+                                               "tag":  8,
+                                               "oneof":  true
+                                           },
+                                           {
+                                               "name":  "set_ttl_by_pattern",
+                                               "type":  "SetTtlByPatternRequest",
+                                               "repeated":  false,
+                                               "tag":  9,
+                                               "oneof":  true
+                                           }
+                                       ],
+                     "ClientResponse":  [
+                                            {
+                                                "name":  "value",
+                                                "type":  "ValueResponse",
+                                                "repeated":  false,
+                                                "tag":  1,
+                                                "oneof":  true
+                                            },
+                                            {
+                                                "name":  "ok",
+                                                "type":  "VersionResponse",
+                                                "repeated":  false,
+                                                "tag":  2,
+                                                "oneof":  true
+                                            },
+                                            {
+                                                "name":  "deleted",
+                                                "type":  "Empty",
+                                                "repeated":  false,
+                                                "tag":  3,
+                                                "oneof":  true
+                                            },
+                                            {
+                                                "name":  "not_found",
+                                                "type":  "Empty",
+                                                "repeated":  false,
+                                                "tag":  4,
+                                                "oneof":  true
+                                            },
+                                            {
+                                                "name":  "pong",
+                                                "type":  "Empty",
+                                                "repeated":  false,
+                                                "tag":  5,
+                                                "oneof":  true
+                                            },
+                                            {
+                                                "name":  "auth_ok",
+                                                "type":  "Empty",
+                                                "repeated":  false,
+                                                "tag":  6,
+                                                "oneof":  true
+                                            },
+                                            {
+                                                "name":  "error",
+                                                "type":  "ErrorResponse",
+                                                "repeated":  false,
+                                                "tag":  7,
+                                                "oneof":  true
+                                            },
+                                            {
+                                                "name":  "watching",
+                                                "type":  "Empty",
+                                                "repeated":  false,
+                                                "tag":  8,
+                                                "oneof":  true
+                                            },
+                                            {
+                                                "name":  "unwatched",
+                                                "type":  "Empty",
+                                                "repeated":  false,
+                                                "tag":  9,
+                                                "oneof":  true
+                                            },
+                                            {
+                                                "name":  "watch_event",
+                                                "type":  "WatchEvent",
+                                                "repeated":  false,
+                                                "tag":  10,
+                                                "oneof":  true
+                                            },
+                                            {
+                                                "name":  "pattern_deleted",
+                                                "type":  "CountResponse",
+                                                "repeated":  false,
+                                                "tag":  11,
+                                                "oneof":  true
+                                            },
+                                            {
+                                                "name":  "pattern_ttl_updated",
+                                                "type":  "CountResponse",
+                                                "repeated":  false,
+                                                "tag":  12,
+                                                "oneof":  true
+                                            }
+                                        ],
+                     "ClusterMessage":  [
+                                            {
+                                                "name":  "prepare",
+                                                "type":  "Prepare",
+                                                "repeated":  false,
+                                                "tag":  1,
+                                                "oneof":  true
+                                            },
+                                            {
+                                                "name":  "prepare_ack",
+                                                "type":  "LogAck",
+                                                "repeated":  false,
+                                                "tag":  2,
+                                                "oneof":  true
+                                            },
+                                            {
+                                                "name":  "commit",
+                                                "type":  "Commit",
+                                                "repeated":  false,
+                                                "tag":  3,
+                                                "oneof":  true
+                                            },
+                                            {
+                                                "name":  "commit_ack",
+                                                "type":  "LogAck",
+                                                "repeated":  false,
+                                                "tag":  4,
+                                                "oneof":  true
+                                            },
+                                            {
+                                                "name":  "forward",
+                                                "type":  "Forward",
+                                                "repeated":  false,
+                                                "tag":  5,
+                                                "oneof":  true
+                                            },
+                                            {
+                                                "name":  "request_log",
+                                                "type":  "RequestLog",
+                                                "repeated":  false,
+                                                "tag":  6,
+                                                "oneof":  true
+                                            },
+                                            {
+                                                "name":  "log_entries",
+                                                "type":  "LogEntries",
+                                                "repeated":  false,
+                                                "tag":  7,
+                                                "oneof":  true
+                                            },
+                                            {
+                                                "name":  "synced",
+                                                "type":  "Synced",
+                                                "repeated":  false,
+                                                "tag":  8,
+                                                "oneof":  true
+                                            },
+                                            {
+                                                "name":  "forward_response",
+                                                "type":  "ClientResponse",
+                                                "repeated":  false,
+                                                "tag":  9,
+                                                "oneof":  true
+                                            },
+                                            {
+                                                "name":  "force_primary",
+                                                "type":  "ForcePrimary",
+                                                "repeated":  false,
+                                                "tag":  10,
+                                                "oneof":  true
+                                            },
+                                            {
+                                                "name":  "admin",
+                                                "type":  "AdminRequest",
+                                                "repeated":  false,
+                                                "tag":  11,
+                                                "oneof":  true
+                                            },
+                                            {
+                                                "name":  "admin_response",
+                                                "type":  "AdminResponse",
+                                                "repeated":  false,
+                                                "tag":  12,
+                                                "oneof":  true
+                                            }
+                                        ],
+                     "GossipMessage":  [
+                                           {
+                                               "name":  "heartbeat",
+                                               "type":  "Heartbeat",
+                                               "repeated":  false,
+                                               "tag":  1,
+                                               "oneof":  true
+                                           },
+                                           {
+                                               "name":  "active_set_update",
+                                               "type":  "ActiveSetUpdate",
+                                               "repeated":  false,
+                                               "tag":  2,
+                                               "oneof":  true
+                                           }
+                                       ],
+                     "AdminRequest":  [
+                                          {
+                                              "name":  "describe",
+                                              "type":  "Empty",
+                                              "repeated":  false,
+                                              "tag":  1,
+                                              "oneof":  true
+                                          },
+                                          {
+                                              "name":  "get_property",
+                                              "type":  "Named",
+                                              "repeated":  false,
+                                              "tag":  2,
+                                              "oneof":  true
+                                          },
+                                          {
+                                              "name":  "set_property",
+                                              "type":  "PropertyUpdate",
+                                              "repeated":  false,
+                                              "tag":  3,
+                                              "oneof":  true
+                                          },
+                                          {
+                                              "name":  "list_keys",
+                                              "type":  "ListKeys",
+                                              "repeated":  false,
+                                              "tag":  4,
+                                              "oneof":  true
+                                          },
+                                          {
+                                              "name":  "get_stats",
+                                              "type":  "Empty",
+                                              "repeated":  false,
+                                              "tag":  5,
+                                              "oneof":  true
+                                          },
+                                          {
+                                              "name":  "get_key_info",
+                                              "type":  "KeyOnly",
+                                              "repeated":  false,
+                                              "tag":  6,
+                                              "oneof":  true
+                                          },
+                                          {
+                                              "name":  "set_key_property",
+                                              "type":  "KeyPropertyUpdate",
+                                              "repeated":  false,
+                                              "tag":  7,
+                                              "oneof":  true
+                                          },
+                                          {
+                                              "name":  "flush_cache",
+                                              "type":  "Empty",
+                                              "repeated":  false,
+                                              "tag":  8,
+                                              "oneof":  true
+                                          },
+                                          {
+                                              "name":  "cluster_status",
+                                              "type":  "Empty",
+                                              "repeated":  false,
+                                              "tag":  9,
+                                              "oneof":  true
+                                          },
+                                          {
+                                              "name":  "backup_now",
+                                              "type":  "Empty",
+                                              "repeated":  false,
+                                              "tag":  10,
+                                              "oneof":  true
+                                          },
+                                          {
+                                              "name":  "restore_latest_snapshot",
+                                              "type":  "Empty",
+                                              "repeated":  false,
+                                              "tag":  11,
+                                              "oneof":  true
+                                          },
+                                          {
+                                              "name":  "set_keys_ttl",
+                                              "type":  "SetKeysTtl",
+                                              "repeated":  false,
+                                              "tag":  12,
+                                              "oneof":  true
+                                          }
+                                      ],
+                     "AdminResponse":  [
+                                           {
+                                               "name":  "properties",
+                                               "type":  "Properties",
+                                               "repeated":  false,
+                                               "tag":  1,
+                                               "oneof":  true
+                                           },
+                                           {
+                                               "name":  "keys",
+                                               "type":  "Keys",
+                                               "repeated":  false,
+                                               "tag":  2,
+                                               "oneof":  true
+                                           },
+                                           {
+                                               "name":  "stats",
+                                               "type":  "NodeStats",
+                                               "repeated":  false,
+                                               "tag":  3,
+                                               "oneof":  true
+                                           },
+                                           {
+                                               "name":  "key_info",
+                                               "type":  "KeyInfo",
+                                               "repeated":  false,
+                                               "tag":  4,
+                                               "oneof":  true
+                                           },
+                                           {
+                                               "name":  "key_property_updated",
+                                               "type":  "Empty",
+                                               "repeated":  false,
+                                               "tag":  5,
+                                               "oneof":  true
+                                           },
+                                           {
+                                               "name":  "flushed",
+                                               "type":  "Empty",
+                                               "repeated":  false,
+                                               "tag":  6,
+                                               "oneof":  true
+                                           },
+                                           {
+                                               "name":  "cluster_view",
+                                               "type":  "ClusterView",
+                                               "repeated":  false,
+                                               "tag":  7,
+                                               "oneof":  true
+                                           },
+                                           {
+                                               "name":  "backup_result",
+                                               "type":  "BackupResult",
+                                               "repeated":  false,
+                                               "tag":  8,
+                                               "oneof":  true
+                                           },
+                                           {
+                                               "name":  "restore_result",
+                                               "type":  "RestoreResult",
+                                               "repeated":  false,
+                                               "tag":  9,
+                                               "oneof":  true
+                                           },
+                                           {
+                                               "name":  "ttl_updated",
+                                               "type":  "CountResponse",
+                                               "repeated":  false,
+                                               "tag":  10,
+                                               "oneof":  true
+                                           },
+                                           {
+                                               "name":  "ok",
+                                               "type":  "Empty",
+                                               "repeated":  false,
+                                               "tag":  11,
+                                               "oneof":  true
+                                           },
+                                           {
+                                               "name":  "not_found",
+                                               "type":  "Empty",
+                                               "repeated":  false,
+                                               "tag":  12,
+                                               "oneof":  true
+                                           },
+                                           {
+                                               "name":  "error",
+                                               "type":  "ErrorMessage",
+                                               "repeated":  false,
+                                               "tag":  13,
+                                               "oneof":  true
+                                           }
+                                       ],
+                     "Empty":  [
+
+                               ],
+                     "KeyNamespace":  [
+                                          {
+                                              "name":  "key",
+                                              "type":  "string",
+                                              "repeated":  false,
+                                              "tag":  1,
+                                              "oneof":  false
+                                          },
+                                          {
+                                              "name":  "namespace",
+                                              "type":  "OptionalString",
+                                              "repeated":  false,
+                                              "tag":  2,
+                                              "oneof":  false
+                                          }
+                                      ],
+                     "PatternNamespace":  [
+                                              {
+                                                  "name":  "pattern",
+                                                  "type":  "string",
+                                                  "repeated":  false,
+                                                  "tag":  1,
+                                                  "oneof":  false
+                                              },
+                                              {
+                                                  "name":  "namespace",
+                                                  "type":  "OptionalString",
+                                                  "repeated":  false,
+                                                  "tag":  2,
+                                                  "oneof":  false
+                                              }
+                                          ],
+                     "SetRequest":  [
+                                        {
+                                            "name":  "key",
+                                            "type":  "string",
+                                            "repeated":  false,
+                                            "tag":  1,
+                                            "oneof":  false
+                                        },
+                                        {
+                                            "name":  "value",
+                                            "type":  "bytes",
+                                            "repeated":  false,
+                                            "tag":  2,
+                                            "oneof":  false
+                                        },
+                                        {
+                                            "name":  "ttl_secs",
+                                            "type":  "OptionalUint64",
+                                            "repeated":  false,
+                                            "tag":  3,
+                                            "oneof":  false
+                                        },
+                                        {
+                                            "name":  "namespace",
+                                            "type":  "OptionalString",
+                                            "repeated":  false,
+                                            "tag":  4,
+                                            "oneof":  false
+                                        }
                                     ],
-                    "NodeStats":  [
-                                      "node_id",
-                                      "status",
-                                      "is_primary",
-                                      "committed_index",
-                                      "key_count",
-                                      "memory_used_bytes",
-                                      "memory_max_bytes",
-                                      "evictions",
-                                      "hit_count",
-                                      "miss_count",
-                                      "uptime_secs",
-                                      "value_size_limit_bytes",
-                                      "max_keys_limit",
-                                      "compression_enabled",
-                                      "compression_threshold_bytes",
-                                      "node_name",
-                                      "backup_dir_bytes",
-                                      "snapshot_last_load_path",
-                                      "snapshot_last_load_duration_ms",
-                                      "snapshot_last_load_entries",
-                                      "snapshot_last_load_age_secs",
-                                      "snapshot_restore_attempt_total",
-                                      "snapshot_restore_success_total",
-                                      "snapshot_restore_failure_total",
-                                      "snapshot_restore_not_found_total",
-                                      "snapshot_restore_policy_block_total",
-                                      "snapshot_restore_success_ratio_pct",
-                                      "persistence_platform_allowed",
-                                      "persistence_runtime_enabled",
-                                      "persistence_enabled",
-                                      "persistence_backup_enabled",
-                                      "persistence_export_enabled",
-                                      "persistence_import_enabled",
-                                      "tenancy_enabled",
-                                      "tenancy_default_namespace",
-                                      "tenancy_max_keys_per_namespace",
-                                      "rate_limit_enabled",
-                                      "rate_limited_requests_total",
-                                      "circuit_breaker_enabled",
-                                      "hot_key_enabled",
-                                      "hot_key_adaptive_waiters_enabled",
-                                      "read_repair_enabled",
-                                      "hot_key_coalesced_hits_total",
-                                      "hot_key_fallback_exec_total",
-                                      "hot_key_wait_timeout_total",
-                                      "hot_key_stale_served_total",
-                                      "hot_key_inflight_keys",
-                                      "hot_key_stale_cache_entries",
-                                      "hot_key_adaptive_state_keys",
-                                      "hot_key_adaptive_limit_increase_total",
-                                      "hot_key_adaptive_limit_decrease_total",
-                                      "read_repair_trigger_total",
-                                      "read_repair_success_total",
-                                      "read_repair_throttled_total",
-                                      "read_repair_budget_exhausted_total",
-                                      "namespace_quota_reject_total",
-                                      "namespace_quota_reject_rate_per_min",
-                                      "namespace_quota_reject_trend",
-                                      "namespace_quota_top_usage",
-                                      "namespace_latency_top",
-                                      "hot_key_top_usage",
-                                      "anti_entropy_runs_total",
-                                      "anti_entropy_repair_trigger_total",
-                                      "anti_entropy_repair_throttled_total",
-                                      "anti_entropy_last_detected_lag",
-                                      "anti_entropy_key_checks_total",
-                                      "anti_entropy_key_mismatch_total",
-                                      "anti_entropy_full_reconcile_runs_total",
-                                      "anti_entropy_full_reconcile_key_checks_total",
-                                      "anti_entropy_full_reconcile_mismatch_total",
-                                      "anti_entropy_budget_exhausted_total",
-                                      "mixed_version_probe_runs_total",
-                                      "mixed_version_peers_detected_total",
-                                      "mixed_version_probe_errors_total",
-                                      "mixed_version_last_detected_peer_count",
-                                      "circuit_breaker_state",
-                                      "circuit_breaker_open_total",
-                                      "circuit_breaker_reject_total",
-                                      "client_requests_total",
-                                      "client_requests_tcp_total",
-                                      "client_requests_http_total",
-                                      "client_requests_internal_total",
-                                      "client_request_latency_le_1ms_total",
-                                      "client_request_latency_le_5ms_total",
-                                      "client_request_latency_le_20ms_total",
-                                      "client_request_latency_le_100ms_total",
-                                      "client_request_latency_le_500ms_total",
-                                      "client_request_latency_gt_500ms_total",
-                                      "client_latency_p50_estimate_ms",
-                                      "client_latency_p90_estimate_ms",
-                                      "client_latency_p95_estimate_ms",
-                                      "client_latency_p99_estimate_ms",
-                                      "client_error_total",
-                                      "client_errors_tcp_total",
-                                      "client_errors_http_total",
-                                      "client_errors_internal_total",
-                                      "client_error_auth_total",
-                                      "client_error_throttle_total",
-                                      "client_error_availability_total",
-                                      "client_error_validation_total",
-                                      "client_error_internal_total",
-                                      "client_error_other_total"
-                                  ]
-                }
+                     "AuthRequest":  [
+                                         {
+                                             "name":  "token",
+                                             "type":  "string",
+                                             "repeated":  false,
+                                             "tag":  1,
+                                             "oneof":  false
+                                         }
+                                     ],
+                     "SetTtlByPatternRequest":  [
+                                                    {
+                                                        "name":  "pattern",
+                                                        "type":  "string",
+                                                        "repeated":  false,
+                                                        "tag":  1,
+                                                        "oneof":  false
+                                                    },
+                                                    {
+                                                        "name":  "ttl_secs",
+                                                        "type":  "OptionalUint64",
+                                                        "repeated":  false,
+                                                        "tag":  2,
+                                                        "oneof":  false
+                                                    },
+                                                    {
+                                                        "name":  "namespace",
+                                                        "type":  "OptionalString",
+                                                        "repeated":  false,
+                                                        "tag":  3,
+                                                        "oneof":  false
+                                                    }
+                                                ],
+                     "ValueResponse":  [
+                                           {
+                                               "name":  "key",
+                                               "type":  "string",
+                                               "repeated":  false,
+                                               "tag":  1,
+                                               "oneof":  false
+                                           },
+                                           {
+                                               "name":  "value",
+                                               "type":  "bytes",
+                                               "repeated":  false,
+                                               "tag":  2,
+                                               "oneof":  false
+                                           },
+                                           {
+                                               "name":  "version",
+                                               "type":  "uint64",
+                                               "repeated":  false,
+                                               "tag":  3,
+                                               "oneof":  false
+                                           }
+                                       ],
+                     "VersionResponse":  [
+                                             {
+                                                 "name":  "version",
+                                                 "type":  "uint64",
+                                                 "repeated":  false,
+                                                 "tag":  1,
+                                                 "oneof":  false
+                                             }
+                                         ],
+                     "ErrorResponse":  [
+                                           {
+                                               "name":  "code",
+                                               "type":  "ErrorCode",
+                                               "repeated":  false,
+                                               "tag":  1,
+                                               "oneof":  false
+                                           },
+                                           {
+                                               "name":  "message",
+                                               "type":  "string",
+                                               "repeated":  false,
+                                               "tag":  2,
+                                               "oneof":  false
+                                           }
+                                       ],
+                     "WatchEvent":  [
+                                        {
+                                            "name":  "key",
+                                            "type":  "string",
+                                            "repeated":  false,
+                                            "tag":  1,
+                                            "oneof":  false
+                                        },
+                                        {
+                                            "name":  "value",
+                                            "type":  "OptionalBytes",
+                                            "repeated":  false,
+                                            "tag":  2,
+                                            "oneof":  false
+                                        },
+                                        {
+                                            "name":  "version",
+                                            "type":  "uint64",
+                                            "repeated":  false,
+                                            "tag":  3,
+                                            "oneof":  false
+                                        }
+                                    ],
+                     "CountResponse":  [
+                                           {
+                                               "name":  "count",
+                                               "type":  "uint64",
+                                               "repeated":  false,
+                                               "tag":  1,
+                                               "oneof":  false
+                                           }
+                                       ],
+                     "Prepare":  [
+                                     {
+                                         "name":  "log_index",
+                                         "type":  "uint64",
+                                         "repeated":  false,
+                                         "tag":  1,
+                                         "oneof":  false
+                                     },
+                                     {
+                                         "name":  "key",
+                                         "type":  "string",
+                                         "repeated":  false,
+                                         "tag":  2,
+                                         "oneof":  false
+                                     },
+                                     {
+                                         "name":  "value",
+                                         "type":  "OptionalBytes",
+                                         "repeated":  false,
+                                         "tag":  3,
+                                         "oneof":  false
+                                     },
+                                     {
+                                         "name":  "ttl_secs",
+                                         "type":  "OptionalUint64",
+                                         "repeated":  false,
+                                         "tag":  4,
+                                         "oneof":  false
+                                     }
+                                 ],
+                     "LogAck":  [
+                                    {
+                                        "name":  "log_index",
+                                        "type":  "uint64",
+                                        "repeated":  false,
+                                        "tag":  1,
+                                        "oneof":  false
+                                    },
+                                    {
+                                        "name":  "node_id",
+                                        "type":  "string",
+                                        "repeated":  false,
+                                        "tag":  2,
+                                        "oneof":  false
+                                    }
+                                ],
+                     "Commit":  [
+                                    {
+                                        "name":  "log_index",
+                                        "type":  "uint64",
+                                        "repeated":  false,
+                                        "tag":  1,
+                                        "oneof":  false
+                                    }
+                                ],
+                     "Forward":  [
+                                     {
+                                         "name":  "request",
+                                         "type":  "ClientRequest",
+                                         "repeated":  false,
+                                         "tag":  1,
+                                         "oneof":  false
+                                     },
+                                     {
+                                         "name":  "origin_node",
+                                         "type":  "string",
+                                         "repeated":  false,
+                                         "tag":  2,
+                                         "oneof":  false
+                                     }
+                                 ],
+                     "RequestLog":  [
+                                        {
+                                            "name":  "from_index",
+                                            "type":  "uint64",
+                                            "repeated":  false,
+                                            "tag":  1,
+                                            "oneof":  false
+                                        }
+                                    ],
+                     "LogEntry":  [
+                                      {
+                                          "name":  "index",
+                                          "type":  "uint64",
+                                          "repeated":  false,
+                                          "tag":  1,
+                                          "oneof":  false
+                                      },
+                                      {
+                                          "name":  "key",
+                                          "type":  "string",
+                                          "repeated":  false,
+                                          "tag":  2,
+                                          "oneof":  false
+                                      },
+                                      {
+                                          "name":  "value",
+                                          "type":  "OptionalBytes",
+                                          "repeated":  false,
+                                          "tag":  3,
+                                          "oneof":  false
+                                      },
+                                      {
+                                          "name":  "ttl_secs",
+                                          "type":  "OptionalUint64",
+                                          "repeated":  false,
+                                          "tag":  4,
+                                          "oneof":  false
+                                      },
+                                      {
+                                          "name":  "ts_ms",
+                                          "type":  "uint64",
+                                          "repeated":  false,
+                                          "tag":  5,
+                                          "oneof":  false
+                                      }
+                                  ],
+                     "LogEntries":  [
+                                        {
+                                            "name":  "entries",
+                                            "type":  "LogEntry",
+                                            "repeated":  true,
+                                            "tag":  1,
+                                            "oneof":  false
+                                        }
+                                    ],
+                     "Synced":  [
+                                    {
+                                        "name":  "node_id",
+                                        "type":  "string",
+                                        "repeated":  false,
+                                        "tag":  1,
+                                        "oneof":  false
+                                    },
+                                    {
+                                        "name":  "last_applied",
+                                        "type":  "uint64",
+                                        "repeated":  false,
+                                        "tag":  2,
+                                        "oneof":  false
+                                    }
+                                ],
+                     "ForcePrimary":  [
+                                          {
+                                              "name":  "node_id",
+                                              "type":  "string",
+                                              "repeated":  false,
+                                              "tag":  1,
+                                              "oneof":  false
+                                          }
+                                      ],
+                     "Heartbeat":  [
+                                       {
+                                           "name":  "node_id",
+                                           "type":  "string",
+                                           "repeated":  false,
+                                           "tag":  1,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "addr",
+                                           "type":  "string",
+                                           "repeated":  false,
+                                           "tag":  2,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "cluster_port",
+                                           "type":  "uint32",
+                                           "repeated":  false,
+                                           "tag":  3,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "status",
+                                           "type":  "NodeStatus",
+                                           "repeated":  false,
+                                           "tag":  4,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "last_applied",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  5,
+                                           "oneof":  false
+                                       }
+                                   ],
+                     "ActiveSetUpdate":  [
+                                             {
+                                                 "name":  "active_nodes",
+                                                 "type":  "NodeInfo",
+                                                 "repeated":  true,
+                                                 "tag":  1,
+                                                 "oneof":  false
+                                             }
+                                         ],
+                     "Named":  [
+                                   {
+                                       "name":  "name",
+                                       "type":  "string",
+                                       "repeated":  false,
+                                       "tag":  1,
+                                       "oneof":  false
+                                   }
+                               ],
+                     "PropertyUpdate":  [
+                                            {
+                                                "name":  "name",
+                                                "type":  "string",
+                                                "repeated":  false,
+                                                "tag":  1,
+                                                "oneof":  false
+                                            },
+                                            {
+                                                "name":  "value",
+                                                "type":  "string",
+                                                "repeated":  false,
+                                                "tag":  2,
+                                                "oneof":  false
+                                            }
+                                        ],
+                     "ListKeys":  [
+                                      {
+                                          "name":  "pattern",
+                                          "type":  "OptionalString",
+                                          "repeated":  false,
+                                          "tag":  1,
+                                          "oneof":  false
+                                      }
+                                  ],
+                     "KeyOnly":  [
+                                     {
+                                         "name":  "key",
+                                         "type":  "string",
+                                         "repeated":  false,
+                                         "tag":  1,
+                                         "oneof":  false
+                                     }
+                                 ],
+                     "KeyPropertyUpdate":  [
+                                               {
+                                                   "name":  "key",
+                                                   "type":  "string",
+                                                   "repeated":  false,
+                                                   "tag":  1,
+                                                   "oneof":  false
+                                               },
+                                               {
+                                                   "name":  "name",
+                                                   "type":  "string",
+                                                   "repeated":  false,
+                                                   "tag":  2,
+                                                   "oneof":  false
+                                               },
+                                               {
+                                                   "name":  "value",
+                                                   "type":  "string",
+                                                   "repeated":  false,
+                                                   "tag":  3,
+                                                   "oneof":  false
+                                               }
+                                           ],
+                     "SetKeysTtl":  [
+                                        {
+                                            "name":  "pattern",
+                                            "type":  "string",
+                                            "repeated":  false,
+                                            "tag":  1,
+                                            "oneof":  false
+                                        },
+                                        {
+                                            "name":  "ttl_secs",
+                                            "type":  "OptionalUint64",
+                                            "repeated":  false,
+                                            "tag":  2,
+                                            "oneof":  false
+                                        }
+                                    ],
+                     "PropertyPair":  [
+                                          {
+                                              "name":  "key",
+                                              "type":  "string",
+                                              "repeated":  false,
+                                              "tag":  1,
+                                              "oneof":  false
+                                          },
+                                          {
+                                              "name":  "value",
+                                              "type":  "string",
+                                              "repeated":  false,
+                                              "tag":  2,
+                                              "oneof":  false
+                                          }
+                                      ],
+                     "Properties":  [
+                                        {
+                                            "name":  "items",
+                                            "type":  "PropertyPair",
+                                            "repeated":  true,
+                                            "tag":  1,
+                                            "oneof":  false
+                                        }
+                                    ],
+                     "Keys":  [
+                                  {
+                                      "name":  "keys",
+                                      "type":  "string",
+                                      "repeated":  true,
+                                      "tag":  1,
+                                      "oneof":  false
+                                  }
+                              ],
+                     "KeyInfo":  [
+                                     {
+                                         "name":  "key",
+                                         "type":  "string",
+                                         "repeated":  false,
+                                         "tag":  1,
+                                         "oneof":  false
+                                     },
+                                     {
+                                         "name":  "value",
+                                         "type":  "bytes",
+                                         "repeated":  false,
+                                         "tag":  2,
+                                         "oneof":  false
+                                     },
+                                     {
+                                         "name":  "version",
+                                         "type":  "uint64",
+                                         "repeated":  false,
+                                         "tag":  3,
+                                         "oneof":  false
+                                     },
+                                     {
+                                         "name":  "ttl_remaining_secs",
+                                         "type":  "OptionalUint64",
+                                         "repeated":  false,
+                                         "tag":  4,
+                                         "oneof":  false
+                                     },
+                                     {
+                                         "name":  "freq_count",
+                                         "type":  "uint64",
+                                         "repeated":  false,
+                                         "tag":  5,
+                                         "oneof":  false
+                                     },
+                                     {
+                                         "name":  "compressed",
+                                         "type":  "bool",
+                                         "repeated":  false,
+                                         "tag":  6,
+                                         "oneof":  false
+                                     }
+                                 ],
+                     "ClusterView":  [
+                                         {
+                                             "name":  "nodes",
+                                             "type":  "NodeInfo",
+                                             "repeated":  true,
+                                             "tag":  1,
+                                             "oneof":  false
+                                         }
+                                     ],
+                     "BackupResult":  [
+                                          {
+                                              "name":  "path",
+                                              "type":  "string",
+                                              "repeated":  false,
+                                              "tag":  1,
+                                              "oneof":  false
+                                          },
+                                          {
+                                              "name":  "bytes",
+                                              "type":  "uint64",
+                                              "repeated":  false,
+                                              "tag":  2,
+                                              "oneof":  false
+                                          }
+                                      ],
+                     "RestoreResult":  [
+                                           {
+                                               "name":  "path",
+                                               "type":  "string",
+                                               "repeated":  false,
+                                               "tag":  1,
+                                               "oneof":  false
+                                           },
+                                           {
+                                               "name":  "entries",
+                                               "type":  "uint64",
+                                               "repeated":  false,
+                                               "tag":  2,
+                                               "oneof":  false
+                                           },
+                                           {
+                                               "name":  "duration_ms",
+                                               "type":  "uint64",
+                                               "repeated":  false,
+                                               "tag":  3,
+                                               "oneof":  false
+                                           }
+                                       ],
+                     "ErrorMessage":  [
+                                          {
+                                              "name":  "message",
+                                              "type":  "string",
+                                              "repeated":  false,
+                                              "tag":  1,
+                                              "oneof":  false
+                                          }
+                                      ],
+                     "NamespaceQuotaUsage":  [
+                                                 {
+                                                     "name":  "namespace",
+                                                     "type":  "string",
+                                                     "repeated":  false,
+                                                     "tag":  1,
+                                                     "oneof":  false
+                                                 },
+                                                 {
+                                                     "name":  "key_count",
+                                                     "type":  "uint64",
+                                                     "repeated":  false,
+                                                     "tag":  2,
+                                                     "oneof":  false
+                                                 },
+                                                 {
+                                                     "name":  "quota_limit",
+                                                     "type":  "uint64",
+                                                     "repeated":  false,
+                                                     "tag":  3,
+                                                     "oneof":  false
+                                                 },
+                                                 {
+                                                     "name":  "usage_pct",
+                                                     "type":  "uint64",
+                                                     "repeated":  false,
+                                                     "tag":  4,
+                                                     "oneof":  false
+                                                 },
+                                                 {
+                                                     "name":  "remaining_keys",
+                                                     "type":  "uint64",
+                                                     "repeated":  false,
+                                                     "tag":  5,
+                                                     "oneof":  false
+                                                 }
+                                             ],
+                     "NamespaceLatencySummary":  [
+                                                     {
+                                                         "name":  "namespace",
+                                                         "type":  "string",
+                                                         "repeated":  false,
+                                                         "tag":  1,
+                                                         "oneof":  false
+                                                     },
+                                                     {
+                                                         "name":  "request_total",
+                                                         "type":  "uint64",
+                                                         "repeated":  false,
+                                                         "tag":  2,
+                                                         "oneof":  false
+                                                     },
+                                                     {
+                                                         "name":  "latency_p95_estimate_ms",
+                                                         "type":  "OptionalUint64",
+                                                         "repeated":  false,
+                                                         "tag":  3,
+                                                         "oneof":  false
+                                                     },
+                                                     {
+                                                         "name":  "latency_p99_estimate_ms",
+                                                         "type":  "OptionalUint64",
+                                                         "repeated":  false,
+                                                         "tag":  4,
+                                                         "oneof":  false
+                                                     }
+                                                 ],
+                     "HotKeyUsage":  [
+                                         {
+                                             "name":  "key",
+                                             "type":  "string",
+                                             "repeated":  false,
+                                             "tag":  1,
+                                             "oneof":  false
+                                         },
+                                         {
+                                             "name":  "request_total",
+                                             "type":  "uint64",
+                                             "repeated":  false,
+                                             "tag":  2,
+                                             "oneof":  false
+                                         }
+                                     ],
+                     "NodeStats":  [
+                                       {
+                                           "name":  "node_id",
+                                           "type":  "string",
+                                           "repeated":  false,
+                                           "tag":  1,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "status",
+                                           "type":  "NodeStatus",
+                                           "repeated":  false,
+                                           "tag":  2,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "is_primary",
+                                           "type":  "bool",
+                                           "repeated":  false,
+                                           "tag":  3,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "committed_index",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  4,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "key_count",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  5,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "memory_used_bytes",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  6,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "memory_max_bytes",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  7,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "evictions",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  8,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "hit_count",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  9,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "miss_count",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  10,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "uptime_secs",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  11,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "value_size_limit_bytes",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  12,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "max_keys_limit",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  13,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "compression_enabled",
+                                           "type":  "bool",
+                                           "repeated":  false,
+                                           "tag":  14,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "compression_threshold_bytes",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  15,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "node_name",
+                                           "type":  "string",
+                                           "repeated":  false,
+                                           "tag":  16,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "backup_dir_bytes",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  17,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "snapshot_last_load_path",
+                                           "type":  "OptionalString",
+                                           "repeated":  false,
+                                           "tag":  18,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "snapshot_last_load_duration_ms",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  19,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "snapshot_last_load_entries",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  20,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "snapshot_last_load_age_secs",
+                                           "type":  "OptionalUint64",
+                                           "repeated":  false,
+                                           "tag":  21,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "snapshot_restore_attempt_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  22,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "snapshot_restore_success_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  23,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "snapshot_restore_failure_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  24,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "snapshot_restore_not_found_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  25,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "snapshot_restore_policy_block_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  26,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "snapshot_restore_success_ratio_pct",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  27,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "persistence_platform_allowed",
+                                           "type":  "bool",
+                                           "repeated":  false,
+                                           "tag":  28,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "persistence_runtime_enabled",
+                                           "type":  "bool",
+                                           "repeated":  false,
+                                           "tag":  29,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "persistence_enabled",
+                                           "type":  "bool",
+                                           "repeated":  false,
+                                           "tag":  30,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "persistence_backup_enabled",
+                                           "type":  "bool",
+                                           "repeated":  false,
+                                           "tag":  31,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "persistence_export_enabled",
+                                           "type":  "bool",
+                                           "repeated":  false,
+                                           "tag":  32,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "persistence_import_enabled",
+                                           "type":  "bool",
+                                           "repeated":  false,
+                                           "tag":  33,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "tenancy_enabled",
+                                           "type":  "bool",
+                                           "repeated":  false,
+                                           "tag":  34,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "tenancy_default_namespace",
+                                           "type":  "string",
+                                           "repeated":  false,
+                                           "tag":  35,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "tenancy_max_keys_per_namespace",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  36,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "rate_limit_enabled",
+                                           "type":  "bool",
+                                           "repeated":  false,
+                                           "tag":  37,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "rate_limited_requests_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  38,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "circuit_breaker_enabled",
+                                           "type":  "bool",
+                                           "repeated":  false,
+                                           "tag":  39,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "hot_key_enabled",
+                                           "type":  "bool",
+                                           "repeated":  false,
+                                           "tag":  40,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "hot_key_adaptive_waiters_enabled",
+                                           "type":  "bool",
+                                           "repeated":  false,
+                                           "tag":  41,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "read_repair_enabled",
+                                           "type":  "bool",
+                                           "repeated":  false,
+                                           "tag":  42,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "hot_key_coalesced_hits_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  43,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "hot_key_fallback_exec_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  44,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "hot_key_wait_timeout_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  45,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "hot_key_stale_served_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  46,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "hot_key_inflight_keys",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  47,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "hot_key_stale_cache_entries",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  48,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "hot_key_adaptive_state_keys",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  49,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "hot_key_adaptive_limit_increase_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  50,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "hot_key_adaptive_limit_decrease_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  51,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "read_repair_trigger_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  52,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "read_repair_success_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  53,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "read_repair_throttled_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  54,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "read_repair_budget_exhausted_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  55,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "namespace_quota_reject_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  56,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "namespace_quota_reject_rate_per_min",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  57,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "namespace_quota_reject_trend",
+                                           "type":  "string",
+                                           "repeated":  false,
+                                           "tag":  58,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "namespace_quota_top_usage",
+                                           "type":  "NamespaceQuotaUsage",
+                                           "repeated":  true,
+                                           "tag":  59,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "namespace_latency_top",
+                                           "type":  "NamespaceLatencySummary",
+                                           "repeated":  true,
+                                           "tag":  60,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "hot_key_top_usage",
+                                           "type":  "HotKeyUsage",
+                                           "repeated":  true,
+                                           "tag":  61,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "anti_entropy_runs_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  62,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "anti_entropy_repair_trigger_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  63,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "anti_entropy_repair_throttled_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  64,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "anti_entropy_last_detected_lag",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  65,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "anti_entropy_key_checks_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  66,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "anti_entropy_key_mismatch_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  67,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "anti_entropy_full_reconcile_runs_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  68,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "anti_entropy_full_reconcile_key_checks_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  69,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "anti_entropy_full_reconcile_mismatch_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  70,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "anti_entropy_budget_exhausted_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  71,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "mixed_version_probe_runs_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  72,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "mixed_version_peers_detected_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  73,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "mixed_version_probe_errors_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  74,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "mixed_version_last_detected_peer_count",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  75,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "circuit_breaker_state",
+                                           "type":  "string",
+                                           "repeated":  false,
+                                           "tag":  76,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "circuit_breaker_open_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  77,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "circuit_breaker_reject_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  78,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_requests_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  79,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_requests_tcp_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  80,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_requests_http_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  81,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_requests_internal_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  82,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_request_latency_le_1ms_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  83,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_request_latency_le_5ms_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  84,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_request_latency_le_20ms_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  85,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_request_latency_le_100ms_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  86,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_request_latency_le_500ms_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  87,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_request_latency_gt_500ms_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  88,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_latency_p50_estimate_ms",
+                                           "type":  "OptionalUint64",
+                                           "repeated":  false,
+                                           "tag":  89,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_latency_p90_estimate_ms",
+                                           "type":  "OptionalUint64",
+                                           "repeated":  false,
+                                           "tag":  90,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_latency_p95_estimate_ms",
+                                           "type":  "OptionalUint64",
+                                           "repeated":  false,
+                                           "tag":  91,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_latency_p99_estimate_ms",
+                                           "type":  "OptionalUint64",
+                                           "repeated":  false,
+                                           "tag":  92,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_error_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  93,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_errors_tcp_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  94,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_errors_http_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  95,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_errors_internal_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  96,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_error_auth_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  97,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_error_throttle_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  98,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_error_availability_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  99,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_error_validation_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  100,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_error_internal_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  101,
+                                           "oneof":  false
+                                       },
+                                       {
+                                           "name":  "client_error_other_total",
+                                           "type":  "uint64",
+                                           "repeated":  false,
+                                           "tag":  102,
+                                           "oneof":  false
+                                       }
+                                   ],
+                     "Snapshot":  [
+                                      {
+                                          "name":  "entries",
+                                          "type":  "SnapshotEntry",
+                                          "repeated":  true,
+                                          "tag":  1,
+                                          "oneof":  false
+                                      }
+                                  ],
+                     "SnapshotEntry":  [
+                                           {
+                                               "name":  "key",
+                                               "type":  "string",
+                                               "repeated":  false,
+                                               "tag":  1,
+                                               "oneof":  false
+                                           },
+                                           {
+                                               "name":  "value",
+                                               "type":  "bytes",
+                                               "repeated":  false,
+                                               "tag":  2,
+                                               "oneof":  false
+                                           },
+                                           {
+                                               "name":  "version",
+                                               "type":  "uint64",
+                                               "repeated":  false,
+                                               "tag":  3,
+                                               "oneof":  false
+                                           },
+                                           {
+                                               "name":  "expires_at_ms",
+                                               "type":  "OptionalUint64",
+                                               "repeated":  false,
+                                               "tag":  4,
+                                               "oneof":  false
+                                           }
+                                       ]
+                 }
 }

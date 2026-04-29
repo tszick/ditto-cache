@@ -3,7 +3,8 @@ use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
 };
-use ditto_protocol::NodeStatus;
+use ditto_protocol::{pb, NodeStatus};
+use prost::Message;
 use rand::RngExt;
 use sha2::{Digest, Sha256};
 use std::{
@@ -40,6 +41,41 @@ fn checksum_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
     hex::encode(hasher.finalize())
+}
+
+fn encode_snapshot(entries: &[(String, ExportEntry)]) -> Vec<u8> {
+    let snapshot = pb::Snapshot {
+        entries: entries
+            .iter()
+            .map(|(key, entry)| pb::SnapshotEntry {
+                key: key.clone(),
+                value: entry.value.clone(),
+                version: entry.version,
+                expires_at_ms: entry
+                    .expires_at_ms
+                    .map(|value| pb::OptionalUint64 { value }),
+            })
+            .collect(),
+    };
+    snapshot.encode_to_vec()
+}
+
+fn decode_snapshot(raw: &[u8]) -> anyhow::Result<Vec<(String, ExportEntry)>> {
+    let snapshot = pb::Snapshot::decode(raw)?;
+    Ok(snapshot
+        .entries
+        .into_iter()
+        .map(|entry| {
+            (
+                entry.key,
+                ExportEntry {
+                    value: entry.value,
+                    version: entry.version,
+                    expires_at_ms: entry.expires_at_ms.map(|value| value.value),
+                },
+            )
+        })
+        .collect())
 }
 
 fn write_checksum_sidecar(path: &Path, data: &[u8]) -> anyhow::Result<()> {
@@ -211,14 +247,8 @@ pub fn restore_latest_snapshot(
 
     let entries: Vec<(String, ExportEntry)> = if filename.contains(".json") {
         serde_json::from_slice(&raw)?
-    } else if cfg.max_snapshot_bytes > 0 {
-        use bincode::Options;
-        bincode::DefaultOptions::new()
-            .with_fixint_encoding()
-            .with_limit(cfg.max_snapshot_bytes)
-            .deserialize(&raw)?
     } else {
-        bincode::deserialize(&raw)?
+        decode_snapshot(&raw)?
     };
     if cfg.max_restore_entries > 0 && entries.len() > cfg.max_restore_entries {
         anyhow::bail!(
@@ -244,7 +274,7 @@ async fn write_snapshot(node: &NodeHandle, cfg: &BackupConfig) -> anyhow::Result
     let (plaintext, base_ext) = if is_json {
         (serde_json::to_vec(&snapshot)?, "json")
     } else {
-        (bincode::serialize(&snapshot)?, "bin")
+        (encode_snapshot(&snapshot), "pb")
     };
 
     let (data, ext) = match &cfg.encryption_key {

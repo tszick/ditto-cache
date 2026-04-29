@@ -389,6 +389,59 @@ P2 automation and release-gate closure update (2026-04-19 to 2026-04-20):
   - runbook validator hardened with multi-node telemetry assertions plus namespace/hot-key probe checks,
   - recovery telemetry and runbook validation tightened in the node/runtime path.
 
+Wire format migration (2026-04-29):
+
+- Completed (server side, `ditto-cache`):
+  - replaced `bincode` with `prost` + `ditto-protocol/proto/ditto.proto` as the
+    single source of truth for client TCP, cluster, gossip, admin, and snapshot
+    payloads,
+  - introduced a versioned `Envelope` wrapper (`PROTOCOL_VERSION = 1`) with
+    4-byte big-endian length framing for TCP transports,
+  - regenerated `ditto-protocol/schema/protocol-contract.json` and wired the
+    drift gate (`.github/workflows/protocol-contract.yml`),
+  - migrated backup snapshots to protobuf (`pb::Snapshot`); JSON snapshots
+    remain only as a debug option (`backup.format = "json"`).
+- Open follow-ups:
+  - **Snapshot payload version header (cache repo)**: `pb::Snapshot` currently
+    has no in-payload format version field — restore selects the codec from the
+    file extension (`.json` vs `.pb`). Add an explicit `uint32 version` (or a
+    `SnapshotHeader` sub-message) to `ditto.proto`, populate on write, and
+    validate on restore so future format changes can be detected without
+    relying on filenames. Tracks the Sprint 2 risk note ("snapshot format drift
+    over versions").
+  - **SDK wire migration (`ditto-client` repo)**: Node.js, Python, Java, and Go
+    TCP clients still encode/decode bincode and are wire-incompatible with the
+    new prost server. See the cross-repo follow-up section below.
+
+Cross-repo follow-up — `ditto-client` SDK wire migration:
+
+- Scope:
+  - `ditto-nodejs-client/src/bincode.ts` + `tcp-client.ts`,
+  - `ditto-python-client/src/ditto_client/bincode.py` + `tcp_client.py`,
+  - `ditto-java-client/src/main/java/io/ditto/client/DittoTcpClient.java`
+    (+ namespace encoding smoke test),
+  - `ditto-go-client/bincode.go` + `tcp_client.go`,
+  - corresponding bincode tests across all four SDKs.
+- Required changes per SDK:
+  - generate protobuf bindings from `ditto-protocol/proto/ditto.proto`
+    (Node: `protobufjs` / `ts-proto`; Python: `protoc` + `protobuf`; Java:
+    `protoc` Gradle plugin; Go: `protoc-gen-go`),
+  - replace bincode encode/decode with the generated `Envelope` +
+    `ClientRequest` / `ClientResponse` codec,
+  - keep the existing 4-byte big-endian length framing,
+  - update SDK contract tests and the protocol-parity gate
+    (`.github/workflows/protocol-parity.yml` +
+    `contracts/protocol-contract.snapshot.json`) so they assert protobuf
+    field names/numbers instead of bincode variant indices,
+  - update `docs/client-developer-guide.md` to describe the new wire format
+    and the proto source-of-truth pointer.
+- Coordination:
+  - until the SDKs are migrated, the bincode-based clients will fail against
+    any `dittod` build past the migration commit — call this out in the
+    `ditto-client` README and in the next release notes,
+  - prefer landing the migration behind a single coordinated release tag so
+    the SDK and server versions move together.
+
 ## Definition of Done (for each backlog item)
 
 - Feature is disabled by default and guardrailed by config/env.

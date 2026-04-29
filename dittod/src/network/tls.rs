@@ -5,8 +5,8 @@ use rustls::{
     server::WebPkiClientVerifier,
     ClientConfig, RootCertStore, ServerConfig,
 };
-use rustls_pemfile::{certs, private_key};
-use std::{fs, io::BufReader, sync::Arc};
+use rustls_pki_types::pem::PemObject;
+use std::sync::Arc;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 /// Build a TLS acceptor for the cluster/admin server (mTLS – requires client cert).
@@ -66,17 +66,12 @@ pub fn cluster_server_name() -> ServerName<'static> {
 }
 
 fn load_certs(path: &str) -> Result<Vec<CertificateDer<'static>>> {
-    let f = fs::File::open(path).with_context(|| format!("opening '{}'", path))?;
-    let mut reader = BufReader::new(f);
-    certs(&mut reader)
+    CertificateDer::pem_file_iter(path)
+        .with_context(|| format!("opening '{}'", path))?
         .collect::<Result<Vec<_>, _>>()
         .context("reading PEM certificates")
 }
 
 fn load_key(path: &str) -> Result<PrivateKeyDer<'static>> {
-    let f = fs::File::open(path).with_context(|| format!("opening '{}'", path))?;
-    let mut reader = BufReader::new(f);
-    private_key(&mut reader)
-        .context("reading private key")?
-        .context("no private key found in file")
+    PrivateKeyDer::from_pem_file(path).context("reading private key")
 }

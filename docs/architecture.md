@@ -54,6 +54,12 @@ Internal cluster traffic
 | 7780/udp | `dittod` | Gossip heartbeat |
 | 7781 | `ditto-mgmt` | Management UI + REST API |
 
+The TCP, cluster, gossip, and admin payloads share a single protobuf contract
+defined in `ditto-protocol/proto/ditto.proto` (encoded via `prost`, wrapped in a
+versioned `Envelope`, length-prefixed with a 4-byte big-endian header on TCP).
+The generated `ditto-protocol/schema/protocol-contract.json` is the snapshot
+that the drift gate enforces (see [admin-guide.md](admin-guide.md#validation-and-gates)).
+
 ## Client protocol capabilities
 
 ### Core operations

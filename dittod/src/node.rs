@@ -4636,9 +4636,9 @@ mod tests {
                 expires_at_ms: None,
             },
         )];
-        let data = bincode::serialize(&snapshot_entries).expect("serialize snapshot");
-        let file =
-            std::path::Path::new(&backup_dir).join("test-node_backup_2099.01.01_00-00-00_UTC.bin");
+        let data = serde_json::to_vec(&snapshot_entries).expect("serialize snapshot");
+        let file = std::path::Path::new(&backup_dir)
+            .join("test-node_backup_2099.01.01_00-00-00_UTC.json");
         write_snapshot_with_checksum(&file, &data);
 
         let resp = Arc::clone(&node)
@@ -4685,9 +4685,9 @@ mod tests {
                 expires_at_ms: None,
             },
         )];
-        let data = bincode::serialize(&snapshot_entries).expect("serialize snapshot");
-        let file =
-            std::path::Path::new(&backup_dir).join("test-node_backup_2099.01.01_00-00-00_UTC.bin");
+        let data = serde_json::to_vec(&snapshot_entries).expect("serialize snapshot");
+        let file = std::path::Path::new(&backup_dir)
+            .join("test-node_backup_2099.01.01_00-00-00_UTC.json");
         write_snapshot_with_checksum(&file, &data);
 
         let resp = Arc::clone(&node)
@@ -4735,9 +4735,9 @@ mod tests {
                 },
             ),
         ];
-        let data = bincode::serialize(&snapshot_entries).expect("serialize snapshot");
-        let file =
-            std::path::Path::new(&backup_dir).join("test-node_backup_2099.01.01_00-00-00_UTC.bin");
+        let data = serde_json::to_vec(&snapshot_entries).expect("serialize snapshot");
+        let file = std::path::Path::new(&backup_dir)
+            .join("test-node_backup_2099.01.01_00-00-00_UTC.json");
         write_snapshot_with_checksum(&file, &data);
 
         let resp = Arc::clone(&node)
@@ -4767,7 +4767,7 @@ mod tests {
 
         let file =
             std::path::Path::new(&backup_dir).join("test-node_backup_2099.01.01_00-00-00_UTC.bin");
-        write_snapshot_with_checksum(&file, b"not-bincode");
+        write_snapshot_with_checksum(&file, b"not-protobuf");
 
         let resp = Arc::clone(&node)
             .handle_admin(AdminRequest::RestoreLatestSnapshot)
