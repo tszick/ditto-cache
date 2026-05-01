@@ -501,6 +501,8 @@ pub async fn run_scheduler(node: Arc<NodeHandle>, cfg: BackupConfig) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{config::Config, store::KvStore};
+    use bytes::Bytes;
 
     fn sample_entries() -> Vec<(String, ExportEntry)> {
         vec![
@@ -521,6 +523,39 @@ mod tests {
                 },
             ),
         ]
+    }
+
+    fn test_node(mut cfg: Config) -> Arc<NodeHandle> {
+        cfg.node.id = "backup-node".into();
+        let store = Arc::new(KvStore::new(
+            cfg.cache.max_memory_mb,
+            cfg.cache.default_ttl_secs,
+            cfg.cache.value_size_limit_bytes,
+            cfg.cache.max_keys,
+            cfg.compression.enabled,
+            cfg.compression.threshold_bytes,
+        ));
+        NodeHandle::new(
+            cfg,
+            "backup-node.toml".into(),
+            store,
+            None,
+            "127.0.0.1".into(),
+        )
+    }
+
+    fn backup_enabled_config(path: String) -> Config {
+        let mut cfg = Config::default();
+        cfg.node.active = false;
+        cfg.backup.path = path;
+        cfg.persistence.platform_allowed = true;
+        cfg.persistence.runtime_enabled = true;
+        cfg.persistence.backup_allowed = true;
+        cfg
+    }
+
+    fn checksum_path_for(path: &str) -> PathBuf {
+        checksum_sidecar_path(Path::new(path))
     }
 
     #[test]
@@ -667,6 +702,126 @@ mod tests {
 
         let err = decrypt_data(&wrong_key, &encrypted).expect_err("wrong key");
         assert!(err.to_string().contains("AES-256-GCM decryption failed"));
+    }
+
+    #[tokio::test]
+    async fn run_backup_rejects_disabled_persistence_gate() {
+        let dir = unique_test_dir("gate");
+        let mut cfg = Config::default();
+        cfg.node.active = false;
+        cfg.backup.path = dir.to_string_lossy().into_owned();
+        let node = test_node(cfg.clone());
+
+        let err = run_backup(node, &cfg.backup)
+            .await
+            .expect_err("backup gate should reject disabled persistence");
+        assert!(err.to_string().contains("backup is disabled"));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn run_backup_writes_plain_protobuf_snapshot_and_checksum() {
+        let dir = unique_test_dir("plain-pb");
+        let mut cfg = backup_enabled_config(dir.to_string_lossy().into_owned());
+        cfg.backup.format = "protobuf".into();
+        cfg.backup.retain_days = 1;
+        let node = test_node(cfg.clone());
+        node.store.set(
+            "plain-key".into(),
+            Bytes::from_static(b"plain-value"),
+            42,
+            None,
+        );
+
+        let path = run_backup(Arc::clone(&node), &cfg.backup)
+            .await
+            .expect("backup should write protobuf snapshot");
+
+        assert!(path.ends_with(".pb"));
+        assert!(Path::new(&path).exists());
+        assert!(checksum_path_for(&path).exists());
+        assert!(!node.active.load(Ordering::Relaxed));
+
+        let data = fs::read(&path).expect("read protobuf snapshot");
+        verify_checksum_sidecar(Path::new(&path), &data).expect("checksum verifies");
+        let entries = decode_snapshot(&data).expect("decode protobuf snapshot");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "plain-key");
+        assert_eq!(entries[0].1.value, b"plain-value");
+        assert_eq!(entries[0].1.version, 42);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn run_backup_writes_encrypted_json_snapshot_and_can_restore_it() {
+        let dir = unique_test_dir("encrypted-json");
+        let key = "7b".repeat(32);
+        let mut cfg = backup_enabled_config(dir.to_string_lossy().into_owned());
+        cfg.backup.format = "json".into();
+        cfg.backup.encryption_key = Some(key.clone());
+        let node = test_node(cfg.clone());
+        node.store.set(
+            "encrypted-key".into(),
+            Bytes::from_static(b"encrypted-value"),
+            77,
+            None,
+        );
+
+        let path = run_backup(Arc::clone(&node), &cfg.backup)
+            .await
+            .expect("backup should write encrypted json snapshot");
+
+        assert!(path.ends_with(".json.enc"));
+        assert!(checksum_path_for(&path).exists());
+        let encrypted = fs::read(&path).expect("read encrypted snapshot");
+        verify_checksum_sidecar(Path::new(&path), &encrypted).expect("checksum verifies");
+        let plaintext = decrypt_data(&key, &encrypted).expect("decrypt snapshot");
+        let entries: Vec<(String, ExportEntry)> =
+            serde_json::from_slice(&plaintext).expect("decode json snapshot");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "encrypted-key");
+        assert_eq!(entries[0].1.value, b"encrypted-value");
+        assert_eq!(entries[0].1.version, 77);
+
+        let mut missing_key_cfg = cfg.backup.clone();
+        missing_key_cfg.encryption_key = None;
+        let err = match restore_latest_snapshot(&node, &missing_key_cfg) {
+            Err(err) => err,
+            Ok(_) => panic!("encrypted restore should require a key"),
+        };
+        assert!(err.to_string().contains("encryption_key is missing"));
+
+        node.store.flush();
+        let restored = restore_latest_snapshot(&node, &cfg.backup)
+            .expect("encrypted restore should succeed")
+            .expect("snapshot should exist");
+        assert_eq!(restored.entries, 1);
+        assert_eq!(
+            node.store.get("encrypted-key").expect("restored key").value,
+            Bytes::from_static(b"encrypted-value")
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn run_scheduler_returns_for_disabled_or_invalid_schedule() {
+        let dir = unique_test_dir("scheduler");
+        let cfg = backup_enabled_config(dir.to_string_lossy().into_owned());
+        let node = test_node(cfg.clone());
+
+        let mut disabled = cfg.backup.clone();
+        disabled.enabled = false;
+        run_scheduler(Arc::clone(&node), disabled).await;
+
+        let mut invalid = cfg.backup.clone();
+        invalid.enabled = true;
+        invalid.schedule = "not a cron schedule".into();
+        run_scheduler(node, invalid).await;
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     fn unique_test_dir(name: &str) -> PathBuf {

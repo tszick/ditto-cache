@@ -56,9 +56,13 @@ impl Default for CtlConfig {
 
 impl CtlConfig {
     pub fn load() -> Result<Self> {
-        let path = config_path();
+        Self::load_from_path(config_path())
+    }
+
+    fn load_from_path(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let path = path.as_ref();
         if path.exists() {
-            let raw = fs::read_to_string(&path).with_context(|| format!("reading {:?}", path))?;
+            let raw = fs::read_to_string(path).with_context(|| format!("reading {:?}", path))?;
             toml::from_str(&raw).context("parsing dittoctl config")
         } else {
             Ok(Self::default())
@@ -66,12 +70,16 @@ impl CtlConfig {
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = config_path();
+        self.save_to_path(config_path())
+    }
+
+    fn save_to_path(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
+        let path = path.as_ref();
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
         let raw = toml::to_string_pretty(self)?;
-        fs::write(&path, raw)?;
+        fs::write(path, raw)?;
         Ok(())
     }
 }
@@ -81,4 +89,78 @@ fn config_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("ditto")
         .join("kvctl.toml")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_test_file(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!(
+                "dittoctl-config-test-{name}-{}",
+                std::process::id()
+            ))
+            .join(nanos.to_string())
+            .join("kvctl.toml")
+    }
+
+    #[test]
+    fn load_from_missing_path_returns_defaults() {
+        let path = unique_test_file("missing");
+        let cfg = CtlConfig::load_from_path(&path).expect("load default config");
+        assert_eq!(cfg.mgmt.url, "http://localhost:7781");
+        assert_eq!(cfg.mgmt.timeout_ms, 3000);
+        assert_eq!(cfg.output.format, "binary");
+    }
+
+    #[test]
+    fn save_and_load_round_trip_custom_config() {
+        let path = unique_test_file("roundtrip");
+        let cfg = CtlConfig {
+            mgmt: MgmtConfig {
+                url: "https://mgmt.example.test:9443".into(),
+                timeout_ms: 1500,
+                username: Some("alice".into()),
+                password: Some("secret".into()),
+                insecure_skip_verify: true,
+            },
+            output: OutputConfig {
+                format: "json".into(),
+            },
+        };
+
+        cfg.save_to_path(&path).expect("save config");
+        let loaded = CtlConfig::load_from_path(&path).expect("reload config");
+
+        assert_eq!(loaded.mgmt.url, cfg.mgmt.url);
+        assert_eq!(loaded.mgmt.timeout_ms, 1500);
+        assert_eq!(loaded.mgmt.username.as_deref(), Some("alice"));
+        assert_eq!(loaded.mgmt.password.as_deref(), Some("secret"));
+        assert!(loaded.mgmt.insecure_skip_verify);
+        assert_eq!(loaded.output.format, "json");
+
+        if let Some(root) = path.ancestors().nth(2) {
+            fs::remove_dir_all(root).ok();
+        }
+    }
+
+    #[test]
+    fn load_from_path_reports_toml_parse_context() {
+        let path = unique_test_file("invalid");
+        fs::create_dir_all(path.parent().unwrap()).expect("create config dir");
+        fs::write(&path, "not valid = [").expect("write invalid config");
+
+        let err = CtlConfig::load_from_path(&path).expect_err("invalid TOML should fail");
+        assert!(err.to_string().contains("parsing dittoctl config"));
+
+        if let Some(root) = path.ancestors().nth(2) {
+            fs::remove_dir_all(root).ok();
+        }
+    }
 }

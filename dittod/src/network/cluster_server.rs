@@ -141,9 +141,31 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::do_cluster_rpc;
-    use ditto_protocol::{decode, encode, ClientRequest, ClusterMessage};
+    use super::{do_cluster_rpc, handle_cluster};
+    use crate::{config::Config, node::NodeHandle, store::KvStore};
+    use bytes::Bytes;
+    use ditto_protocol::{decode, encode, AdminResponse, ClientRequest, ClusterMessage};
+    use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn test_node(mut cfg: Config) -> Arc<NodeHandle> {
+        cfg.node.id = "cluster-server-test-node".into();
+        let store = Arc::new(KvStore::new(
+            cfg.cache.max_memory_mb,
+            cfg.cache.default_ttl_secs,
+            cfg.cache.value_size_limit_bytes,
+            cfg.cache.max_keys,
+            cfg.compression.enabled,
+            cfg.compression.threshold_bytes,
+        ));
+        NodeHandle::new(
+            cfg,
+            "cluster-server-test-node.toml".into(),
+            store,
+            None,
+            "127.0.0.1".into(),
+        )
+    }
 
     #[tokio::test]
     async fn do_cluster_rpc_writes_request_and_decodes_response() {
@@ -226,6 +248,109 @@ mod tests {
             .unwrap_err();
         server_task.await.unwrap();
 
+        assert!(err.to_string().contains("exceeds max"));
+    }
+
+    #[tokio::test]
+    async fn handle_cluster_decodes_forward_and_writes_response_frames() {
+        let node = test_node(Config::default());
+        let (mut client, server) = tokio::io::duplex(4096);
+        let server_task = tokio::spawn(handle_cluster(server, Arc::clone(&node)));
+
+        let request = encode(&ClusterMessage::Forward {
+            request: ClientRequest::Ping,
+            origin_node: uuid::Uuid::from_u128(2),
+        })
+        .expect("encode forward request");
+        client.write_all(&request).await.expect("write request");
+
+        let mut len_buf = [0u8; 4];
+        client
+            .read_exact(&mut len_buf)
+            .await
+            .expect("read response length");
+        let len = u32::from_be_bytes(len_buf) as usize;
+        let mut payload = vec![0u8; len];
+        client
+            .read_exact(&mut payload)
+            .await
+            .expect("read response payload");
+        let response: ClusterMessage = decode(&payload, 4096).expect("decode response");
+        assert!(matches!(
+            response,
+            ClusterMessage::ForwardResponse(ditto_protocol::ClientResponse::Pong)
+        ));
+
+        drop(client);
+        server_task
+            .await
+            .expect("handler task should join")
+            .expect("handler should finish cleanly");
+    }
+
+    #[tokio::test]
+    async fn handle_cluster_admin_request_round_trips_boxed_response() {
+        let node = test_node(Config::default());
+        node.store.set(
+            "admin-frame-key".into(),
+            Bytes::from_static(b"value"),
+            9,
+            None,
+        );
+        let (mut client, server) = tokio::io::duplex(4096);
+        let server_task = tokio::spawn(handle_cluster(server, Arc::clone(&node)));
+
+        let request = encode(&ClusterMessage::Admin(
+            ditto_protocol::AdminRequest::ListKeys {
+                pattern: Some("admin-*".into()),
+            },
+        ))
+        .expect("encode admin request");
+        client.write_all(&request).await.expect("write request");
+
+        let mut len_buf = [0u8; 4];
+        client
+            .read_exact(&mut len_buf)
+            .await
+            .expect("read response length");
+        let len = u32::from_be_bytes(len_buf) as usize;
+        let mut payload = vec![0u8; len];
+        client
+            .read_exact(&mut payload)
+            .await
+            .expect("read response payload");
+        let response: ClusterMessage = decode(&payload, 4096).expect("decode response");
+        assert!(matches!(
+            response,
+            ClusterMessage::AdminResponse(resp)
+                if matches!(*resp, AdminResponse::Keys(ref keys) if keys == &vec!["admin-frame-key".to_string()])
+        ));
+
+        drop(client);
+        server_task
+            .await
+            .expect("handler task should join")
+            .expect("handler should finish cleanly");
+    }
+
+    #[tokio::test]
+    async fn handle_cluster_rejects_oversized_inbound_frame() {
+        let mut cfg = Config::default();
+        cfg.node.max_message_size_bytes = 4;
+        let node = test_node(cfg);
+        let (mut client, server) = tokio::io::duplex(64);
+        let server_task = tokio::spawn(handle_cluster(server, node));
+
+        client
+            .write_all(&5u32.to_be_bytes())
+            .await
+            .expect("write oversized length");
+        drop(client);
+
+        let err = server_task
+            .await
+            .expect("handler task should join")
+            .expect_err("oversized inbound frame should fail");
         assert!(err.to_string().contains("exceeds max"));
     }
 }

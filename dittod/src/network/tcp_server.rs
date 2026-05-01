@@ -165,9 +165,10 @@ async fn read_frame(
 
 #[cfg(test)]
 mod tests {
-    use super::{namespaced_watch_key, read_frame};
+    use super::{handle_client, namespaced_watch_key, read_frame};
     use crate::{config::Config, node::NodeHandle, store::KvStore};
-    use ditto_protocol::{decode, encode, ClientRequest};
+    use bytes::Bytes;
+    use ditto_protocol::{decode, encode, ClientRequest, ClientResponse, ErrorCode};
     use std::sync::Arc;
     use tokio::{
         io::AsyncWriteExt,
@@ -180,6 +181,14 @@ mod tests {
         let client = tokio::spawn(async move { TcpStream::connect(addr).await.unwrap() });
         let (server, _) = listener.accept().await.unwrap();
         (client.await.unwrap(), server)
+    }
+
+    async fn read_client_response(stream: &mut TcpStream) -> ClientResponse {
+        let payload = read_frame(stream, 4096, std::time::Duration::from_secs(1))
+            .await
+            .unwrap()
+            .unwrap();
+        decode(&payload, 4096).unwrap()
     }
 
     fn test_node(mut cfg: Config) -> Arc<NodeHandle> {
@@ -199,6 +208,124 @@ mod tests {
             None,
             "127.0.0.1".into(),
         )
+    }
+
+    #[tokio::test]
+    async fn handle_client_rejects_missing_auth_before_dispatch() {
+        let mut cfg = Config::default();
+        cfg.node.client_auth_token = Some("secret".into());
+        let node = test_node(cfg);
+        let (mut client, server) = stream_pair().await;
+        let task = tokio::spawn(handle_client(server, node));
+
+        client
+            .write_all(&encode(&ClientRequest::Ping).unwrap())
+            .await
+            .unwrap();
+
+        let response = read_client_response(&mut client).await;
+        assert!(matches!(
+            response,
+            ClientResponse::Error {
+                code: ErrorCode::AuthFailed,
+                ..
+            }
+        ));
+        drop(client);
+
+        let err = task.await.unwrap().unwrap_err();
+        assert!(err.to_string().contains("Client auth failed"));
+    }
+
+    #[tokio::test]
+    async fn handle_client_authenticates_then_dispatches_ping() {
+        let mut cfg = Config::default();
+        cfg.node.client_auth_token = Some("secret".into());
+        let node = test_node(cfg);
+        let (mut client, server) = stream_pair().await;
+        let task = tokio::spawn(handle_client(server, node));
+
+        client
+            .write_all(
+                &encode(&ClientRequest::Auth {
+                    token: "secret".into(),
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            read_client_response(&mut client).await,
+            ClientResponse::AuthOk
+        ));
+
+        client
+            .write_all(&encode(&ClientRequest::Ping).unwrap())
+            .await
+            .unwrap();
+        assert!(matches!(
+            read_client_response(&mut client).await,
+            ClientResponse::Pong
+        ));
+        drop(client);
+
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn handle_client_pushes_watch_events_and_accepts_unwatch() {
+        let node = test_node(Config::default());
+        let (mut client, server) = stream_pair().await;
+        let task = tokio::spawn(handle_client(server, Arc::clone(&node)));
+
+        client
+            .write_all(
+                &encode(&ClientRequest::Watch {
+                    key: "watched".into(),
+                    namespace: None,
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            read_client_response(&mut client).await,
+            ClientResponse::Watching
+        ));
+
+        node.watch_tx
+            .send(("watched".into(), Some(Bytes::from_static(b"value")), 5))
+            .unwrap();
+        match read_client_response(&mut client).await {
+            ClientResponse::WatchEvent {
+                key,
+                value,
+                version,
+            } => {
+                assert_eq!(key, "watched");
+                assert_eq!(value, Some(Bytes::from_static(b"value")));
+                assert_eq!(version, 5);
+            }
+            other => panic!("expected watch event, got {other:?}"),
+        }
+
+        client
+            .write_all(
+                &encode(&ClientRequest::Unwatch {
+                    key: "watched".into(),
+                    namespace: None,
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            read_client_response(&mut client).await,
+            ClientResponse::Unwatched
+        ));
+        drop(client);
+
+        task.await.unwrap().unwrap();
     }
 
     #[tokio::test]

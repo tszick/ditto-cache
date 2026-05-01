@@ -117,3 +117,57 @@ pub fn build_router(state: SharedState) -> Router {
         ))
         .with_state(state)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::MgmtConfig;
+
+    fn test_state(mut cfg: MgmtConfig) -> SharedState {
+        cfg.connection.seeds.clear();
+        Arc::new(AppState {
+            cfg: Arc::new(cfg),
+            tls: None,
+            http_client: reqwest::Client::new(),
+            addr_cache: Mutex::new(None),
+        })
+    }
+
+    #[test]
+    fn http_scheme_tracks_tls_enabled_flag() {
+        let mut cfg = MgmtConfig::default();
+        let state = test_state(cfg.clone());
+        assert_eq!(state.http_scheme(), "http");
+
+        cfg.tls.enabled = true;
+        let tls_state = test_state(cfg);
+        assert_eq!(tls_state.http_scheme(), "https");
+    }
+
+    #[tokio::test]
+    async fn cluster_addrs_falls_back_to_localhost_when_no_seeds_exist() {
+        let state = test_state(MgmtConfig::default());
+        let addrs = state.cluster_addrs().await;
+
+        assert_eq!(addrs.len(), 1);
+        assert_eq!(addrs[0].ip().to_string(), "127.0.0.1");
+        assert_eq!(addrs[0].port(), 7779);
+        assert!(state.addr_cache.lock().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn cluster_addrs_uses_fresh_cached_values() {
+        let state = test_state(MgmtConfig::default());
+        let cached: SocketAddr = "10.1.2.3:7779".parse().unwrap();
+        *state.addr_cache.lock().await = Some((vec![cached], Instant::now()));
+
+        let addrs = state.cluster_addrs().await;
+        assert_eq!(addrs, vec![cached]);
+    }
+
+    #[test]
+    fn build_router_constructs_all_routes_with_shared_state() {
+        let state = test_state(MgmtConfig::default());
+        let _router = build_router(state);
+    }
+}

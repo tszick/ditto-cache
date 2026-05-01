@@ -24,22 +24,7 @@ use api::{build_router, AppState};
 use config::MgmtConfig;
 use std::sync::Arc;
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Install the ring crypto provider for rustls (must happen before any TLS use).
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .expect("Failed to install rustls crypto provider");
-
-    let cfg_path = std::env::args().nth(1);
-    let mut cfg: MgmtConfig = if let Some(path) = cfg_path {
-        let raw = std::fs::read_to_string(&path)?;
-        toml::from_str(&raw)?
-    } else {
-        MgmtConfig::load()?
-    };
-
-    // Environment variable overrides.
+fn apply_env_overrides(cfg: &mut MgmtConfig) {
     if let Ok(v) = std::env::var("DITTO_MGMT_TLS_CERT") {
         cfg.server.tls_cert = Some(v);
     }
@@ -61,27 +46,53 @@ async fn main() -> Result<()> {
     if let Ok(v) = std::env::var("DITTO_MGMT_BIND") {
         cfg.server.bind = v;
     }
+}
 
-    // Strict security mode: management-to-node admin RPC must use mTLS.
+fn validate_strict_security(cfg: &MgmtConfig) -> Result<()> {
     if !cfg.tls.enabled {
         anyhow::bail!(
             "Strict security: [tls].enabled must be true in ditto-mgmt. Refusing unsecured admin RPC to nodes."
         );
     }
 
-    // Strict security mode: management API must require authentication.
     if cfg.admin.password_hash.is_none() {
         anyhow::bail!(
             "Strict security: [admin].password_hash must be configured. Refusing unauthenticated management API."
         );
     }
 
-    // Strict security mode: management API must be served over HTTPS.
     if cfg.server.tls_cert.is_none() || cfg.server.tls_key.is_none() {
         anyhow::bail!(
             "Strict security: [server].tls_cert and [server].tls_key must be configured. Refusing plain HTTP management API."
         );
     }
+
+    Ok(())
+}
+
+fn management_bind_addr(cfg: &MgmtConfig) -> Result<String> {
+    let resolved_bind =
+        ditto_config::resolve_bind_addr(&cfg.server.bind).context("resolving server.bind")?;
+    Ok(format!("{}:{}", resolved_bind, cfg.server.port))
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    // Install the ring crypto provider for rustls (must happen before any TLS use).
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
+    let cfg_path = std::env::args().nth(1);
+    let mut cfg: MgmtConfig = if let Some(path) = cfg_path {
+        let raw = std::fs::read_to_string(&path)?;
+        toml::from_str(&raw)?
+    } else {
+        MgmtConfig::load()?
+    };
+
+    apply_env_overrides(&mut cfg);
+    validate_strict_security(&cfg)?;
 
     let tls = tls::build_connector(&cfg.tls)?;
 
@@ -101,9 +112,7 @@ async fn main() -> Result<()> {
         builder.build()?
     };
 
-    let resolved_bind =
-        ditto_config::resolve_bind_addr(&cfg.server.bind).context("resolving server.bind")?;
-    let bind = format!("{}:{}", resolved_bind, cfg.server.port);
+    let bind = management_bind_addr(&cfg)?;
 
     let state = Arc::new(AppState {
         cfg: Arc::new(cfg),
@@ -129,4 +138,75 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn clear_env_overrides() {
+        for key in [
+            "DITTO_MGMT_TLS_CERT",
+            "DITTO_MGMT_TLS_KEY",
+            "DITTO_MGMT_ADMIN_USER",
+            "DITTO_MGMT_ADMIN_PASSWORD_HASH",
+            "DITTO_MGMT_HTTP_AUTH_USER",
+            "DITTO_MGMT_HTTP_AUTH_PASSWORD",
+            "DITTO_MGMT_BIND",
+        ] {
+            std::env::remove_var(key);
+        }
+    }
+
+    #[test]
+    fn env_overrides_update_management_config_fields() {
+        clear_env_overrides();
+        std::env::set_var("DITTO_MGMT_TLS_CERT", "cert.pem");
+        std::env::set_var("DITTO_MGMT_TLS_KEY", "key.pem");
+        std::env::set_var("DITTO_MGMT_ADMIN_USER", "admin-user");
+        std::env::set_var("DITTO_MGMT_ADMIN_PASSWORD_HASH", "$2b$hash");
+        std::env::set_var("DITTO_MGMT_HTTP_AUTH_USER", "node-user");
+        std::env::set_var("DITTO_MGMT_HTTP_AUTH_PASSWORD", "node-pass");
+        std::env::set_var("DITTO_MGMT_BIND", "127.0.0.1");
+
+        let mut cfg = MgmtConfig::default();
+        apply_env_overrides(&mut cfg);
+
+        assert_eq!(cfg.server.tls_cert.as_deref(), Some("cert.pem"));
+        assert_eq!(cfg.server.tls_key.as_deref(), Some("key.pem"));
+        assert_eq!(cfg.admin.username.as_deref(), Some("admin-user"));
+        assert_eq!(cfg.admin.password_hash.as_deref(), Some("$2b$hash"));
+        assert_eq!(cfg.http_client_auth.username.as_deref(), Some("node-user"));
+        assert_eq!(cfg.http_client_auth.password.as_deref(), Some("node-pass"));
+        assert_eq!(cfg.server.bind, "127.0.0.1");
+
+        clear_env_overrides();
+    }
+
+    #[test]
+    fn strict_security_reports_each_missing_requirement() {
+        let mut cfg = MgmtConfig::default();
+        let err = validate_strict_security(&cfg).expect_err("missing TLS should fail");
+        assert!(err.to_string().contains("[tls].enabled"));
+
+        cfg.tls.enabled = true;
+        let err = validate_strict_security(&cfg).expect_err("missing admin auth should fail");
+        assert!(err.to_string().contains("[admin].password_hash"));
+
+        cfg.admin.password_hash = Some("$2b$hash".into());
+        let err = validate_strict_security(&cfg).expect_err("missing HTTPS cert/key should fail");
+        assert!(err.to_string().contains("[server].tls_cert"));
+
+        cfg.server.tls_cert = Some("cert.pem".into());
+        cfg.server.tls_key = Some("key.pem".into());
+        validate_strict_security(&cfg).expect("complete strict config should pass");
+    }
+
+    #[test]
+    fn management_bind_addr_resolves_loopback_and_port() {
+        let mut cfg = MgmtConfig::default();
+        cfg.server.bind = "localhost".into();
+        cfg.server.port = 9901;
+        assert_eq!(management_bind_addr(&cfg).unwrap(), "localhost:9901");
+    }
 }

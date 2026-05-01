@@ -5,8 +5,8 @@ Date: 2026-05-01
 ## Saved state
 
 - `ditto-client` commit: `99b34fa upgrade: client test coverage`
-- `ditto-cache` commit before this note: `c690cc8 Update lib.rs`
-- Both repos were clean after the coverage work was saved.
+- `ditto-cache` HEAD before this continuation: `ae88017 upgrade: test coverage`
+- Current continuation has uncommitted test-only changes in `ditto-cache`.
 
 ## What was completed
 
@@ -28,7 +28,7 @@ Main test additions:
 
 `ditto-cache` improved, but is still far from the 80% goal:
 
-- Workspace line coverage: `64.64%`
+- Workspace line coverage: `77.31%`
 - `ditto-protocol` line coverage: `84.26%`
 
 Latest continuation added:
@@ -50,12 +50,24 @@ Latest continuation added:
 - TTL background sweep test for `dittod/src/store/ttl.rs`
 - Backup checksum, malformed snapshot, and encryption/decryption error-path tests for `dittod/src/backup.rs`
 - Store lifecycle, compression, limits, snapshot/restore, eviction, and glob tests for `dittod/src/store/kv_store.rs`
+- Backup gate, plaintext protobuf snapshot, encrypted JSON snapshot/restore, and scheduler disabled/invalid schedule tests for `dittod/src/backup.rs`
+- Client runtime guard tests for inactive node, invalid namespace, Watch/Unwatch misuse, value/key limits, DeleteByPattern, and SetTtlByPattern in `dittod/src/node.rs`
+- Main helper tests for env bool parsing, replication guardrail extremes, TCP auth disabled-port handling, and log rotation in `dittod/src/main.rs`
+- Cluster server inbound frame tests for Forward/Admin requests and oversized frames in `dittod/src/network/cluster_server.rs`
+- `ditto-mgmt` config default/partial TOML tests and TLS disabled/missing/invalid PEM edge tests
+- `dittoctl` CLI parse/default config tests
+- `dittoctl` path-based config load/save tests and cache delete/list-stats/set-ttl command request tests
+- `ditto-mgmt` router/state helper tests, strict-security/env override helper tests, and embedded web index response test
+- `dittoctl` reachable node status observability rendering test and critical doctor diagnosis test for unreachable/insecure/quota-pressure nodes
+- TCP client handler tests for auth rejection, auth success + ping dispatch, and watch/unwatch push events in `dittod/src/network/tcp_server.rs`
+- Broad admin `SetProperty` runtime/config update test for `dittod/src/node.rs`, including inactive-only bind/port changes, cache/store limits, replication, tenancy, rate limit, hot-key, circuit breaker, and invalid compression-threshold handling
+- Extracted `dittod/src/main.rs` environment override parsing into testable helpers, with tests for primary and legacy startup knobs plus invalid numeric/empty token handling
 
 The largest remaining gaps are in:
 
-- `ditto-mgmt` router/auth/config/TLS edges
-- Remaining `dittoctl` local config/main command branches
-- larger runtime paths in `dittod/src/node.rs`, `dittod/src/main.rs`, remaining backup edges
+- `ditto-mgmt` cache API error/result formatting edges and auth edges
+- `dittoctl/src/main.rs` password/input paths
+- remaining `dittod` runtime edges in `node.rs`, HTTP/TLS paths, and daemon startup paths that still require heavier integration
 - successful mTLS acceptor/connector handshakes if/when cert fixtures are added
 
 ## Verified commands
@@ -81,8 +93,11 @@ cargo test -p ditto-mgmt
 cargo test -p dittoctl
 cargo test -p dittod
 cargo test --workspace
+cargo fmt -p dittod
+cargo fmt -p ditto-mgmt -p dittoctl
+cargo llvm-cov -p dittod --summary-only
 ```
 
 ## Next recommended work
 
-Continue with `ditto-cache` coverage. The best next step is to keep deepening runtime tests for `dittod/src/node.rs`, then cover remaining backup edges. Smaller cleanup remains for `dittod/src/main.rs`, successful mTLS handshakes with cert fixtures, `dittoctl` local config/main branches, and `ditto-mgmt` config/TLS/router edges.
+Continue with `ditto-cache` coverage. The best next step is likely `ditto-mgmt` cache/auth edge cases or `dittoctl/src/main.rs` password/input paths; `dittod` can still improve, but the remaining daemon startup paths are heavier integration work. Successful mTLS handshake tests with cert fixtures are also still useful.

@@ -1288,6 +1288,111 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn status_renders_reachable_node_observability_fields() {
+        let status = r#"[{
+            "addr":"node",
+            "reachable":true,
+            "node_name":"node-a",
+            "committed_index":12,
+            "memory_used_bytes":1024,
+            "memory_max_bytes":4096,
+            "heartbeat_ms":25,
+            "uptime_secs":3723,
+            "backup_dir_bytes":2048,
+            "snapshot_last_load_path":"snapshot.pb",
+            "snapshot_last_load_duration_ms":7,
+            "snapshot_last_load_entries":3,
+            "snapshot_last_load_age_secs":9,
+            "snapshot_restore_attempt_total":4,
+            "snapshot_restore_success_total":3,
+            "snapshot_restore_failure_total":1,
+            "snapshot_restore_not_found_total":0,
+            "snapshot_restore_policy_block_total":0,
+            "persistence_enabled":true,
+            "persistence_backup_enabled":true,
+            "persistence_export_enabled":false,
+            "persistence_import_enabled":true,
+            "tenancy_enabled":true,
+            "tenancy_default_namespace":"tenant",
+            "tenancy_max_keys_per_namespace":100,
+            "rate_limit_enabled":true,
+            "rate_limited_requests_total":2,
+            "hot_key_enabled":true,
+            "hot_key_coalesced_hits_total":11,
+            "hot_key_fallback_exec_total":1,
+            "hot_key_wait_timeout_total":2,
+            "hot_key_stale_served_total":3,
+            "hot_key_inflight_keys":4,
+            "hot_key_stale_cache_entries":5,
+            "read_repair_enabled":true,
+            "read_repair_trigger_total":6,
+            "read_repair_success_total":5,
+            "read_repair_throttled_total":1,
+            "namespace_quota_reject_total":8,
+            "namespace_quota_reject_rate_per_min":2,
+            "namespace_quota_reject_trend":"steady",
+            "namespace_quota_top_usage":[{"namespace":"tenant","key_count":9,"quota_limit":10,"usage_pct":90}],
+            "anti_entropy_runs_total":13,
+            "anti_entropy_repair_trigger_total":2,
+            "anti_entropy_repair_throttled_total":1,
+            "anti_entropy_last_detected_lag":7,
+            "anti_entropy_key_checks_total":200,
+            "anti_entropy_key_mismatch_total":3,
+            "anti_entropy_full_reconcile_runs_total":4,
+            "anti_entropy_full_reconcile_key_checks_total":300,
+            "anti_entropy_full_reconcile_mismatch_total":5,
+            "mixed_version_probe_runs_total":6,
+            "mixed_version_peers_detected_total":1,
+            "mixed_version_probe_errors_total":0,
+            "mixed_version_last_detected_peer_count":1,
+            "circuit_breaker_enabled":true,
+            "circuit_breaker_state":"closed",
+            "circuit_breaker_open_total":0,
+            "circuit_breaker_reject_total":0,
+            "client_requests_total":44,
+            "client_requests_tcp_total":10,
+            "client_requests_http_total":20,
+            "client_requests_internal_total":14,
+            "client_request_latency_le_1ms_total":1,
+            "client_request_latency_le_5ms_total":2,
+            "client_request_latency_le_20ms_total":3,
+            "client_request_latency_le_100ms_total":4,
+            "client_request_latency_le_500ms_total":5,
+            "client_request_latency_gt_500ms_total":6,
+            "client_latency_p50_estimate_ms":5,
+            "client_latency_p90_estimate_ms":20,
+            "client_latency_p95_estimate_ms":100,
+            "client_latency_p99_estimate_ms":500,
+            "client_errors_tcp_total":1,
+            "client_errors_http_total":2,
+            "client_errors_internal_total":3,
+            "client_error_total":6,
+            "client_error_auth_total":1,
+            "client_error_throttle_total":1,
+            "client_error_availability_total":1,
+            "client_error_validation_total":1,
+            "client_error_internal_total":1,
+            "client_error_other_total":1
+        }]"#;
+        let (base, requests) = http_responses(vec![status]).await;
+        let mut cfg = cfg(base);
+        let client = reqwest::Client::new();
+
+        run(
+            NodeCommand::Status {
+                target: "node-1:7779".into(),
+            },
+            &mut cfg,
+            &client,
+        )
+        .await
+        .unwrap();
+
+        let requests = requests.await.unwrap();
+        assert!(requests[0].starts_with("GET /api/nodes/node-1%3A7779/status HTTP/1.1"));
+    }
+
+    #[tokio::test]
     async fn doctor_fetches_status_describe_and_cluster_and_succeeds_when_healthy() {
         let (base, requests) = http_responses(vec![
             r#"[{"addr":"node","reachable":true,"status":"Active","heartbeat_ms":12,"namespace_quota_reject_rate_per_min":0,"namespace_quota_reject_trend":"steady","namespace_quota_top_usage":[]}]"#,
@@ -1308,6 +1413,39 @@ mod tests {
         .await
         .unwrap();
 
+        let requests = requests.await.unwrap();
+        assert!(requests[0].starts_with("GET /api/nodes/local/status HTTP/1.1"));
+        assert!(requests[1].starts_with("GET /api/nodes/local/describe HTTP/1.1"));
+        assert!(requests[2].starts_with("GET /api/cluster HTTP/1.1"));
+    }
+
+    #[tokio::test]
+    async fn doctor_reports_critical_for_unreachable_and_insecure_nodes() {
+        let (base, requests) = http_responses(vec![
+            r#"[
+                {"addr":"node-a","reachable":false,"status":"Offline","heartbeat_ms":0,"namespace_quota_reject_rate_per_min":0,"namespace_quota_reject_trend":"steady","namespace_quota_top_usage":[]},
+                {"addr":"node-b","reachable":true,"status":"Active","heartbeat_ms":3001,"namespace_quota_reject_rate_per_min":11,"namespace_quota_reject_trend":"surging","namespace_quota_top_usage":[{"usage_pct":95}]}
+            ]"#,
+            r#"[
+                {"addr":"node-b","properties":[["tcp-production-safe","false"],["client-auth-enabled","false"],["tcp-client-bind-loopback-only","false"],["insecure-runtime-enabled","true"]]}
+            ]"#,
+            r#"{"total":2,"active":1,"syncing":0,"inactive":0,"offline":1,"nodes":[]}"#,
+        ])
+        .await;
+        let mut cfg = cfg(base);
+        let client = reqwest::Client::new();
+
+        let err = run(
+            NodeCommand::Doctor {
+                target: "local".into(),
+            },
+            &mut cfg,
+            &client,
+        )
+        .await
+        .expect_err("critical doctor result should fail");
+
+        assert!(err.to_string().contains("doctor found"));
         let requests = requests.await.unwrap();
         assert!(requests[0].starts_with("GET /api/nodes/local/status HTTP/1.1"));
         assert!(requests[1].starts_with("GET /api/nodes/local/describe HTTP/1.1"));

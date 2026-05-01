@@ -4412,13 +4412,18 @@ mod tests {
     use bytes::Bytes;
     use ditto_protocol::{
         AdminRequest, AdminResponse, ClientRequest, ClientResponse, ClusterMessage, ErrorCode,
-        LogEntry,
+        LogEntry, NodeStatus,
     };
     use sha2::{Digest, Sha256};
     use std::sync::{atomic::Ordering, Arc};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     fn test_node(mut cfg: Config) -> Arc<NodeHandle> {
+        cfg.node.id = "test-node".into();
+        test_node_with_config_path(cfg, "test-node.toml".into())
+    }
+
+    fn test_node_with_config_path(mut cfg: Config, config_path: String) -> Arc<NodeHandle> {
         cfg.node.id = "test-node".into();
         let store = Arc::new(KvStore::new(
             cfg.cache.max_memory_mb,
@@ -4428,13 +4433,7 @@ mod tests {
             cfg.compression.enabled,
             cfg.compression.threshold_bytes,
         ));
-        NodeHandle::new(
-            cfg,
-            "test-node.toml".into(),
-            store,
-            None,
-            "127.0.0.1".into(),
-        )
+        NodeHandle::new(cfg, config_path, store, None, "127.0.0.1".into())
     }
 
     fn temp_backup_dir(tag: &str) -> String {
@@ -5468,5 +5467,283 @@ mod tests {
             .await;
         assert!(matches!(flushed, AdminResponse::Flushed));
         assert!(node.store.keys(None).is_empty());
+    }
+
+    #[tokio::test]
+    async fn admin_set_property_updates_runtime_tuning_and_config_fields() {
+        let mut config_path = std::path::PathBuf::from(temp_backup_dir("node-config"));
+        config_path.push("node.toml");
+        let node = test_node_with_config_path(
+            Config::default(),
+            config_path.to_string_lossy().into_owned(),
+        );
+
+        for (name, value) in [
+            ("status", "false"),
+            ("bind-addr", "127.0.0.2"),
+            ("cluster-bind-addr", "127.0.0.3"),
+            ("client-port", "17777"),
+            ("http-port", "17778"),
+            ("cluster-port", "17779"),
+            ("gossip-port", "17780"),
+            ("primary", "false"),
+            ("max-memory", "7mb"),
+            ("default-ttl", "33"),
+            ("value-size-limit", "99"),
+            ("max-keys", "44"),
+            ("compression-enabled", "false"),
+            ("compression-threshold", "8192"),
+            ("write-timeout-ms", "1234"),
+            ("write-quorum-mode", "majority"),
+            ("version-check-interval", "2222"),
+            ("read-repair-on-miss-enabled", "true"),
+            ("read-repair-min-interval-ms", "3333"),
+            ("read-repair-max-per-minute", "7"),
+            ("anti-entropy-enabled", "true"),
+            ("anti-entropy-interval-ms", "4444"),
+            ("anti-entropy-min-repair-interval-ms", "5555"),
+            ("anti-entropy-lag-threshold", "66"),
+            ("anti-entropy-key-sample-size", "77"),
+            ("anti-entropy-full-reconcile-every", "8"),
+            ("anti-entropy-full-reconcile-max-keys", "88"),
+            ("anti-entropy-budget-max-checks-per-run", "99"),
+            ("anti-entropy-budget-max-duration-ms", "111"),
+            ("mixed-version-probe-enabled", "false"),
+            ("mixed-version-probe-interval-ms", "6666"),
+            ("persistence-runtime-enabled", "true"),
+            ("tenancy-enabled", "true"),
+            ("tenancy-default-namespace", "tenant-default"),
+            ("tenancy-max-keys-per-namespace", "12"),
+            ("rate-limit-enabled", "true"),
+            ("rate-limit-requests-per-sec", "21"),
+            ("rate-limit-burst", "22"),
+            ("hot-key-enabled", "true"),
+            ("hot-key-max-waiters", "23"),
+            ("hot-key-follower-wait-timeout-ms", "24"),
+            ("hot-key-stale-ttl-ms", "25"),
+            ("hot-key-stale-max-entries", "26"),
+            ("hot-key-adaptive-waiters-enabled", "true"),
+            ("hot-key-adaptive-min-waiters", "27"),
+            ("hot-key-adaptive-success-threshold", "28"),
+            ("hot-key-adaptive-state-max-keys", "29"),
+            ("circuit-breaker-enabled", "true"),
+            ("circuit-breaker-failure-threshold", "30"),
+            ("circuit-breaker-open-ms", "31"),
+            ("circuit-breaker-half-open-max-requests", "32"),
+            ("unknown-property", "ignored"),
+        ] {
+            let resp = Arc::clone(&node)
+                .handle_admin(AdminRequest::SetProperty {
+                    name: name.into(),
+                    value: value.into(),
+                })
+                .await;
+            assert!(
+                matches!(resp, AdminResponse::Ok),
+                "{name} returned {resp:?}"
+            );
+        }
+
+        let threshold_err = Arc::clone(&node)
+            .handle_admin(AdminRequest::SetProperty {
+                name: "compression-threshold".into(),
+                value: "4096".into(),
+            })
+            .await;
+        assert!(matches!(threshold_err, AdminResponse::Error { .. }));
+
+        let stats = node.stats().await;
+        assert_eq!(stats.status, NodeStatus::Inactive);
+        assert_eq!(stats.memory_max_bytes, 7 * 1024 * 1024);
+        assert_eq!(stats.value_size_limit_bytes, 99);
+        assert_eq!(stats.max_keys_limit, 44);
+        assert!(!stats.compression_enabled);
+        assert_eq!(stats.compression_threshold_bytes, 8192);
+        assert!(stats.tenancy_enabled);
+        assert_eq!(stats.tenancy_default_namespace, "tenant-default");
+        assert_eq!(stats.tenancy_max_keys_per_namespace, 12);
+        assert!(stats.rate_limit_enabled);
+        assert!(stats.circuit_breaker_enabled);
+        assert!(stats.hot_key_enabled);
+        assert!(stats.hot_key_adaptive_waiters_enabled);
+        assert!(stats.read_repair_enabled);
+
+        let cfg = node.config.lock().unwrap();
+        assert_eq!(cfg.node.bind_addr, "127.0.0.2");
+        assert_eq!(cfg.node.cluster_bind_addr, "127.0.0.3");
+        assert_eq!(cfg.node.client_port, 17777);
+        assert_eq!(cfg.node.http_port, 17778);
+        assert_eq!(cfg.node.cluster_port, 17779);
+        assert_eq!(cfg.node.gossip_port, 17780);
+        assert_eq!(cfg.cache.default_ttl_secs, 33);
+        assert_eq!(cfg.replication.write_timeout_ms, 1234);
+        assert_eq!(cfg.replication.write_quorum_mode, WriteQuorumMode::Majority);
+        assert_eq!(cfg.replication.version_check_interval_ms, 2222);
+        assert_eq!(cfg.replication.read_repair_min_interval_ms, 3333);
+        assert_eq!(cfg.replication.read_repair_max_per_minute, 7);
+        assert!(cfg.replication.anti_entropy_enabled);
+        assert_eq!(cfg.replication.anti_entropy_interval_ms, 4444);
+        assert_eq!(cfg.replication.anti_entropy_min_repair_interval_ms, 5555);
+        assert_eq!(cfg.replication.anti_entropy_lag_threshold, 66);
+        assert_eq!(cfg.replication.anti_entropy_key_sample_size, 77);
+        assert_eq!(cfg.replication.anti_entropy_full_reconcile_every, 8);
+        assert_eq!(cfg.replication.anti_entropy_full_reconcile_max_keys, 88);
+        assert_eq!(cfg.replication.anti_entropy_budget_max_checks_per_run, 99);
+        assert_eq!(cfg.replication.anti_entropy_budget_max_duration_ms, 111);
+        assert!(!cfg.replication.mixed_version_probe_enabled);
+        assert_eq!(cfg.replication.mixed_version_probe_interval_ms, 6666);
+        assert!(cfg.persistence.runtime_enabled);
+        assert_eq!(cfg.rate_limit.requests_per_sec, 21);
+        assert_eq!(cfg.rate_limit.burst, 22);
+        assert_eq!(cfg.hot_key.max_waiters, 23);
+        assert_eq!(cfg.hot_key.follower_wait_timeout_ms, 24);
+        assert_eq!(cfg.hot_key.stale_ttl_ms, 25);
+        assert_eq!(cfg.hot_key.stale_max_entries, 26);
+        assert_eq!(cfg.hot_key.adaptive_min_waiters, 27);
+        assert_eq!(cfg.hot_key.adaptive_success_threshold, 28);
+        assert_eq!(cfg.hot_key.adaptive_state_max_keys, 29);
+        assert_eq!(cfg.circuit_breaker.failure_threshold, 30);
+        assert_eq!(cfg.circuit_breaker.open_ms, 31);
+        assert_eq!(cfg.circuit_breaker.half_open_max_requests, 32);
+    }
+
+    #[tokio::test]
+    async fn client_error_and_pattern_paths_cover_runtime_guards() {
+        let mut inactive_cfg = Config::default();
+        inactive_cfg.node.active = false;
+        let inactive = test_node(inactive_cfg);
+        let inactive_resp = inactive.handle_client(ClientRequest::Ping).await;
+        assert!(matches!(
+            inactive_resp,
+            ClientResponse::Error {
+                code: ErrorCode::NodeInactive,
+                ..
+            }
+        ));
+
+        let mut tenancy_cfg = Config::default();
+        tenancy_cfg.tenancy.enabled = true;
+        let tenant_node = test_node(tenancy_cfg);
+        let bad_namespace = tenant_node
+            .handle_client_http(ClientRequest::Get {
+                key: "k".into(),
+                namespace: Some("bad::namespace".into()),
+            })
+            .await;
+        assert!(matches!(
+            bad_namespace,
+            ClientResponse::Error {
+                code: ErrorCode::InternalError,
+                ..
+            }
+        ));
+
+        let watch_guard = tenant_node
+            .handle_client_tcp(ClientRequest::Watch {
+                key: "k".into(),
+                namespace: None,
+            })
+            .await;
+        assert!(matches!(
+            watch_guard,
+            ClientResponse::Error {
+                code: ErrorCode::InternalError,
+                ..
+            }
+        ));
+        let unwatch_guard = tenant_node
+            .handle_client_tcp(ClientRequest::Unwatch {
+                key: "k".into(),
+                namespace: None,
+            })
+            .await;
+        assert!(matches!(
+            unwatch_guard,
+            ClientResponse::Error {
+                code: ErrorCode::InternalError,
+                ..
+            }
+        ));
+
+        let mut value_limit_cfg = Config::default();
+        value_limit_cfg.cache.value_size_limit_bytes = 2;
+        let value_limit_node = test_node(value_limit_cfg);
+        let too_large = value_limit_node
+            .handle_client(ClientRequest::Set {
+                key: "big".into(),
+                value: Bytes::from_static(b"big"),
+                ttl_secs: None,
+                namespace: None,
+            })
+            .await;
+        assert!(matches!(
+            too_large,
+            ClientResponse::Error {
+                code: ErrorCode::ValueTooLarge,
+                ..
+            }
+        ));
+
+        let mut key_limit_cfg = Config::default();
+        key_limit_cfg.cache.max_keys = 1;
+        let key_limit_node = test_node(key_limit_cfg);
+        let first = key_limit_node
+            .handle_client(ClientRequest::Set {
+                key: "k1".into(),
+                value: Bytes::from_static(b"v1"),
+                ttl_secs: None,
+                namespace: None,
+            })
+            .await;
+        assert!(matches!(first, ClientResponse::Ok { .. }));
+        let second = key_limit_node
+            .handle_client(ClientRequest::Set {
+                key: "k2".into(),
+                value: Bytes::from_static(b"v2"),
+                ttl_secs: None,
+                namespace: None,
+            })
+            .await;
+        assert!(matches!(
+            second,
+            ClientResponse::Error {
+                code: ErrorCode::KeyLimitReached,
+                ..
+            }
+        ));
+
+        let pattern_node = test_node(Config::default());
+        for key in ["pat:a", "pat:b", "ttl:a", "ttl:b"] {
+            let resp = pattern_node
+                .handle_client(ClientRequest::Set {
+                    key: key.into(),
+                    value: Bytes::from_static(b"value"),
+                    ttl_secs: None,
+                    namespace: None,
+                })
+                .await;
+            assert!(matches!(resp, ClientResponse::Ok { .. }));
+        }
+        let ttl = pattern_node
+            .handle_client(ClientRequest::SetTtlByPattern {
+                pattern: "ttl:*".into(),
+                ttl_secs: Some(30),
+                namespace: None,
+            })
+            .await;
+        assert!(matches!(
+            ttl,
+            ClientResponse::PatternTtlUpdated { updated: 2 }
+        ));
+        let deleted = pattern_node
+            .handle_client(ClientRequest::DeleteByPattern {
+                pattern: "pat:*".into(),
+                namespace: None,
+            })
+            .await;
+        assert!(matches!(
+            deleted,
+            ClientResponse::PatternDeleted { deleted: 2 }
+        ));
     }
 }

@@ -195,3 +195,41 @@ fn disable_echo(_file: &std::fs::File) {
 
 #[cfg(unix)]
 fn enable_echo(_file: &std::fs::File) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_parses_hash_password_without_config() {
+        let cli = Cli::try_parse_from(["dittoctl", "hash-password"]).expect("parse cli");
+        assert!(cli.config.is_none());
+        assert!(matches!(cli.resource, Resource::HashPassword));
+    }
+
+    #[test]
+    fn cli_parses_global_config_before_resource() {
+        let cli = Cli::try_parse_from([
+            "dittoctl",
+            "--config",
+            "custom.toml",
+            "cluster",
+            "get",
+            "status",
+        ])
+        .expect("parse cli");
+        assert_eq!(cli.config.unwrap(), std::path::PathBuf::from("custom.toml"));
+        assert!(matches!(cli.resource, Resource::Cluster { .. }));
+    }
+
+    #[test]
+    fn ctl_config_default_uses_local_management_endpoint() {
+        let cfg = CtlConfig::default();
+        assert_eq!(cfg.mgmt.url, "http://localhost:7781");
+        assert_eq!(cfg.mgmt.timeout_ms, 3000);
+        assert!(cfg.mgmt.username.is_none());
+        assert!(cfg.mgmt.password.is_none());
+        assert!(!cfg.mgmt.insecure_skip_verify);
+        assert_eq!(cfg.output.format, "binary");
+    }
+}

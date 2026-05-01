@@ -444,4 +444,96 @@ mod tests {
         assert!(request.starts_with("POST /api/cache/local/keys/alpha/compressed HTTP/1.1"));
         assert!(request.contains(r#""compressed":false"#));
     }
+
+    #[tokio::test]
+    async fn delete_key_sends_encoded_key_and_namespace() {
+        let (base, request) = http_response(r#"{"ok":true}"#).await;
+        let cfg = cfg(base);
+        let client = reqwest::Client::new();
+
+        run(
+            CacheCommand::Delete {
+                target: "node-1:7779".into(),
+                key: "session:1".into(),
+                namespace: Some("tenant/a".into()),
+            },
+            &cfg,
+            &client,
+        )
+        .await
+        .unwrap();
+
+        let request = request.await.unwrap();
+        assert!(request.starts_with(
+            "DELETE /api/cache/node-1%3A7779/keys/session%3A1?namespace=tenant%2Fa HTTP/1.1"
+        ));
+    }
+
+    #[tokio::test]
+    async fn set_ttl_zero_posts_null_ttl_and_namespace() {
+        let (base, request) = http_response(r#"[{"addr":"node","updated":3}]"#).await;
+        let cfg = cfg(base);
+        let client = reqwest::Client::new();
+
+        run(
+            CacheCommand::SetTtl {
+                target: "local".into(),
+                pattern: "session:*".into(),
+                ttl: Some(0),
+                namespace: Some("tenant".into()),
+            },
+            &cfg,
+            &client,
+        )
+        .await
+        .unwrap();
+
+        let request = request.await.unwrap();
+        assert!(request.starts_with("POST /api/cache/local/ttl?namespace=tenant HTTP/1.1"));
+        assert!(request.contains(r#""pattern":"session:*""#));
+        assert!(request.contains(r#""ttl_secs":null"#));
+    }
+
+    #[tokio::test]
+    async fn list_stats_fetches_stats_endpoint() {
+        let (base, request) =
+            http_response(r#"[{"addr":"node","key_count":2,"memory_used_bytes":10}]"#).await;
+        let cfg = cfg(base);
+        let client = reqwest::Client::new();
+
+        run(
+            CacheCommand::List {
+                what: "stats".into(),
+                target: "local".into(),
+                pattern: None,
+                namespace: None,
+            },
+            &cfg,
+            &client,
+        )
+        .await
+        .unwrap();
+
+        let request = request.await.unwrap();
+        assert!(request.starts_with("GET /api/cache/local/stats HTTP/1.1"));
+    }
+
+    #[tokio::test]
+    async fn unknown_list_target_returns_without_http_request() {
+        let cfg = CtlConfig::default();
+        let client = reqwest::Client::new();
+
+        run(
+            CacheCommand::List {
+                what: "bogus".into(),
+                target: "local".into(),
+                pattern: None,
+                namespace: None,
+            },
+            &cfg,
+            &client,
+        )
+        .await
+        .unwrap();
+    }
 }

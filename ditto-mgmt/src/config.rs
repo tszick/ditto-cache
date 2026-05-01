@@ -132,3 +132,47 @@ fn config_path() -> PathBuf {
         .join("ditto")
         .join("mgmt.toml")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_matches_documented_local_management_defaults() {
+        let cfg = MgmtConfig::default();
+        assert_eq!(cfg.server.bind, "0.0.0.0");
+        assert_eq!(cfg.server.port, 7781);
+        assert!(cfg.server.tls_cert.is_none());
+        assert!(cfg.server.tls_key.is_none());
+        assert_eq!(cfg.connection.seeds, vec!["127.0.0.1:7779"]);
+        assert_eq!(cfg.connection.cluster_port, 7779);
+        assert_eq!(cfg.connection.timeout_ms, 3000);
+        assert!(!cfg.tls.enabled);
+        assert!(cfg.admin.username.is_none());
+        assert!(cfg.admin.password_hash.is_none());
+        assert!(cfg.http_client_auth.username.is_none());
+        assert!(cfg.http_client_auth.password.is_none());
+    }
+
+    #[test]
+    fn partial_toml_deserializes_defaulted_optional_sections() {
+        let raw = r#"
+            [server]
+            bind = "127.0.0.1"
+            port = 9000
+
+            [connection]
+            seeds = ["node-1:7779", "node-2:7779"]
+            cluster_port = 7779
+            timeout_ms = 1500
+        "#;
+
+        let cfg: MgmtConfig = toml::from_str(raw).expect("parse partial mgmt config");
+        assert_eq!(cfg.server.bind, "127.0.0.1");
+        assert_eq!(cfg.server.port, 9000);
+        assert_eq!(cfg.connection.seeds.len(), 2);
+        assert!(!cfg.tls.enabled);
+        assert!(cfg.admin.password_hash.is_none());
+        assert!(cfg.http_client_auth.password.is_none());
+    }
+}

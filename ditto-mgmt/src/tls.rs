@@ -70,3 +70,86 @@ fn load_certs(path: &str) -> Result<Vec<CertificateDer<'static>>> {
 fn load_key(path: &str) -> Result<PrivateKeyDer<'static>> {
     PrivateKeyDer::from_pem_file(path).context("reading private key")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_test_file(name: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "ditto-mgmt-tls-test-{}-{}-{}",
+            name,
+            std::process::id(),
+            nanos
+        ))
+    }
+
+    #[test]
+    fn build_connector_returns_none_when_tls_disabled() {
+        let cfg = TlsConfig::default();
+        let connector = build_connector(&cfg).expect("disabled TLS should not error");
+        assert!(connector.is_none());
+    }
+
+    #[test]
+    fn build_connector_reports_ca_path_context() {
+        let mut cfg = TlsConfig::default();
+        cfg.enabled = true;
+        cfg.ca_cert = unique_test_file("missing-ca")
+            .to_string_lossy()
+            .into_owned();
+        cfg.cert = unique_test_file("missing-cert")
+            .to_string_lossy()
+            .into_owned();
+        cfg.key = unique_test_file("missing-key")
+            .to_string_lossy()
+            .into_owned();
+
+        let err = match build_connector(&cfg) {
+            Err(err) => err,
+            Ok(_) => panic!("missing CA should fail"),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("loading CA cert"));
+        assert!(msg.contains(&cfg.ca_cert));
+    }
+
+    #[test]
+    fn load_reqwest_ca_cert_reports_missing_path() {
+        let missing = unique_test_file("missing-reqwest-ca");
+        let err = load_reqwest_ca_cert(&missing.to_string_lossy()).expect_err("missing CA");
+        assert!(err.to_string().contains("reading CA cert"));
+    }
+
+    #[test]
+    fn load_certs_reports_missing_path_and_empty_pem_list() {
+        let missing = unique_test_file("missing-cert");
+        let err = load_certs(&missing.to_string_lossy()).expect_err("missing cert");
+        assert!(err.to_string().contains("opening"));
+
+        let invalid_cert = unique_test_file("invalid-cert");
+        fs::write(&invalid_cert, b"not a certificate").expect("write invalid cert");
+        let certs = load_certs(&invalid_cert.to_string_lossy()).expect("empty PEM list");
+        assert!(certs.is_empty());
+
+        fs::remove_file(invalid_cert).ok();
+    }
+
+    #[test]
+    fn load_key_reports_missing_and_invalid_pem() {
+        let missing = unique_test_file("missing-key");
+        let err = load_key(&missing.to_string_lossy()).expect_err("missing key");
+        assert!(err.to_string().contains("reading private key"));
+
+        let invalid_key = unique_test_file("invalid-key");
+        fs::write(&invalid_key, b"not a key").expect("write invalid key");
+        let key_err = load_key(&invalid_key.to_string_lossy()).expect_err("invalid key");
+        assert!(key_err.to_string().contains("reading private key"));
+        fs::remove_file(invalid_key).ok();
+    }
+}

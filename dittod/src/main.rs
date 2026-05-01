@@ -53,6 +53,415 @@ fn tcp_client_auth_required(config: &Config, resolved_bind: &str, insecure: bool
         && config.node.client_auth_token.is_none()
 }
 
+fn first_override<F>(get: &F, primary: &str, fallback: Option<&str>) -> Option<String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    get(primary).or_else(|| fallback.and_then(get))
+}
+
+fn bool_override<F>(get: &F, primary: &str, fallback: Option<&str>) -> Option<bool>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    first_override(get, primary, fallback).map(|v| v.trim().eq_ignore_ascii_case("true"))
+}
+
+fn apply_env_overrides(config: &mut Config) {
+    apply_env_overrides_with(config, |var| std::env::var(var).ok());
+}
+
+fn apply_env_overrides_with<F>(config: &mut Config, get: F)
+where
+    F: Fn(&str) -> Option<String>,
+{
+    if let Some(v) = get("DITTO_NODE_ID") {
+        config.node.id = v;
+    }
+    if let Some(v) = get("DITTO_ACTIVE") {
+        config.node.active = v.trim().eq_ignore_ascii_case("true");
+    }
+    if let Some(v) = get("DITTO_CLIENT_AUTH_TOKEN") {
+        if !v.is_empty() {
+            config.node.client_auth_token = Some(v);
+        }
+    }
+    if let Some(v) = get("DITTO_SEEDS") {
+        config.cluster.seeds = v
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+    if let Some(v) = get("DITTO_MAX_MEMORY_MB") {
+        if let Ok(n) = v.parse::<u64>() {
+            config.cache.max_memory_mb = n;
+        }
+    }
+    if let Some(v) = get("DITTO_TLS_ENABLED") {
+        config.tls.enabled = v.trim().eq_ignore_ascii_case("true");
+    }
+    if let Some(v) = get("DITTO_TLS_CA_CERT") {
+        config.tls.ca_cert = v;
+    }
+    if let Some(v) = get("DITTO_TLS_CERT") {
+        config.tls.cert = v;
+    }
+    if let Some(v) = get("DITTO_TLS_KEY") {
+        config.tls.key = v;
+    }
+    if let Some(v) = get("DITTO_GOSSIP_DEAD_MS") {
+        if let Ok(ms) = v.parse::<u64>() {
+            config.replication.gossip_dead_ms = ms;
+        }
+    }
+    if let Some(v) = get("DITTO_WRITE_QUORUM_MODE") {
+        let normalized = v.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "all-active" => config.replication.write_quorum_mode = WriteQuorumMode::AllActive,
+            "majority" => config.replication.write_quorum_mode = WriteQuorumMode::Majority,
+            _ => warn!(
+                "Ignoring invalid DITTO_WRITE_QUORUM_MODE='{}' (allowed: all-active|majority)",
+                v
+            ),
+        }
+    }
+    if let Some(v) = bool_override(
+        &get,
+        "DITTO_READ_REPAIR_ON_MISS_ENABLED",
+        Some("READ_REPAIR_ON_MISS_ENABLED"),
+    ) {
+        config.replication.read_repair_on_miss_enabled = v;
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_READ_REPAIR_MIN_INTERVAL_MS",
+        Some("READ_REPAIR_MIN_INTERVAL_MS"),
+    ) {
+        if let Ok(ms) = v.parse::<u64>() {
+            config.replication.read_repair_min_interval_ms = ms.max(1);
+        }
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_READ_REPAIR_MAX_PER_MINUTE",
+        Some("READ_REPAIR_MAX_PER_MINUTE"),
+    ) {
+        if let Ok(n) = v.parse::<u64>() {
+            config.replication.read_repair_max_per_minute = n;
+        }
+    }
+    if let Some(v) = bool_override(
+        &get,
+        "DITTO_ANTI_ENTROPY_ENABLED",
+        Some("ANTI_ENTROPY_ENABLED"),
+    ) {
+        config.replication.anti_entropy_enabled = v;
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_ANTI_ENTROPY_INTERVAL_MS",
+        Some("ANTI_ENTROPY_INTERVAL_MS"),
+    ) {
+        if let Ok(ms) = v.parse::<u64>() {
+            config.replication.anti_entropy_interval_ms = ms.max(1);
+        }
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_ANTI_ENTROPY_MIN_REPAIR_INTERVAL_MS",
+        Some("ANTI_ENTROPY_MIN_REPAIR_INTERVAL_MS"),
+    ) {
+        if let Ok(ms) = v.parse::<u64>() {
+            config.replication.anti_entropy_min_repair_interval_ms = ms.max(1);
+        }
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_ANTI_ENTROPY_LAG_THRESHOLD",
+        Some("ANTI_ENTROPY_LAG_THRESHOLD"),
+    ) {
+        if let Ok(n) = v.parse::<u64>() {
+            config.replication.anti_entropy_lag_threshold = n.max(1);
+        }
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_ANTI_ENTROPY_KEY_SAMPLE_SIZE",
+        Some("ANTI_ENTROPY_KEY_SAMPLE_SIZE"),
+    ) {
+        if let Ok(n) = v.parse::<usize>() {
+            config.replication.anti_entropy_key_sample_size = n;
+        }
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_ANTI_ENTROPY_FULL_RECONCILE_EVERY",
+        Some("ANTI_ENTROPY_FULL_RECONCILE_EVERY"),
+    ) {
+        if let Ok(n) = v.parse::<u64>() {
+            config.replication.anti_entropy_full_reconcile_every = n;
+        }
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_ANTI_ENTROPY_FULL_RECONCILE_MAX_KEYS",
+        Some("ANTI_ENTROPY_FULL_RECONCILE_MAX_KEYS"),
+    ) {
+        if let Ok(n) = v.parse::<usize>() {
+            config.replication.anti_entropy_full_reconcile_max_keys = n;
+        }
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_ANTI_ENTROPY_BUDGET_MAX_CHECKS_PER_RUN",
+        Some("ANTI_ENTROPY_BUDGET_MAX_CHECKS_PER_RUN"),
+    ) {
+        if let Ok(n) = v.parse::<usize>() {
+            config.replication.anti_entropy_budget_max_checks_per_run = n;
+        }
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_ANTI_ENTROPY_BUDGET_MAX_DURATION_MS",
+        Some("ANTI_ENTROPY_BUDGET_MAX_DURATION_MS"),
+    ) {
+        if let Ok(ms) = v.parse::<u64>() {
+            config.replication.anti_entropy_budget_max_duration_ms = ms;
+        }
+    }
+    if let Some(v) = bool_override(
+        &get,
+        "DITTO_MIXED_VERSION_PROBE_ENABLED",
+        Some("MIXED_VERSION_PROBE_ENABLED"),
+    ) {
+        config.replication.mixed_version_probe_enabled = v;
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_MIXED_VERSION_PROBE_INTERVAL_MS",
+        Some("MIXED_VERSION_PROBE_INTERVAL_MS"),
+    ) {
+        if let Ok(ms) = v.parse::<u64>() {
+            config.replication.mixed_version_probe_interval_ms = ms.max(1);
+        }
+    }
+    if let Some(v) = get("DITTO_HTTP_AUTH_USER") {
+        config.http_auth.username = Some(v);
+    }
+    if let Some(v) = get("DITTO_HTTP_AUTH_PASSWORD_HASH") {
+        config.http_auth.password_hash = Some(v);
+    }
+    if let Some(v) = get("DITTO_BACKUP_ENCRYPTION_KEY") {
+        config.backup.encryption_key = Some(v);
+    }
+    if let Some(v) = get("DITTO_BACKUP_MAX_SNAPSHOT_BYTES") {
+        if let Ok(n) = v.parse::<u64>() {
+            config.backup.max_snapshot_bytes = n;
+        }
+    }
+    if let Some(v) = get("DITTO_BACKUP_MAX_RESTORE_ENTRIES") {
+        if let Ok(n) = v.parse::<usize>() {
+            config.backup.max_restore_entries = n;
+        }
+    }
+    if let Some(v) = bool_override(
+        &get,
+        "DITTO_SNAPSHOT_RESTORE_ON_START",
+        Some("SNAPSHOT_RESTORE_ON_START"),
+    ) {
+        config.backup.restore_on_start = v;
+    }
+    if let Some(v) = bool_override(
+        &get,
+        "DITTO_PERSISTENCE_PLATFORM_ALLOWED",
+        Some("PERSISTENCE_PLATFORM_ALLOWED"),
+    ) {
+        config.persistence.platform_allowed = v;
+    }
+    if let Some(v) = bool_override(
+        &get,
+        "DITTO_PERSISTENCE_BACKUP_ALLOWED",
+        Some("PERSISTENCE_BACKUP_ALLOWED"),
+    ) {
+        config.persistence.backup_allowed = v;
+    }
+    if let Some(v) = bool_override(
+        &get,
+        "DITTO_PERSISTENCE_EXPORT_ALLOWED",
+        Some("PERSISTENCE_EXPORT_ALLOWED"),
+    ) {
+        config.persistence.export_allowed = v;
+    }
+    if let Some(v) = bool_override(
+        &get,
+        "DITTO_PERSISTENCE_IMPORT_ALLOWED",
+        Some("PERSISTENCE_IMPORT_ALLOWED"),
+    ) {
+        config.persistence.import_allowed = v;
+    }
+    if let Some(v) = bool_override(&get, "DITTO_TENANCY_ENABLED", Some("TENANCY_ENABLED")) {
+        config.tenancy.enabled = v;
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_TENANCY_DEFAULT_NAMESPACE",
+        Some("TENANCY_DEFAULT_NAMESPACE"),
+    ) {
+        if !v.trim().is_empty() {
+            config.tenancy.default_namespace = v.trim().to_string();
+        }
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_TENANCY_MAX_KEYS_PER_NAMESPACE",
+        Some("TENANCY_MAX_KEYS_PER_NAMESPACE"),
+    ) {
+        if let Ok(n) = v.parse::<usize>() {
+            config.tenancy.max_keys_per_namespace = n;
+        }
+    }
+    if let Some(v) = bool_override(&get, "DITTO_RATE_LIMIT_ENABLED", Some("RATE_LIMIT_ENABLED")) {
+        config.rate_limit.enabled = v;
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_RATE_LIMIT_REQUESTS_PER_SEC",
+        Some("RATE_LIMIT_REQUESTS_PER_SEC"),
+    ) {
+        if let Ok(n) = v.parse::<u64>() {
+            config.rate_limit.requests_per_sec = n.max(1);
+        }
+    }
+    if let Some(v) = first_override(&get, "DITTO_RATE_LIMIT_BURST", Some("RATE_LIMIT_BURST")) {
+        if let Ok(n) = v.parse::<u64>() {
+            config.rate_limit.burst = n.max(1);
+        }
+    }
+    if let Some(v) = bool_override(
+        &get,
+        "DITTO_CIRCUIT_BREAKER_ENABLED",
+        Some("CIRCUIT_BREAKER_ENABLED"),
+    ) {
+        config.circuit_breaker.enabled = v;
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_CIRCUIT_BREAKER_FAILURE_THRESHOLD",
+        Some("CIRCUIT_BREAKER_FAILURE_THRESHOLD"),
+    ) {
+        if let Ok(n) = v.parse::<u64>() {
+            config.circuit_breaker.failure_threshold = n.max(1);
+        }
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_CIRCUIT_BREAKER_OPEN_MS",
+        Some("CIRCUIT_BREAKER_OPEN_MS"),
+    ) {
+        if let Ok(n) = v.parse::<u64>() {
+            config.circuit_breaker.open_ms = n.max(1);
+        }
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_CIRCUIT_BREAKER_HALF_OPEN_MAX_REQUESTS",
+        Some("CIRCUIT_BREAKER_HALF_OPEN_MAX_REQUESTS"),
+    ) {
+        if let Ok(n) = v.parse::<u64>() {
+            config.circuit_breaker.half_open_max_requests = n.max(1);
+        }
+    }
+    if let Some(v) = bool_override(&get, "DITTO_HOT_KEY_ENABLED", Some("HOT_KEY_ENABLED")) {
+        config.hot_key.enabled = v;
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_HOT_KEY_MAX_WAITERS",
+        Some("HOT_KEY_MAX_WAITERS"),
+    ) {
+        if let Ok(n) = v.parse::<usize>() {
+            config.hot_key.max_waiters = n.max(1);
+        }
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_HOT_KEY_FOLLOWER_WAIT_TIMEOUT_MS",
+        Some("HOT_KEY_FOLLOWER_WAIT_TIMEOUT_MS"),
+    ) {
+        if let Ok(n) = v.parse::<u64>() {
+            config.hot_key.follower_wait_timeout_ms = n.max(1);
+        }
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_HOT_KEY_STALE_TTL_MS",
+        Some("HOT_KEY_STALE_TTL_MS"),
+    ) {
+        if let Ok(n) = v.parse::<u64>() {
+            config.hot_key.stale_ttl_ms = n;
+        }
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_HOT_KEY_STALE_MAX_ENTRIES",
+        Some("HOT_KEY_STALE_MAX_ENTRIES"),
+    ) {
+        if let Ok(n) = v.parse::<usize>() {
+            config.hot_key.stale_max_entries = n.max(1);
+        }
+    }
+    if let Some(v) = bool_override(
+        &get,
+        "DITTO_HOT_KEY_ADAPTIVE_WAITERS_ENABLED",
+        Some("HOT_KEY_ADAPTIVE_WAITERS_ENABLED"),
+    ) {
+        config.hot_key.adaptive_waiters_enabled = v;
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_HOT_KEY_ADAPTIVE_MIN_WAITERS",
+        Some("HOT_KEY_ADAPTIVE_MIN_WAITERS"),
+    ) {
+        if let Ok(n) = v.parse::<usize>() {
+            config.hot_key.adaptive_min_waiters = n.max(1);
+        }
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_HOT_KEY_ADAPTIVE_SUCCESS_THRESHOLD",
+        Some("HOT_KEY_ADAPTIVE_SUCCESS_THRESHOLD"),
+    ) {
+        if let Ok(n) = v.parse::<u32>() {
+            config.hot_key.adaptive_success_threshold = n.max(1);
+        }
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_HOT_KEY_ADAPTIVE_STATE_MAX_KEYS",
+        Some("HOT_KEY_ADAPTIVE_STATE_MAX_KEYS"),
+    ) {
+        if let Ok(n) = v.parse::<usize>() {
+            config.hot_key.adaptive_state_max_keys = n.max(1);
+        }
+    }
+    if let Some(v) = get("DITTO_BIND_ADDR") {
+        config.node.bind_addr = v;
+    }
+    if let Some(v) = get("DITTO_CLUSTER_BIND_ADDR") {
+        config.node.cluster_bind_addr = v;
+    }
+    if let Some(v) = first_override(
+        &get,
+        "DITTO_FRAME_READ_TIMEOUT_MS",
+        Some("FRAME_READ_TIMEOUT_MS"),
+    ) {
+        if let Ok(ms) = v.parse::<u64>() {
+            config.node.frame_read_timeout_ms = ms.max(1);
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Install the ring crypto provider for rustls (must happen before any TLS use).
@@ -73,329 +482,7 @@ async fn main() -> Result<()> {
     };
 
     // Apply environment variable overrides (used by Docker / CI).
-    if let Ok(v) = std::env::var("DITTO_NODE_ID") {
-        config.node.id = v;
-    }
-    if let Ok(v) = std::env::var("DITTO_ACTIVE") {
-        config.node.active = v.trim().eq_ignore_ascii_case("true");
-    }
-    if let Ok(v) = std::env::var("DITTO_CLIENT_AUTH_TOKEN") {
-        if !v.is_empty() {
-            config.node.client_auth_token = Some(v);
-        }
-    }
-    if let Ok(v) = std::env::var("DITTO_SEEDS") {
-        config.cluster.seeds = v
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-    }
-    if let Ok(v) = std::env::var("DITTO_MAX_MEMORY_MB") {
-        if let Ok(n) = v.parse::<u64>() {
-            config.cache.max_memory_mb = n;
-        }
-    }
-    if let Ok(v) = std::env::var("DITTO_TLS_ENABLED") {
-        config.tls.enabled = v.trim().eq_ignore_ascii_case("true");
-    }
-    if let Ok(v) = std::env::var("DITTO_TLS_CA_CERT") {
-        config.tls.ca_cert = v;
-    }
-    if let Ok(v) = std::env::var("DITTO_TLS_CERT") {
-        config.tls.cert = v;
-    }
-    if let Ok(v) = std::env::var("DITTO_TLS_KEY") {
-        config.tls.key = v;
-    }
-    if let Ok(v) = std::env::var("DITTO_GOSSIP_DEAD_MS") {
-        if let Ok(ms) = v.parse::<u64>() {
-            config.replication.gossip_dead_ms = ms;
-        }
-    }
-    if let Ok(v) = std::env::var("DITTO_WRITE_QUORUM_MODE") {
-        let normalized = v.trim().to_ascii_lowercase();
-        match normalized.as_str() {
-            "all-active" => config.replication.write_quorum_mode = WriteQuorumMode::AllActive,
-            "majority" => config.replication.write_quorum_mode = WriteQuorumMode::Majority,
-            _ => warn!(
-                "Ignoring invalid DITTO_WRITE_QUORUM_MODE='{}' (allowed: all-active|majority)",
-                v
-            ),
-        }
-    }
-    if let Some(v) = parse_bool_env("DITTO_READ_REPAIR_ON_MISS_ENABLED")
-        .or_else(|| parse_bool_env("READ_REPAIR_ON_MISS_ENABLED"))
-    {
-        config.replication.read_repair_on_miss_enabled = v;
-    }
-    if let Ok(v) = std::env::var("DITTO_READ_REPAIR_MIN_INTERVAL_MS")
-        .or_else(|_| std::env::var("READ_REPAIR_MIN_INTERVAL_MS"))
-    {
-        if let Ok(ms) = v.parse::<u64>() {
-            config.replication.read_repair_min_interval_ms = ms.max(1);
-        }
-    }
-    if let Ok(v) = std::env::var("DITTO_READ_REPAIR_MAX_PER_MINUTE")
-        .or_else(|_| std::env::var("READ_REPAIR_MAX_PER_MINUTE"))
-    {
-        if let Ok(n) = v.parse::<u64>() {
-            config.replication.read_repair_max_per_minute = n;
-        }
-    }
-    if let Some(v) = parse_bool_env("DITTO_ANTI_ENTROPY_ENABLED")
-        .or_else(|| parse_bool_env("ANTI_ENTROPY_ENABLED"))
-    {
-        config.replication.anti_entropy_enabled = v;
-    }
-    if let Ok(v) = std::env::var("DITTO_ANTI_ENTROPY_INTERVAL_MS")
-        .or_else(|_| std::env::var("ANTI_ENTROPY_INTERVAL_MS"))
-    {
-        if let Ok(ms) = v.parse::<u64>() {
-            config.replication.anti_entropy_interval_ms = ms.max(1);
-        }
-    }
-    if let Ok(v) = std::env::var("DITTO_ANTI_ENTROPY_MIN_REPAIR_INTERVAL_MS")
-        .or_else(|_| std::env::var("ANTI_ENTROPY_MIN_REPAIR_INTERVAL_MS"))
-    {
-        if let Ok(ms) = v.parse::<u64>() {
-            config.replication.anti_entropy_min_repair_interval_ms = ms.max(1);
-        }
-    }
-    if let Ok(v) = std::env::var("DITTO_ANTI_ENTROPY_LAG_THRESHOLD")
-        .or_else(|_| std::env::var("ANTI_ENTROPY_LAG_THRESHOLD"))
-    {
-        if let Ok(n) = v.parse::<u64>() {
-            config.replication.anti_entropy_lag_threshold = n.max(1);
-        }
-    }
-    if let Ok(v) = std::env::var("DITTO_ANTI_ENTROPY_KEY_SAMPLE_SIZE")
-        .or_else(|_| std::env::var("ANTI_ENTROPY_KEY_SAMPLE_SIZE"))
-    {
-        if let Ok(n) = v.parse::<usize>() {
-            config.replication.anti_entropy_key_sample_size = n;
-        }
-    }
-    if let Ok(v) = std::env::var("DITTO_ANTI_ENTROPY_FULL_RECONCILE_EVERY")
-        .or_else(|_| std::env::var("ANTI_ENTROPY_FULL_RECONCILE_EVERY"))
-    {
-        if let Ok(n) = v.parse::<u64>() {
-            config.replication.anti_entropy_full_reconcile_every = n;
-        }
-    }
-    if let Ok(v) = std::env::var("DITTO_ANTI_ENTROPY_FULL_RECONCILE_MAX_KEYS")
-        .or_else(|_| std::env::var("ANTI_ENTROPY_FULL_RECONCILE_MAX_KEYS"))
-    {
-        if let Ok(n) = v.parse::<usize>() {
-            config.replication.anti_entropy_full_reconcile_max_keys = n;
-        }
-    }
-    if let Ok(v) = std::env::var("DITTO_ANTI_ENTROPY_BUDGET_MAX_CHECKS_PER_RUN")
-        .or_else(|_| std::env::var("ANTI_ENTROPY_BUDGET_MAX_CHECKS_PER_RUN"))
-    {
-        if let Ok(n) = v.parse::<usize>() {
-            config.replication.anti_entropy_budget_max_checks_per_run = n;
-        }
-    }
-    if let Ok(v) = std::env::var("DITTO_ANTI_ENTROPY_BUDGET_MAX_DURATION_MS")
-        .or_else(|_| std::env::var("ANTI_ENTROPY_BUDGET_MAX_DURATION_MS"))
-    {
-        if let Ok(ms) = v.parse::<u64>() {
-            config.replication.anti_entropy_budget_max_duration_ms = ms;
-        }
-    }
-    if let Some(v) = parse_bool_env("DITTO_MIXED_VERSION_PROBE_ENABLED")
-        .or_else(|| parse_bool_env("MIXED_VERSION_PROBE_ENABLED"))
-    {
-        config.replication.mixed_version_probe_enabled = v;
-    }
-    if let Ok(v) = std::env::var("DITTO_MIXED_VERSION_PROBE_INTERVAL_MS")
-        .or_else(|_| std::env::var("MIXED_VERSION_PROBE_INTERVAL_MS"))
-    {
-        if let Ok(ms) = v.parse::<u64>() {
-            config.replication.mixed_version_probe_interval_ms = ms.max(1);
-        }
-    }
-    if let Ok(v) = std::env::var("DITTO_HTTP_AUTH_USER") {
-        config.http_auth.username = Some(v);
-    }
-    if let Ok(v) = std::env::var("DITTO_HTTP_AUTH_PASSWORD_HASH") {
-        config.http_auth.password_hash = Some(v);
-    }
-    if let Ok(v) = std::env::var("DITTO_BACKUP_ENCRYPTION_KEY") {
-        config.backup.encryption_key = Some(v);
-    }
-    if let Ok(v) = std::env::var("DITTO_BACKUP_MAX_SNAPSHOT_BYTES") {
-        if let Ok(n) = v.parse::<u64>() {
-            config.backup.max_snapshot_bytes = n;
-        }
-    }
-    if let Ok(v) = std::env::var("DITTO_BACKUP_MAX_RESTORE_ENTRIES") {
-        if let Ok(n) = v.parse::<usize>() {
-            config.backup.max_restore_entries = n;
-        }
-    }
-    if let Some(v) = parse_bool_env("DITTO_SNAPSHOT_RESTORE_ON_START")
-        .or_else(|| parse_bool_env("SNAPSHOT_RESTORE_ON_START"))
-    {
-        config.backup.restore_on_start = v;
-    }
-    if let Some(v) = parse_bool_env("DITTO_PERSISTENCE_PLATFORM_ALLOWED")
-        .or_else(|| parse_bool_env("PERSISTENCE_PLATFORM_ALLOWED"))
-    {
-        config.persistence.platform_allowed = v;
-    }
-    if let Some(v) = parse_bool_env("DITTO_PERSISTENCE_BACKUP_ALLOWED")
-        .or_else(|| parse_bool_env("PERSISTENCE_BACKUP_ALLOWED"))
-    {
-        config.persistence.backup_allowed = v;
-    }
-    if let Some(v) = parse_bool_env("DITTO_PERSISTENCE_EXPORT_ALLOWED")
-        .or_else(|| parse_bool_env("PERSISTENCE_EXPORT_ALLOWED"))
-    {
-        config.persistence.export_allowed = v;
-    }
-    if let Some(v) = parse_bool_env("DITTO_PERSISTENCE_IMPORT_ALLOWED")
-        .or_else(|| parse_bool_env("PERSISTENCE_IMPORT_ALLOWED"))
-    {
-        config.persistence.import_allowed = v;
-    }
-    if let Some(v) =
-        parse_bool_env("DITTO_TENANCY_ENABLED").or_else(|| parse_bool_env("TENANCY_ENABLED"))
-    {
-        config.tenancy.enabled = v;
-    }
-    if let Ok(v) = std::env::var("DITTO_TENANCY_DEFAULT_NAMESPACE")
-        .or_else(|_| std::env::var("TENANCY_DEFAULT_NAMESPACE"))
-    {
-        if !v.trim().is_empty() {
-            config.tenancy.default_namespace = v.trim().to_string();
-        }
-    }
-    if let Ok(v) = std::env::var("DITTO_TENANCY_MAX_KEYS_PER_NAMESPACE")
-        .or_else(|_| std::env::var("TENANCY_MAX_KEYS_PER_NAMESPACE"))
-    {
-        if let Ok(n) = v.parse::<usize>() {
-            config.tenancy.max_keys_per_namespace = n;
-        }
-    }
-    if let Some(v) =
-        parse_bool_env("DITTO_RATE_LIMIT_ENABLED").or_else(|| parse_bool_env("RATE_LIMIT_ENABLED"))
-    {
-        config.rate_limit.enabled = v;
-    }
-    if let Ok(v) = std::env::var("DITTO_RATE_LIMIT_REQUESTS_PER_SEC")
-        .or_else(|_| std::env::var("RATE_LIMIT_REQUESTS_PER_SEC"))
-    {
-        if let Ok(n) = v.parse::<u64>() {
-            config.rate_limit.requests_per_sec = n.max(1);
-        }
-    }
-    if let Ok(v) =
-        std::env::var("DITTO_RATE_LIMIT_BURST").or_else(|_| std::env::var("RATE_LIMIT_BURST"))
-    {
-        if let Ok(n) = v.parse::<u64>() {
-            config.rate_limit.burst = n.max(1);
-        }
-    }
-    if let Some(v) = parse_bool_env("DITTO_CIRCUIT_BREAKER_ENABLED")
-        .or_else(|| parse_bool_env("CIRCUIT_BREAKER_ENABLED"))
-    {
-        config.circuit_breaker.enabled = v;
-    }
-    if let Ok(v) = std::env::var("DITTO_CIRCUIT_BREAKER_FAILURE_THRESHOLD")
-        .or_else(|_| std::env::var("CIRCUIT_BREAKER_FAILURE_THRESHOLD"))
-    {
-        if let Ok(n) = v.parse::<u64>() {
-            config.circuit_breaker.failure_threshold = n.max(1);
-        }
-    }
-    if let Ok(v) = std::env::var("DITTO_CIRCUIT_BREAKER_OPEN_MS")
-        .or_else(|_| std::env::var("CIRCUIT_BREAKER_OPEN_MS"))
-    {
-        if let Ok(n) = v.parse::<u64>() {
-            config.circuit_breaker.open_ms = n.max(1);
-        }
-    }
-    if let Ok(v) = std::env::var("DITTO_CIRCUIT_BREAKER_HALF_OPEN_MAX_REQUESTS")
-        .or_else(|_| std::env::var("CIRCUIT_BREAKER_HALF_OPEN_MAX_REQUESTS"))
-    {
-        if let Ok(n) = v.parse::<u64>() {
-            config.circuit_breaker.half_open_max_requests = n.max(1);
-        }
-    }
-    if let Some(v) =
-        parse_bool_env("DITTO_HOT_KEY_ENABLED").or_else(|| parse_bool_env("HOT_KEY_ENABLED"))
-    {
-        config.hot_key.enabled = v;
-    }
-    if let Ok(v) =
-        std::env::var("DITTO_HOT_KEY_MAX_WAITERS").or_else(|_| std::env::var("HOT_KEY_MAX_WAITERS"))
-    {
-        if let Ok(n) = v.parse::<usize>() {
-            config.hot_key.max_waiters = n.max(1);
-        }
-    }
-    if let Ok(v) = std::env::var("DITTO_HOT_KEY_FOLLOWER_WAIT_TIMEOUT_MS")
-        .or_else(|_| std::env::var("HOT_KEY_FOLLOWER_WAIT_TIMEOUT_MS"))
-    {
-        if let Ok(n) = v.parse::<u64>() {
-            config.hot_key.follower_wait_timeout_ms = n.max(1);
-        }
-    }
-    if let Ok(v) = std::env::var("DITTO_HOT_KEY_STALE_TTL_MS")
-        .or_else(|_| std::env::var("HOT_KEY_STALE_TTL_MS"))
-    {
-        if let Ok(n) = v.parse::<u64>() {
-            config.hot_key.stale_ttl_ms = n;
-        }
-    }
-    if let Ok(v) = std::env::var("DITTO_HOT_KEY_STALE_MAX_ENTRIES")
-        .or_else(|_| std::env::var("HOT_KEY_STALE_MAX_ENTRIES"))
-    {
-        if let Ok(n) = v.parse::<usize>() {
-            config.hot_key.stale_max_entries = n.max(1);
-        }
-    }
-    if let Some(v) = parse_bool_env("DITTO_HOT_KEY_ADAPTIVE_WAITERS_ENABLED")
-        .or_else(|| parse_bool_env("HOT_KEY_ADAPTIVE_WAITERS_ENABLED"))
-    {
-        config.hot_key.adaptive_waiters_enabled = v;
-    }
-    if let Ok(v) = std::env::var("DITTO_HOT_KEY_ADAPTIVE_MIN_WAITERS")
-        .or_else(|_| std::env::var("HOT_KEY_ADAPTIVE_MIN_WAITERS"))
-    {
-        if let Ok(n) = v.parse::<usize>() {
-            config.hot_key.adaptive_min_waiters = n.max(1);
-        }
-    }
-    if let Ok(v) = std::env::var("DITTO_HOT_KEY_ADAPTIVE_SUCCESS_THRESHOLD")
-        .or_else(|_| std::env::var("HOT_KEY_ADAPTIVE_SUCCESS_THRESHOLD"))
-    {
-        if let Ok(n) = v.parse::<u32>() {
-            config.hot_key.adaptive_success_threshold = n.max(1);
-        }
-    }
-    if let Ok(v) = std::env::var("DITTO_HOT_KEY_ADAPTIVE_STATE_MAX_KEYS")
-        .or_else(|_| std::env::var("HOT_KEY_ADAPTIVE_STATE_MAX_KEYS"))
-    {
-        if let Ok(n) = v.parse::<usize>() {
-            config.hot_key.adaptive_state_max_keys = n.max(1);
-        }
-    }
-    if let Ok(v) = std::env::var("DITTO_BIND_ADDR") {
-        config.node.bind_addr = v;
-    }
-    if let Ok(v) = std::env::var("DITTO_CLUSTER_BIND_ADDR") {
-        config.node.cluster_bind_addr = v;
-    }
-    if let Ok(v) = std::env::var("DITTO_FRAME_READ_TIMEOUT_MS")
-        .or_else(|_| std::env::var("FRAME_READ_TIMEOUT_MS"))
-    {
-        if let Ok(ms) = v.parse::<u64>() {
-            config.node.frame_read_timeout_ms = ms.max(1);
-        }
-    }
+    apply_env_overrides(&mut config);
     apply_replication_guardrails(&mut config);
 
     // DITTO_INSECURE=true bypasses strict security checks (dev/test only).
@@ -698,8 +785,25 @@ fn rotate_old_logs(dir: &str, retain_days: u64) {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_replication_guardrails, tcp_client_auth_required};
-    use crate::config::Config;
+    use super::{
+        apply_env_overrides_with, apply_replication_guardrails, parse_bool_env, rotate_old_logs,
+        tcp_client_auth_required,
+    };
+    use crate::config::{Config, WriteQuorumMode};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_test_dir(name: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "ditto-main-test-{}-{}-{}",
+            name,
+            std::process::id(),
+            nanos
+        ))
+    }
 
     #[test]
     fn guardrail_clamps_dead_threshold_to_at_least_three_intervals() {
@@ -717,6 +821,197 @@ mod tests {
         cfg.replication.gossip_dead_ms = 15000;
         apply_replication_guardrails(&mut cfg);
         assert_eq!(cfg.replication.gossip_dead_ms, 15000);
+    }
+
+    #[test]
+    fn guardrail_handles_zero_interval_and_warn_only_extremes() {
+        let mut low = Config::default();
+        low.replication.gossip_interval_ms = 0;
+        low.replication.gossip_dead_ms = 1;
+        apply_replication_guardrails(&mut low);
+        assert_eq!(low.replication.gossip_dead_ms, 3);
+
+        let mut high = Config::default();
+        high.replication.gossip_interval_ms = 10_000;
+        high.replication.gossip_dead_ms = 90_000;
+        apply_replication_guardrails(&mut high);
+        assert_eq!(high.replication.gossip_dead_ms, 90_000);
+    }
+
+    #[test]
+    fn parse_bool_env_is_case_insensitive_and_missing_safe() {
+        let true_var = format!("DITTO_TEST_BOOL_TRUE_{}", std::process::id());
+        let false_var = format!("DITTO_TEST_BOOL_FALSE_{}", std::process::id());
+        let missing_var = format!("DITTO_TEST_BOOL_MISSING_{}", std::process::id());
+        std::env::set_var(&true_var, " TrUe ");
+        std::env::set_var(&false_var, "yes");
+        std::env::remove_var(&missing_var);
+
+        assert_eq!(parse_bool_env(&true_var), Some(true));
+        assert_eq!(parse_bool_env(&false_var), Some(false));
+        assert_eq!(parse_bool_env(&missing_var), None);
+
+        std::env::remove_var(&true_var);
+        std::env::remove_var(&false_var);
+    }
+
+    #[test]
+    fn env_overrides_cover_primary_and_legacy_startup_knobs() {
+        let mut cfg = Config::default();
+        let overrides = [
+            ("DITTO_NODE_ID", "env-node"),
+            ("DITTO_ACTIVE", "false"),
+            ("DITTO_CLIENT_AUTH_TOKEN", "secret"),
+            ("DITTO_SEEDS", " node-a:7779, ,node-b:7779 "),
+            ("DITTO_MAX_MEMORY_MB", "64"),
+            ("DITTO_TLS_ENABLED", "true"),
+            ("DITTO_TLS_CA_CERT", "ca.pem"),
+            ("DITTO_TLS_CERT", "cert.pem"),
+            ("DITTO_TLS_KEY", "key.pem"),
+            ("DITTO_GOSSIP_DEAD_MS", "12345"),
+            ("DITTO_WRITE_QUORUM_MODE", "majority"),
+            ("READ_REPAIR_ON_MISS_ENABLED", "true"),
+            ("READ_REPAIR_MIN_INTERVAL_MS", "0"),
+            ("READ_REPAIR_MAX_PER_MINUTE", "9"),
+            ("ANTI_ENTROPY_ENABLED", "true"),
+            ("ANTI_ENTROPY_INTERVAL_MS", "0"),
+            ("ANTI_ENTROPY_MIN_REPAIR_INTERVAL_MS", "0"),
+            ("ANTI_ENTROPY_LAG_THRESHOLD", "0"),
+            ("ANTI_ENTROPY_KEY_SAMPLE_SIZE", "17"),
+            ("ANTI_ENTROPY_FULL_RECONCILE_EVERY", "3"),
+            ("ANTI_ENTROPY_FULL_RECONCILE_MAX_KEYS", "19"),
+            ("ANTI_ENTROPY_BUDGET_MAX_CHECKS_PER_RUN", "23"),
+            ("ANTI_ENTROPY_BUDGET_MAX_DURATION_MS", "29"),
+            ("MIXED_VERSION_PROBE_ENABLED", "false"),
+            ("MIXED_VERSION_PROBE_INTERVAL_MS", "0"),
+            ("DITTO_HTTP_AUTH_USER", "admin"),
+            ("DITTO_HTTP_AUTH_PASSWORD_HASH", "hash"),
+            ("DITTO_BACKUP_ENCRYPTION_KEY", "enc-key"),
+            ("DITTO_BACKUP_MAX_SNAPSHOT_BYTES", "4096"),
+            ("DITTO_BACKUP_MAX_RESTORE_ENTRIES", "31"),
+            ("SNAPSHOT_RESTORE_ON_START", "true"),
+            ("PERSISTENCE_PLATFORM_ALLOWED", "true"),
+            ("PERSISTENCE_BACKUP_ALLOWED", "true"),
+            ("PERSISTENCE_EXPORT_ALLOWED", "true"),
+            ("PERSISTENCE_IMPORT_ALLOWED", "true"),
+            ("TENANCY_ENABLED", "true"),
+            ("TENANCY_DEFAULT_NAMESPACE", "tenant-a"),
+            ("TENANCY_MAX_KEYS_PER_NAMESPACE", "37"),
+            ("RATE_LIMIT_ENABLED", "true"),
+            ("RATE_LIMIT_REQUESTS_PER_SEC", "0"),
+            ("RATE_LIMIT_BURST", "0"),
+            ("CIRCUIT_BREAKER_ENABLED", "true"),
+            ("CIRCUIT_BREAKER_FAILURE_THRESHOLD", "0"),
+            ("CIRCUIT_BREAKER_OPEN_MS", "0"),
+            ("CIRCUIT_BREAKER_HALF_OPEN_MAX_REQUESTS", "0"),
+            ("HOT_KEY_ENABLED", "true"),
+            ("HOT_KEY_MAX_WAITERS", "0"),
+            ("HOT_KEY_FOLLOWER_WAIT_TIMEOUT_MS", "0"),
+            ("HOT_KEY_STALE_TTL_MS", "0"),
+            ("HOT_KEY_STALE_MAX_ENTRIES", "0"),
+            ("HOT_KEY_ADAPTIVE_WAITERS_ENABLED", "true"),
+            ("HOT_KEY_ADAPTIVE_MIN_WAITERS", "0"),
+            ("HOT_KEY_ADAPTIVE_SUCCESS_THRESHOLD", "0"),
+            ("HOT_KEY_ADAPTIVE_STATE_MAX_KEYS", "0"),
+            ("DITTO_BIND_ADDR", "127.0.0.2"),
+            ("DITTO_CLUSTER_BIND_ADDR", "127.0.0.3"),
+            ("FRAME_READ_TIMEOUT_MS", "0"),
+        ];
+
+        apply_env_overrides_with(&mut cfg, |name| {
+            overrides
+                .iter()
+                .find(|(key, _)| key == &name)
+                .map(|(_, value)| value.to_string())
+        });
+
+        assert_eq!(cfg.node.id, "env-node");
+        assert!(!cfg.node.active);
+        assert_eq!(cfg.node.client_auth_token.as_deref(), Some("secret"));
+        assert_eq!(cfg.cluster.seeds, vec!["node-a:7779", "node-b:7779"]);
+        assert_eq!(cfg.cache.max_memory_mb, 64);
+        assert!(cfg.tls.enabled);
+        assert_eq!(cfg.tls.ca_cert, "ca.pem");
+        assert_eq!(cfg.tls.cert, "cert.pem");
+        assert_eq!(cfg.tls.key, "key.pem");
+        assert_eq!(cfg.replication.gossip_dead_ms, 12345);
+        assert_eq!(cfg.replication.write_quorum_mode, WriteQuorumMode::Majority);
+        assert!(cfg.replication.read_repair_on_miss_enabled);
+        assert_eq!(cfg.replication.read_repair_min_interval_ms, 1);
+        assert_eq!(cfg.replication.read_repair_max_per_minute, 9);
+        assert!(cfg.replication.anti_entropy_enabled);
+        assert_eq!(cfg.replication.anti_entropy_interval_ms, 1);
+        assert_eq!(cfg.replication.anti_entropy_min_repair_interval_ms, 1);
+        assert_eq!(cfg.replication.anti_entropy_lag_threshold, 1);
+        assert_eq!(cfg.replication.anti_entropy_key_sample_size, 17);
+        assert_eq!(cfg.replication.anti_entropy_full_reconcile_every, 3);
+        assert_eq!(cfg.replication.anti_entropy_full_reconcile_max_keys, 19);
+        assert_eq!(cfg.replication.anti_entropy_budget_max_checks_per_run, 23);
+        assert_eq!(cfg.replication.anti_entropy_budget_max_duration_ms, 29);
+        assert!(!cfg.replication.mixed_version_probe_enabled);
+        assert_eq!(cfg.replication.mixed_version_probe_interval_ms, 1);
+        assert_eq!(cfg.http_auth.username.as_deref(), Some("admin"));
+        assert_eq!(cfg.http_auth.password_hash.as_deref(), Some("hash"));
+        assert_eq!(cfg.backup.encryption_key.as_deref(), Some("enc-key"));
+        assert_eq!(cfg.backup.max_snapshot_bytes, 4096);
+        assert_eq!(cfg.backup.max_restore_entries, 31);
+        assert!(cfg.backup.restore_on_start);
+        assert!(cfg.persistence.platform_allowed);
+        assert!(cfg.persistence.backup_allowed);
+        assert!(cfg.persistence.export_allowed);
+        assert!(cfg.persistence.import_allowed);
+        assert!(cfg.tenancy.enabled);
+        assert_eq!(cfg.tenancy.default_namespace, "tenant-a");
+        assert_eq!(cfg.tenancy.max_keys_per_namespace, 37);
+        assert!(cfg.rate_limit.enabled);
+        assert_eq!(cfg.rate_limit.requests_per_sec, 1);
+        assert_eq!(cfg.rate_limit.burst, 1);
+        assert!(cfg.circuit_breaker.enabled);
+        assert_eq!(cfg.circuit_breaker.failure_threshold, 1);
+        assert_eq!(cfg.circuit_breaker.open_ms, 1);
+        assert_eq!(cfg.circuit_breaker.half_open_max_requests, 1);
+        assert!(cfg.hot_key.enabled);
+        assert_eq!(cfg.hot_key.max_waiters, 1);
+        assert_eq!(cfg.hot_key.follower_wait_timeout_ms, 1);
+        assert_eq!(cfg.hot_key.stale_ttl_ms, 0);
+        assert_eq!(cfg.hot_key.stale_max_entries, 1);
+        assert!(cfg.hot_key.adaptive_waiters_enabled);
+        assert_eq!(cfg.hot_key.adaptive_min_waiters, 1);
+        assert_eq!(cfg.hot_key.adaptive_success_threshold, 1);
+        assert_eq!(cfg.hot_key.adaptive_state_max_keys, 1);
+        assert_eq!(cfg.node.bind_addr, "127.0.0.2");
+        assert_eq!(cfg.node.cluster_bind_addr, "127.0.0.3");
+        assert_eq!(cfg.node.frame_read_timeout_ms, 1);
+    }
+
+    #[test]
+    fn env_overrides_ignore_invalid_numbers_and_empty_token() {
+        let mut cfg = Config::default();
+        let original_memory = cfg.cache.max_memory_mb;
+        let original_snapshot_limit = cfg.backup.max_snapshot_bytes;
+        let overrides = [
+            ("DITTO_CLIENT_AUTH_TOKEN", ""),
+            ("DITTO_MAX_MEMORY_MB", "not-a-number"),
+            ("DITTO_BACKUP_MAX_SNAPSHOT_BYTES", "nope"),
+            ("DITTO_WRITE_QUORUM_MODE", "invalid"),
+            ("DITTO_TENANCY_DEFAULT_NAMESPACE", "   "),
+        ];
+
+        apply_env_overrides_with(&mut cfg, |name| {
+            overrides
+                .iter()
+                .find(|(key, _)| key == &name)
+                .map(|(_, value)| value.to_string())
+        });
+
+        assert!(cfg.node.client_auth_token.is_none());
+        assert_eq!(cfg.cache.max_memory_mb, original_memory);
+        assert_eq!(cfg.backup.max_snapshot_bytes, original_snapshot_limit);
+        assert_eq!(
+            cfg.replication.write_quorum_mode,
+            WriteQuorumMode::AllActive
+        );
+        assert_eq!(cfg.tenancy.default_namespace, "default");
     }
 
     #[test]
@@ -744,5 +1039,39 @@ mod tests {
     fn tcp_auth_not_required_in_insecure_mode() {
         let cfg = Config::default();
         assert!(!tcp_client_auth_required(&cfg, "0.0.0.0", true));
+    }
+
+    #[test]
+    fn tcp_auth_not_required_when_client_port_disabled() {
+        let mut cfg = Config::default();
+        cfg.node.client_port = 0;
+        assert!(!tcp_client_auth_required(&cfg, "0.0.0.0", false));
+    }
+
+    #[test]
+    fn rotate_old_logs_removes_only_dittod_log_files() {
+        let dir = unique_test_dir("rotate-logs");
+        std::fs::create_dir_all(&dir).expect("create log dir");
+        let old_log = dir.join("dittod.log.2026-05-01");
+        let current_log = dir.join("dittod.log");
+        let unrelated = dir.join("other.log");
+        std::fs::write(&old_log, b"old").expect("write old log");
+        std::fs::write(&current_log, b"current").expect("write current log");
+        std::fs::write(&unrelated, b"keep").expect("write unrelated log");
+
+        rotate_old_logs(&dir.to_string_lossy(), 0);
+
+        assert!(!old_log.exists());
+        assert!(!current_log.exists());
+        assert!(unrelated.exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rotate_old_logs_ignores_missing_directories() {
+        let dir = unique_test_dir("missing-logs");
+        rotate_old_logs(&dir.to_string_lossy(), 1);
+        assert!(!dir.exists());
     }
 }
