@@ -533,11 +533,18 @@ fn status_for_error(code: &ErrorCode) -> StatusCode {
 #[cfg(test)]
 mod tests {
     use super::{
-        availability_for_stats, status_for_error, tcp_client_bind_loopback_only,
-        tcp_production_safe, tcp_supported_topology,
+        availability_for_stats, build_app, status_for_error, tcp_client_bind_loopback_only,
+        tcp_production_safe, tcp_supported_topology, MAX_BATCH_SET_ITEMS,
     };
+    use crate::{config::Config, node::NodeHandle, store::KvStore};
     use axum::http::StatusCode;
+    use base64::Engine;
     use ditto_protocol::{ErrorCode, NodeStatus};
+    use std::sync::Arc;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, TcpStream},
+    };
 
     #[test]
     fn status_mapping_for_rate_limit_and_circuit_open() {
@@ -606,5 +613,206 @@ mod tests {
             tcp_supported_topology("0.0.0.0", false),
             "unsupported-for-production"
         );
+    }
+
+    fn test_node(mut cfg: Config) -> Arc<NodeHandle> {
+        cfg.node.cluster_port = 17779;
+        let store = Arc::new(KvStore::new(
+            cfg.cache.max_memory_mb,
+            cfg.cache.default_ttl_secs,
+            cfg.cache.value_size_limit_bytes,
+            cfg.cache.max_keys,
+            cfg.compression.enabled,
+            cfg.compression.threshold_bytes,
+        ));
+        NodeHandle::new(
+            cfg,
+            "test-node.toml".into(),
+            store,
+            None,
+            "127.0.0.1".into(),
+        )
+    }
+
+    async fn spawn_http(node: Arc<NodeHandle>) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = build_app(node);
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (addr.to_string(), handle)
+    }
+
+    struct HttpTestResponse {
+        status: u16,
+        body: serde_json::Value,
+    }
+
+    async fn http_json(
+        addr: &str,
+        method: &str,
+        path: &str,
+        headers: &[(&str, String)],
+        body: Option<serde_json::Value>,
+    ) -> HttpTestResponse {
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let body = body.map(|v| v.to_string()).unwrap_or_default();
+        let mut request = format!(
+            "{method} {path} HTTP/1.1\r\nhost: {addr}\r\nconnection: close\r\ncontent-length: {}\r\n",
+            body.len()
+        );
+        if !body.is_empty() {
+            request.push_str("content-type: application/json\r\n");
+        }
+        for (name, value) in headers {
+            request.push_str(name);
+            request.push_str(": ");
+            request.push_str(value);
+            request.push_str("\r\n");
+        }
+        request.push_str("\r\n");
+        request.push_str(&body);
+
+        stream.write_all(request.as_bytes()).await.unwrap();
+
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        let response = String::from_utf8_lossy(&response);
+        let (head, body) = response.split_once("\r\n\r\n").unwrap();
+        let status = head
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap();
+        let body = if body.trim().is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_str(body).unwrap()
+        };
+
+        HttpTestResponse { status, body }
+    }
+
+    fn basic_auth(user: &str, pass: &str) -> String {
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"))
+        )
+    }
+
+    #[tokio::test]
+    async fn http_key_lifecycle_pattern_and_batch_endpoints_work() {
+        let node = test_node(Config::default());
+        let (addr, server) = spawn_http(node).await;
+
+        let set = http_json(
+            &addr,
+            "PUT",
+            "/key/alpha?ttl=30",
+            &[("x-ditto-namespace", "tenant-a".into())],
+            Some(serde_json::Value::String("value-a".into())),
+        )
+        .await;
+        assert_eq!(set.status, 200);
+        assert_eq!(set.body["version"], 1);
+
+        let get = http_json(
+            &addr,
+            "GET",
+            "/key/alpha",
+            &[("x-ditto-namespace", "tenant-a".into())],
+            None,
+        )
+        .await;
+        assert_eq!(get.status, 200);
+        assert_eq!(get.body["value"], "\"value-a\"");
+
+        let empty_batch = http_json(
+            &addr,
+            "POST",
+            "/keys/batch",
+            &[],
+            Some(serde_json::json!({ "items": [] })),
+        )
+        .await;
+        assert_eq!(empty_batch.status, 400);
+
+        let batch = http_json(
+            &addr,
+            "POST",
+            "/keys/batch",
+            &[],
+            Some(serde_json::json!({
+                "items": [
+                    { "key": "beta", "value": "value-b", "ttl_secs": null },
+                    { "key": "gamma", "value": "value-c", "ttl_secs": 60 }
+                ]
+            })),
+        )
+        .await;
+        assert_eq!(batch.body["received"], 2);
+        assert_eq!(batch.body["succeeded"], 2);
+
+        let ttl = http_json(
+            &addr,
+            "POST",
+            "/keys/ttl-by-pattern",
+            &[],
+            Some(serde_json::json!({ "pattern": "b*", "ttl_secs": 10 })),
+        )
+        .await;
+        assert_eq!(ttl.status, 200);
+        assert_eq!(ttl.body["updated"], 1);
+
+        let deleted = http_json(
+            &addr,
+            "POST",
+            "/keys/delete-by-pattern",
+            &[],
+            Some(serde_json::json!({ "pattern": "*" })),
+        )
+        .await;
+        assert_eq!(deleted.status, 200);
+        assert_eq!(deleted.body["deleted"], 3);
+
+        let missing = http_json(&addr, "GET", "/key/alpha", &[], None).await;
+        assert_eq!(missing.status, 404);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn http_auth_protects_non_ping_routes_and_allows_valid_credentials() {
+        let mut cfg = Config::default();
+        cfg.http_auth.username = Some("admin".into());
+        cfg.http_auth.password_hash = Some(bcrypt::hash("secret", bcrypt::DEFAULT_COST).unwrap());
+        let node = test_node(cfg);
+        let (addr, server) = spawn_http(node).await;
+
+        let ping = http_json(&addr, "GET", "/ping", &[], None).await;
+        assert_eq!(ping.status, 200);
+
+        let unauthorized = http_json(&addr, "GET", "/stats", &[], None).await;
+        assert_eq!(unauthorized.status, 401);
+
+        let authorized = http_json(
+            &addr,
+            "GET",
+            "/stats",
+            &[("authorization", basic_auth("admin", "secret"))],
+            None,
+        )
+        .await;
+        assert_eq!(authorized.status, 200);
+        assert_eq!(authorized.body["node_name"], "node-1");
+
+        server.abort();
+    }
+
+    #[test]
+    fn batch_limit_constant_matches_expected_guardrail() {
+        assert_eq!(MAX_BATCH_SET_ITEMS, 5_000);
     }
 }

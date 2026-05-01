@@ -4410,7 +4410,10 @@ mod tests {
     use crate::store::kv_store::ExportEntry;
     use crate::store::KvStore;
     use bytes::Bytes;
-    use ditto_protocol::{AdminRequest, AdminResponse, ClientRequest, ClientResponse, ErrorCode};
+    use ditto_protocol::{
+        AdminRequest, AdminResponse, ClientRequest, ClientResponse, ClusterMessage, ErrorCode,
+        LogEntry,
+    };
     use sha2::{Digest, Sha256};
     use std::sync::{atomic::Ordering, Arc};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -4637,8 +4640,8 @@ mod tests {
             },
         )];
         let data = serde_json::to_vec(&snapshot_entries).expect("serialize snapshot");
-        let file = std::path::Path::new(&backup_dir)
-            .join("test-node_backup_2099.01.01_00-00-00_UTC.json");
+        let file =
+            std::path::Path::new(&backup_dir).join("test-node_backup_2099.01.01_00-00-00_UTC.json");
         write_snapshot_with_checksum(&file, &data);
 
         let resp = Arc::clone(&node)
@@ -4686,8 +4689,8 @@ mod tests {
             },
         )];
         let data = serde_json::to_vec(&snapshot_entries).expect("serialize snapshot");
-        let file = std::path::Path::new(&backup_dir)
-            .join("test-node_backup_2099.01.01_00-00-00_UTC.json");
+        let file =
+            std::path::Path::new(&backup_dir).join("test-node_backup_2099.01.01_00-00-00_UTC.json");
         write_snapshot_with_checksum(&file, &data);
 
         let resp = Arc::clone(&node)
@@ -4736,8 +4739,8 @@ mod tests {
             ),
         ];
         let data = serde_json::to_vec(&snapshot_entries).expect("serialize snapshot");
-        let file = std::path::Path::new(&backup_dir)
-            .join("test-node_backup_2099.01.01_00-00-00_UTC.json");
+        let file =
+            std::path::Path::new(&backup_dir).join("test-node_backup_2099.01.01_00-00-00_UTC.json");
         write_snapshot_with_checksum(&file, &data);
 
         let resp = Arc::clone(&node)
@@ -5321,5 +5324,149 @@ mod tests {
             stats.namespace_quota_reject_trend.as_str(),
             "rising" | "surging"
         ));
+    }
+
+    #[tokio::test]
+    async fn cluster_prepare_commit_request_log_and_log_entries_apply_runtime_state() {
+        let node = test_node(Config::default());
+
+        let prepare = Arc::clone(&node)
+            .handle_cluster(ClusterMessage::Prepare {
+                log_index: 7,
+                key: "cluster-key".into(),
+                value: Some(Bytes::from_static(b"cluster-value")),
+                ttl_secs: Some(60),
+            })
+            .await;
+        assert!(matches!(
+            prepare,
+            Some(ClusterMessage::PrepareAck {
+                log_index: 7,
+                node_id
+            }) if node_id == node.id
+        ));
+
+        let commit = Arc::clone(&node)
+            .handle_cluster(ClusterMessage::Commit { log_index: 7 })
+            .await;
+        assert!(matches!(
+            commit,
+            Some(ClusterMessage::CommitAck {
+                log_index: 7,
+                node_id
+            }) if node_id == node.id
+        ));
+        assert_eq!(
+            node.store.get("cluster-key").unwrap().value,
+            Bytes::from_static(b"cluster-value")
+        );
+
+        let log_entries = Arc::clone(&node)
+            .handle_cluster(ClusterMessage::RequestLog { from_index: 6 })
+            .await;
+        assert!(matches!(
+            log_entries,
+            Some(ClusterMessage::LogEntries { ref entries })
+                if entries.len() == 1 && entries[0].key == "cluster-key"
+        ));
+
+        let applied = Arc::clone(&node)
+            .handle_cluster(ClusterMessage::LogEntries {
+                entries: vec![LogEntry {
+                    index: 8,
+                    key: "remote-key".into(),
+                    value: Some(Bytes::from_static(b"remote-value")),
+                    ttl_secs: None,
+                    ts_ms: 123,
+                }],
+            })
+            .await;
+        assert!(applied.is_none());
+        assert_eq!(
+            node.store.get("remote-key").unwrap().value,
+            Bytes::from_static(b"remote-value")
+        );
+
+        let force = Arc::clone(&node)
+            .handle_cluster(ClusterMessage::ForcePrimary { node_id: node.id })
+            .await;
+        assert!(force.is_none());
+        assert!(node.active_set.lock().await.is_primary());
+    }
+
+    #[tokio::test]
+    async fn admin_key_info_property_ttl_and_flush_paths_update_state() {
+        let node = test_node(Config::default());
+
+        let set = node
+            .handle_client(ClientRequest::Set {
+                key: "admin-key".into(),
+                value: Bytes::from_static(b"admin-value"),
+                ttl_secs: None,
+                namespace: None,
+            })
+            .await;
+        assert!(matches!(set, ClientResponse::Ok { .. }));
+
+        let key_info = Arc::clone(&node)
+            .handle_admin(AdminRequest::GetKeyInfo {
+                key: "admin-key".into(),
+            })
+            .await;
+        assert!(matches!(
+            key_info,
+            AdminResponse::KeyInfo {
+                ref key,
+                ref value,
+                compressed: false,
+                ..
+            } if key == "admin-key" && value == &Bytes::from_static(b"admin-value")
+        ));
+
+        let property = Arc::clone(&node)
+            .handle_admin(AdminRequest::SetKeyProperty {
+                key: "admin-key".into(),
+                name: "compressed".into(),
+                value: "true".into(),
+            })
+            .await;
+        assert!(matches!(property, AdminResponse::KeyPropertyUpdated));
+
+        let ttl = Arc::clone(&node)
+            .handle_admin(AdminRequest::SetKeysTtl {
+                pattern: "admin-*".into(),
+                ttl_secs: Some(30),
+            })
+            .await;
+        assert!(matches!(ttl, AdminResponse::TtlUpdated { updated: 1 }));
+
+        let keys = Arc::clone(&node)
+            .handle_admin(AdminRequest::ListKeys {
+                pattern: Some("admin-*".into()),
+            })
+            .await;
+        assert!(matches!(
+            keys,
+            AdminResponse::Keys(ref keys) if keys == &vec!["admin-key".to_string()]
+        ));
+
+        let active_flush = Arc::clone(&node)
+            .handle_admin(AdminRequest::FlushCache)
+            .await;
+        assert!(matches!(active_flush, AdminResponse::Error { .. }));
+
+        let inactive = Arc::clone(&node)
+            .handle_admin(AdminRequest::SetProperty {
+                name: "active".into(),
+                value: "false".into(),
+            })
+            .await;
+        assert!(matches!(inactive, AdminResponse::Ok));
+
+        let flushed = Arc::clone(&node)
+            .handle_admin(AdminRequest::FlushCache)
+            .await;
+        assert!(matches!(flushed, AdminResponse::Flushed));
+        assert!(node.store.keys(None).is_empty());
     }
 }

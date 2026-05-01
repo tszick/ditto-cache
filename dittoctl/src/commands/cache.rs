@@ -298,3 +298,150 @@ pub async fn run(cmd: CacheCommand, cfg: &CtlConfig, client: &reqwest::Client) -
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+
+    async fn http_response(body: &'static str) -> (String, tokio::task::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut stream).await;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            request
+        });
+
+        (format!("http://{addr}"), handle)
+    }
+
+    async fn read_request(stream: &mut tokio::net::TcpStream) -> String {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        let header_end;
+        loop {
+            let n = stream.read(&mut chunk).await.unwrap();
+            assert!(n > 0, "connection closed before headers");
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(pos) = find_header_end(&buf) {
+                header_end = pos;
+                break;
+            }
+        }
+
+        let headers = String::from_utf8_lossy(&buf[..header_end]).to_string();
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("content-length: ")
+                    .or_else(|| line.strip_prefix("Content-Length: "))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+            })
+            .unwrap_or(0);
+        let body_start = header_end + 4;
+        while buf.len() < body_start + content_length {
+            let n = stream.read(&mut chunk).await.unwrap();
+            assert!(n > 0, "connection closed before body");
+            buf.extend_from_slice(&chunk[..n]);
+        }
+
+        String::from_utf8_lossy(&buf).to_string()
+    }
+
+    fn find_header_end(buf: &[u8]) -> Option<usize> {
+        buf.windows(4).position(|w| w == b"\r\n\r\n")
+    }
+
+    fn cfg(base: String) -> CtlConfig {
+        let mut cfg = CtlConfig::default();
+        cfg.mgmt.url = base;
+        cfg
+    }
+
+    #[tokio::test]
+    async fn list_keys_sends_encoded_pattern_and_namespace_query() {
+        let (base, request) = http_response(r#"[{"addr":"node","keys":["alpha"]}]"#).await;
+        let cfg = cfg(base);
+        let client = reqwest::Client::new();
+
+        run(
+            CacheCommand::List {
+                what: "keys".into(),
+                target: "127.0.0.1:7779".into(),
+                pattern: Some("user:*".into()),
+                namespace: Some("tenant a".into()),
+            },
+            &cfg,
+            &client,
+        )
+        .await
+        .unwrap();
+
+        let request = request.await.unwrap();
+        assert!(request.starts_with(
+            "GET /api/cache/127.0.0.1%3A7779/keys?pattern=user%3A%2A&namespace=tenant%20a HTTP/1.1"
+        ));
+    }
+
+    #[tokio::test]
+    async fn set_key_sends_value_ttl_and_namespace() {
+        let (base, request) = http_response(r#"{"ok":true}"#).await;
+        let cfg = cfg(base);
+        let client = reqwest::Client::new();
+
+        run(
+            CacheCommand::Set {
+                target: "local".into(),
+                key: "alpha:1".into(),
+                value: "value".into(),
+                ttl: Some(60),
+                namespace: Some("tenant".into()),
+            },
+            &cfg,
+            &client,
+        )
+        .await
+        .unwrap();
+
+        let request = request.await.unwrap();
+        assert!(
+            request.starts_with("PUT /api/cache/local/keys/alpha%3A1?namespace=tenant HTTP/1.1")
+        );
+        assert!(request.contains(r#""value":"value""#));
+        assert!(request.contains(r#""ttl_secs":60"#));
+    }
+
+    #[tokio::test]
+    async fn set_compressed_posts_boolean_payload() {
+        let (base, request) = http_response(r#"[{"addr":"node","ok":true}]"#).await;
+        let cfg = cfg(base);
+        let client = reqwest::Client::new();
+
+        run(
+            CacheCommand::SetCompressed {
+                target: "local".into(),
+                key: "alpha".into(),
+                value: "false".into(),
+                namespace: None,
+            },
+            &cfg,
+            &client,
+        )
+        .await
+        .unwrap();
+
+        let request = request.await.unwrap();
+        assert!(request.starts_with("POST /api/cache/local/keys/alpha/compressed HTTP/1.1"));
+        assert!(request.contains(r#""compressed":false"#));
+    }
+}

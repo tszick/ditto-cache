@@ -583,4 +583,97 @@ mod tests {
         let err = decode_snapshot(&raw).expect_err("legacy unversioned snapshot must be rejected");
         assert!(err.to_string().contains("unsupported snapshot version"));
     }
+
+    #[test]
+    fn checksum_sidecar_paths_and_verification_cover_success_and_failures() {
+        let dir = unique_test_dir("checksum");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let snapshot = dir.join("node_backup.pb");
+        let data = b"snapshot bytes";
+        fs::write(&snapshot, data).expect("write snapshot");
+
+        assert_eq!(
+            checksum_sidecar_path(&snapshot).file_name().unwrap(),
+            "node_backup.pb.sha256"
+        );
+        assert_eq!(
+            checksum_sidecar_path(&dir.join("snapshot"))
+                .file_name()
+                .unwrap(),
+            "snapshot.sha256"
+        );
+
+        let missing = verify_checksum_sidecar(&snapshot, data).expect_err("missing sidecar");
+        assert!(missing
+            .to_string()
+            .contains("missing backup checksum sidecar"));
+
+        write_checksum_sidecar(&snapshot, data).expect("write checksum sidecar");
+        verify_checksum_sidecar(&snapshot, data).expect("matching checksum should verify");
+
+        fs::write(checksum_sidecar_path(&snapshot), "\n").expect("empty sidecar");
+        let empty = verify_checksum_sidecar(&snapshot, data).expect_err("empty digest");
+        assert!(empty
+            .to_string()
+            .contains("invalid backup checksum sidecar"));
+
+        fs::write(checksum_sidecar_path(&snapshot), "deadbeef\n").expect("bad digest");
+        let mismatch = verify_checksum_sidecar(&snapshot, data).expect_err("checksum mismatch");
+        assert!(mismatch.to_string().contains("backup checksum mismatch"));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn snapshot_decoder_rejects_malformed_protobuf() {
+        let err = decode_snapshot(b"not protobuf").expect_err("malformed protobuf");
+        assert!(
+            err.to_string()
+                .contains("failed to decode Protobuf message"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn encryption_round_trip_and_rejects_bad_inputs() {
+        let key = "00".repeat(32);
+        let wrong_key = "11".repeat(32);
+        let plaintext = b"portable backup payload";
+
+        let encrypted = encrypt_data(&key, plaintext).expect("encrypt");
+        assert!(encrypted.starts_with(MAGIC));
+        assert_eq!(decrypt_data(&key, &encrypted).expect("decrypt"), plaintext);
+
+        let err = encrypt_data("not-hex", plaintext).expect_err("invalid hex");
+        assert!(err.to_string().contains("not valid hex"));
+
+        let err = encrypt_data("00", plaintext).expect_err("short key");
+        assert!(err.to_string().contains("must be 32 bytes"));
+
+        let err = decrypt_data(&key, b"tiny").expect_err("short encrypted data");
+        assert!(err.to_string().contains("data too short"));
+
+        let mut bad_magic = encrypted.clone();
+        bad_magic[0] = b'X';
+        let err = decrypt_data(&key, &bad_magic).expect_err("bad magic");
+        assert!(err.to_string().contains("missing DENC magic header"));
+
+        let mut bad_version = encrypted.clone();
+        bad_version[4] = VERSION + 1;
+        let err = decrypt_data(&key, &bad_version).expect_err("bad version");
+        assert!(err
+            .to_string()
+            .contains("unsupported encrypted backup version"));
+
+        let err = decrypt_data(&wrong_key, &encrypted).expect_err("wrong key");
+        assert!(err.to_string().contains("AES-256-GCM decryption failed"));
+    }
+
+    fn unique_test_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("ditto-backup-test-{name}-{nanos}"))
+    }
 }

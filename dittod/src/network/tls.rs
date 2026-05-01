@@ -75,3 +75,84 @@ fn load_certs(path: &str) -> Result<Vec<CertificateDer<'static>>> {
 fn load_key(path: &str) -> Result<PrivateKeyDer<'static>> {
     PrivateKeyDer::from_pem_file(path).context("reading private key")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn unique_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("ditto-tls-test-{name}-{nanos}.pem"))
+    }
+
+    fn write_temp(name: &str, contents: &str) -> PathBuf {
+        let path = unique_path(name);
+        fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn cluster_server_name_is_expected_dns_name() {
+        let expected = ServerName::try_from("ditto-cluster").unwrap();
+        assert_eq!(cluster_server_name(), expected);
+    }
+
+    #[test]
+    fn load_certs_reports_missing_and_invalid_pem() {
+        let missing = unique_path("missing-cert");
+        let err = load_certs(missing.to_str().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("opening"));
+
+        let invalid = write_temp(
+            "invalid-cert",
+            "-----BEGIN CERTIFICATE-----\nnot-base64\n-----END CERTIFICATE-----\n",
+        );
+        let err = load_certs(invalid.to_str().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("reading PEM certificates"));
+        fs::remove_file(invalid).unwrap();
+    }
+
+    #[test]
+    fn load_key_reports_missing_and_invalid_pem() {
+        let missing = unique_path("missing-key");
+        let err = load_key(missing.to_str().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("reading private key"));
+
+        let invalid = write_temp("invalid-key", "not a pem");
+        let err = load_key(invalid.to_str().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("reading private key"));
+        fs::remove_file(invalid).unwrap();
+    }
+
+    #[test]
+    fn build_acceptor_and_connector_include_path_context_on_ca_failure() {
+        let cfg = TlsConfig {
+            enabled: true,
+            ca_cert: unique_path("missing-ca").to_string_lossy().into_owned(),
+            cert: "missing-cert.pem".into(),
+            key: "missing-key.pem".into(),
+        };
+
+        let acceptor_err = match build_acceptor(&cfg) {
+            Ok(_) => panic!("acceptor build unexpectedly succeeded"),
+            Err(err) => err.to_string(),
+        };
+        assert!(acceptor_err.contains("loading CA cert"));
+        assert!(acceptor_err.contains(&cfg.ca_cert));
+
+        let connector_err = match build_connector(&cfg) {
+            Ok(_) => panic!("connector build unexpectedly succeeded"),
+            Err(err) => err.to_string(),
+        };
+        assert!(connector_err.contains("loading CA cert"));
+        assert!(connector_err.contains(&cfg.ca_cert));
+    }
+}

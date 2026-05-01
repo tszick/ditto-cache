@@ -290,7 +290,9 @@ fn split_host_port(input: &str, default_port: u16) -> (String, u16) {
 
 #[cfg(test)]
 mod tests {
-    use super::{http_authority_for_target, is_configured_target};
+    use super::{http_authority_for_target, is_configured_target, is_valid_target, read_framed};
+    use ditto_protocol::{encode, AdminResponse, ClusterMessage};
+    use tokio::io::AsyncWriteExt;
 
     #[test]
     fn configured_target_allows_only_seed_hosts_by_default() {
@@ -318,5 +320,64 @@ mod tests {
             http_authority_for_target("169.254.169.254:7779", 7779, &seeds),
             None
         );
+    }
+
+    #[test]
+    fn target_validation_rejects_malformed_or_unsafe_hosts() {
+        assert!(is_valid_target("local"));
+        assert!(is_valid_target("all"));
+        assert!(is_valid_target("node_1.example:7779"));
+        assert!(is_valid_target("127.0.0.1:7779"));
+
+        assert!(!is_valid_target(""));
+        assert!(!is_valid_target(":7779"));
+        assert!(!is_valid_target("node-1:http"));
+        assert!(!is_valid_target("node/path"));
+        assert!(!is_valid_target("node?x=1"));
+        assert!(!is_valid_target("node#fragment"));
+    }
+
+    #[test]
+    fn http_authority_uses_local_seed_and_rejects_all() {
+        let seeds = vec!["localhost:9000".to_string()];
+
+        assert_eq!(
+            http_authority_for_target("local", 7779, &seeds),
+            Some("127.0.0.1:8999".to_string())
+        );
+        assert_eq!(http_authority_for_target("all", 7779, &seeds), None);
+    }
+
+    #[tokio::test]
+    async fn read_framed_decodes_cluster_message_payload() {
+        let (mut client, mut server) = tokio::io::duplex(1024);
+        let frame = encode(&ClusterMessage::AdminResponse(Box::new(AdminResponse::Ok))).unwrap();
+
+        let writer = tokio::spawn(async move {
+            client.write_all(&frame).await.unwrap();
+        });
+
+        let decoded = read_framed(&mut server).await.unwrap();
+        writer.await.unwrap();
+
+        assert!(matches!(
+            decoded,
+            ClusterMessage::AdminResponse(response) if matches!(*response, AdminResponse::Ok)
+        ));
+    }
+
+    #[tokio::test]
+    async fn read_framed_rejects_oversized_response_before_payload_read() {
+        let (mut client, mut server) = tokio::io::duplex(16);
+
+        let writer = tokio::spawn(async move {
+            let too_large = (128 * 1024 * 1024u32 + 1).to_be_bytes();
+            client.write_all(&too_large).await.unwrap();
+        });
+
+        let err = read_framed(&mut server).await.unwrap_err();
+        writer.await.unwrap();
+
+        assert!(err.to_string().contains("exceeds max"));
     }
 }

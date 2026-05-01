@@ -978,11 +978,79 @@ fn insecure_runtime_reason(props: &HashMap<String, String>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        build_describe_property_index, fmt_namespace_quota_top_usage, fmt_uptime,
-        insecure_runtime_reason, tcp_doctor_reason, top_quota_usage_pct,
-    };
+    use super::*;
     use serde_json::json;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+
+    async fn http_responses(
+        bodies: Vec<&'static str>,
+    ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for body in bodies {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_request(&mut stream).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                requests.push(request);
+            }
+            requests
+        });
+
+        (format!("http://{addr}"), handle)
+    }
+
+    async fn read_request(stream: &mut tokio::net::TcpStream) -> String {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        let header_end;
+        loop {
+            let n = stream.read(&mut chunk).await.unwrap();
+            assert!(n > 0, "connection closed before headers");
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(pos) = find_header_end(&buf) {
+                header_end = pos;
+                break;
+            }
+        }
+
+        let headers = String::from_utf8_lossy(&buf[..header_end]).to_string();
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("content-length: ")
+                    .or_else(|| line.strip_prefix("Content-Length: "))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+            })
+            .unwrap_or(0);
+        let body_start = header_end + 4;
+        while buf.len() < body_start + content_length {
+            let n = stream.read(&mut chunk).await.unwrap();
+            assert!(n > 0, "connection closed before body");
+            buf.extend_from_slice(&chunk[..n]);
+        }
+
+        String::from_utf8_lossy(&buf).to_string()
+    }
+
+    fn find_header_end(buf: &[u8]) -> Option<usize> {
+        buf.windows(4).position(|w| w == b"\r\n\r\n")
+    }
+
+    fn cfg(base: String) -> CtlConfig {
+        let mut cfg = CtlConfig::default();
+        cfg.mgmt.url = base;
+        cfg
+    }
 
     #[test]
     fn fmt_uptime_formats_short_and_long_ranges() {
@@ -1098,5 +1166,151 @@ mod tests {
             insecure_runtime_reason(&props).as_deref(),
             Some("insecure runtime bypass enabled")
         );
+    }
+
+    #[tokio::test]
+    async fn describe_and_list_ports_fetch_describe_endpoint() {
+        let (base, requests) = http_responses(vec![
+            r#"[{"addr":"node","properties":[["client-port","7777"],["cluster-port","7779"]]}]"#,
+            r#"[{"addr":"node","properties":[["client-port","7777"],["name","node-a"]]}]"#,
+        ])
+        .await;
+        let mut cfg = cfg(base);
+        let client = reqwest::Client::new();
+
+        run(
+            NodeCommand::Describe {
+                target: "127.0.0.1:7779".into(),
+            },
+            &mut cfg,
+            &client,
+        )
+        .await
+        .unwrap();
+        run(
+            NodeCommand::List {
+                what: "ports".into(),
+                target: "127.0.0.1:7779".into(),
+            },
+            &mut cfg,
+            &client,
+        )
+        .await
+        .unwrap();
+
+        let requests = requests.await.unwrap();
+        assert!(requests[0].starts_with("GET /api/nodes/127.0.0.1%3A7779/describe HTTP/1.1"));
+        assert!(requests[1].starts_with("GET /api/nodes/127.0.0.1%3A7779/describe HTTP/1.1"));
+    }
+
+    #[tokio::test]
+    async fn get_and_remote_set_property_use_encoded_property_endpoint() {
+        let (base, requests) = http_responses(vec![
+            r#"{"value":"Active"}"#,
+            r#"[{"addr":"node","ok":true}]"#,
+        ])
+        .await;
+        let mut cfg = cfg(base);
+        let client = reqwest::Client::new();
+
+        run(
+            NodeCommand::Get {
+                property: "runtime mode".into(),
+                target: "node-1:7779".into(),
+            },
+            &mut cfg,
+            &client,
+        )
+        .await
+        .unwrap();
+        run(
+            NodeCommand::Set {
+                property: "active".into(),
+                target: "node-1:7779".into(),
+                value: "false".into(),
+            },
+            &mut cfg,
+            &client,
+        )
+        .await
+        .unwrap();
+
+        let requests = requests.await.unwrap();
+        assert!(requests[0]
+            .starts_with("GET /api/nodes/node-1%3A7779/property/runtime%20mode HTTP/1.1"));
+        assert!(requests[1].starts_with("POST /api/nodes/node-1%3A7779/property/active HTTP/1.1"));
+        assert!(requests[1].contains(r#""value":"false""#));
+    }
+
+    #[tokio::test]
+    async fn backup_restore_and_status_hit_expected_node_endpoints() {
+        let (base, requests) = http_responses(vec![
+            r#"[{"addr":"node","ok":true,"path":"backup.json"}]"#,
+            r#"[{"addr":"node","ok":true,"path":"snapshot.json","entries":4,"duration_ms":12}]"#,
+            r#"[{"addr":"node","reachable":false}]"#,
+        ])
+        .await;
+        let mut cfg = cfg(base);
+        let client = reqwest::Client::new();
+
+        run(
+            NodeCommand::Backup {
+                target: "local".into(),
+            },
+            &mut cfg,
+            &client,
+        )
+        .await
+        .unwrap();
+        run(
+            NodeCommand::RestoreSnapshot {
+                target: "local".into(),
+            },
+            &mut cfg,
+            &client,
+        )
+        .await
+        .unwrap();
+        run(
+            NodeCommand::Status {
+                target: "local".into(),
+            },
+            &mut cfg,
+            &client,
+        )
+        .await
+        .unwrap();
+
+        let requests = requests.await.unwrap();
+        assert!(requests[0].starts_with("POST /api/nodes/local/backup HTTP/1.1"));
+        assert!(requests[1].starts_with("POST /api/nodes/local/restore-snapshot HTTP/1.1"));
+        assert!(requests[2].starts_with("GET /api/nodes/local/status HTTP/1.1"));
+    }
+
+    #[tokio::test]
+    async fn doctor_fetches_status_describe_and_cluster_and_succeeds_when_healthy() {
+        let (base, requests) = http_responses(vec![
+            r#"[{"addr":"node","reachable":true,"status":"Active","heartbeat_ms":12,"namespace_quota_reject_rate_per_min":0,"namespace_quota_reject_trend":"steady","namespace_quota_top_usage":[]}]"#,
+            r#"[{"addr":"node","properties":[["tcp-production-safe","true"],["insecure-runtime-enabled","false"]]}]"#,
+            r#"{"total":1,"active":1,"syncing":0,"inactive":0,"offline":0,"nodes":[]}"#,
+        ])
+        .await;
+        let mut cfg = cfg(base);
+        let client = reqwest::Client::new();
+
+        run(
+            NodeCommand::Doctor {
+                target: "local".into(),
+            },
+            &mut cfg,
+            &client,
+        )
+        .await
+        .unwrap();
+
+        let requests = requests.await.unwrap();
+        assert!(requests[0].starts_with("GET /api/nodes/local/status HTTP/1.1"));
+        assert!(requests[1].starts_with("GET /api/nodes/local/describe HTTP/1.1"));
+        assert!(requests[2].starts_with("GET /api/cluster HTTP/1.1"));
     }
 }

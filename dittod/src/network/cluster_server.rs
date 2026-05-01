@@ -138,3 +138,94 @@ where
         _ => Ok(None),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::do_cluster_rpc;
+    use ditto_protocol::{decode, encode, ClientRequest, ClusterMessage};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn do_cluster_rpc_writes_request_and_decodes_response() {
+        let (client, mut server) = tokio::io::duplex(4096);
+        let server_task = tokio::spawn(async move {
+            let mut len_buf = [0u8; 4];
+            server.read_exact(&mut len_buf).await.unwrap();
+            let len = u32::from_be_bytes(len_buf) as usize;
+            let mut payload = vec![0u8; len];
+            server.read_exact(&mut payload).await.unwrap();
+            let request: ClusterMessage = decode(&payload, 4096).unwrap();
+
+            let response = encode(&ClusterMessage::ForwardResponse(
+                ditto_protocol::ClientResponse::Pong,
+            ))
+            .unwrap();
+            server.write_all(&response).await.unwrap();
+            request
+        });
+
+        let response = do_cluster_rpc(
+            client,
+            &ClusterMessage::Forward {
+                request: ClientRequest::Ping,
+                origin_node: uuid::Uuid::from_u128(1),
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(matches!(
+            server_task.await.unwrap(),
+            ClusterMessage::Forward {
+                request: ClientRequest::Ping,
+                ..
+            }
+        ));
+        assert!(matches!(
+            response,
+            ClusterMessage::ForwardResponse(ditto_protocol::ClientResponse::Pong)
+        ));
+    }
+
+    #[tokio::test]
+    async fn do_cluster_rpc_returns_none_when_peer_closes_without_response() {
+        let (client, mut server) = tokio::io::duplex(1024);
+        let server_task = tokio::spawn(async move {
+            let mut len_buf = [0u8; 4];
+            server.read_exact(&mut len_buf).await.unwrap();
+            let len = u32::from_be_bytes(len_buf) as usize;
+            let mut payload = vec![0u8; len];
+            server.read_exact(&mut payload).await.unwrap();
+        });
+
+        let response = do_cluster_rpc(client, &ClusterMessage::RequestLog { from_index: 1 })
+            .await
+            .unwrap();
+        server_task.await.unwrap();
+
+        assert!(response.is_none());
+    }
+
+    #[tokio::test]
+    async fn do_cluster_rpc_rejects_oversized_response_length() {
+        let (client, mut server) = tokio::io::duplex(1024);
+        let server_task = tokio::spawn(async move {
+            let mut len_buf = [0u8; 4];
+            server.read_exact(&mut len_buf).await.unwrap();
+            let len = u32::from_be_bytes(len_buf) as usize;
+            let mut payload = vec![0u8; len];
+            server.read_exact(&mut payload).await.unwrap();
+
+            let too_large = (128 * 1024 * 1024u32 + 1).to_be_bytes();
+            server.write_all(&too_large).await.unwrap();
+        });
+
+        let err = do_cluster_rpc(client, &ClusterMessage::RequestLog { from_index: 1 })
+            .await
+            .unwrap_err();
+        server_task.await.unwrap();
+
+        assert!(err.to_string().contains("exceeds max"));
+    }
+}

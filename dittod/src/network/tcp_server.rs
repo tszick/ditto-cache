@@ -162,3 +162,109 @@ async fn read_frame(
         Err(_) => anyhow::bail!("timed out waiting for frame payload"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{namespaced_watch_key, read_frame};
+    use crate::{config::Config, node::NodeHandle, store::KvStore};
+    use ditto_protocol::{decode, encode, ClientRequest};
+    use std::sync::Arc;
+    use tokio::{
+        io::AsyncWriteExt,
+        net::{TcpListener, TcpStream},
+    };
+
+    async fn stream_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = tokio::spawn(async move { TcpStream::connect(addr).await.unwrap() });
+        let (server, _) = listener.accept().await.unwrap();
+        (client.await.unwrap(), server)
+    }
+
+    fn test_node(mut cfg: Config) -> Arc<NodeHandle> {
+        cfg.node.cluster_port = 17779;
+        let store = Arc::new(KvStore::new(
+            cfg.cache.max_memory_mb,
+            cfg.cache.default_ttl_secs,
+            cfg.cache.value_size_limit_bytes,
+            cfg.cache.max_keys,
+            cfg.compression.enabled,
+            cfg.compression.threshold_bytes,
+        ));
+        NodeHandle::new(
+            cfg,
+            "test-node.toml".into(),
+            store,
+            None,
+            "127.0.0.1".into(),
+        )
+    }
+
+    #[tokio::test]
+    async fn read_frame_decodes_payload_and_reports_clean_eof() {
+        let (mut client, mut server) = stream_pair().await;
+        let frame = encode(&ClientRequest::Ping).unwrap();
+        client.write_all(&frame).await.unwrap();
+
+        let payload = read_frame(&mut server, 1024, std::time::Duration::from_secs(1))
+            .await
+            .unwrap()
+            .unwrap();
+        let decoded: ClientRequest = decode(&payload, 1024).unwrap();
+        assert!(matches!(decoded, ClientRequest::Ping));
+
+        drop(client);
+        assert!(
+            read_frame(&mut server, 1024, std::time::Duration::from_secs(1))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn read_frame_rejects_oversized_payload_length() {
+        let (mut client, mut server) = stream_pair().await;
+        client.write_all(&9u32.to_be_bytes()).await.unwrap();
+
+        let err = read_frame(&mut server, 8, std::time::Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("exceeds max"));
+    }
+
+    #[tokio::test]
+    async fn read_frame_times_out_waiting_for_header() {
+        let (_client, mut server) = stream_pair().await;
+
+        let err = read_frame(&mut server, 8, std::time::Duration::from_millis(5))
+            .await
+            .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("timed out waiting for frame header"));
+    }
+
+    #[test]
+    fn namespaced_watch_key_honors_tenancy_settings() {
+        let disabled = test_node(Config::default());
+        assert_eq!(
+            namespaced_watch_key(&disabled, Some("tenant-a".into()), "alpha".into()),
+            "alpha"
+        );
+
+        let mut cfg = Config::default();
+        cfg.tenancy.enabled = true;
+        cfg.tenancy.default_namespace = "default-ns".into();
+        let enabled = test_node(cfg);
+        assert_eq!(
+            namespaced_watch_key(&enabled, Some(" tenant-a ".into()), "alpha".into()),
+            "tenant-a::alpha"
+        );
+        assert_eq!(
+            namespaced_watch_key(&enabled, None, "beta".into()),
+            "default-ns::beta"
+        );
+    }
+}

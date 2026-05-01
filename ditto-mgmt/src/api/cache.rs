@@ -638,3 +638,204 @@ fn node_http_request(
     }
     req
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{api::AppState, config::MgmtConfig};
+    use axum::{
+        body::to_bytes,
+        response::{IntoResponse, Response},
+    };
+    use ditto_protocol::{decode, encode, ClusterMessage};
+    use std::{net::SocketAddr, sync::Arc};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        sync::Mutex,
+    };
+
+    fn state_for_seed(seed: String, cluster_port: u16) -> SharedState {
+        let mut cfg = MgmtConfig::default();
+        cfg.connection.seeds = vec![seed];
+        cfg.connection.cluster_port = cluster_port;
+
+        Arc::new(AppState {
+            cfg: Arc::new(cfg),
+            tls: None,
+            http_client: reqwest::Client::new(),
+            addr_cache: Mutex::new(None),
+        })
+    }
+
+    async fn one_admin_response(
+        response: AdminResponse,
+    ) -> (SocketAddr, tokio::task::JoinHandle<AdminRequest>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut len_buf = [0u8; 4];
+            stream.read_exact(&mut len_buf).await.unwrap();
+            let len = u32::from_be_bytes(len_buf) as usize;
+            let mut payload = vec![0u8; len];
+            stream.read_exact(&mut payload).await.unwrap();
+
+            let request = match decode::<ClusterMessage>(&payload, 1024 * 1024).unwrap() {
+                ClusterMessage::Admin(req) => req,
+                other => panic!("unexpected request: {other:?}"),
+            };
+
+            let frame = encode(&ClusterMessage::AdminResponse(Box::new(response))).unwrap();
+            stream.write_all(&frame).await.unwrap();
+            request
+        });
+
+        (addr, handle)
+    }
+
+    async fn json_body(response: Response) -> serde_json::Value {
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn list_keys_applies_namespace_pattern_and_strips_response_prefixes() {
+        let (addr, handle) = one_admin_response(AdminResponse::Keys(vec![
+            "tenant::alpha".into(),
+            "tenant::nested::beta".into(),
+            "other::gamma".into(),
+        ]))
+        .await;
+        let state = state_for_seed(addr.to_string(), addr.port());
+
+        let response = list_keys(
+            State(state),
+            Path(addr.to_string()),
+            Query(ListKeysQuery {
+                pattern: Some("*".into()),
+            }),
+            Query(NamespaceQuery {
+                namespace: Some(" tenant ".into()),
+            }),
+        )
+        .await
+        .into_response();
+
+        let request = handle.await.unwrap();
+        assert!(matches!(
+            request,
+            AdminRequest::ListKeys {
+                pattern: Some(ref pattern)
+            } if pattern == "tenant::*"
+        ));
+
+        let body = json_body(response).await;
+        assert_eq!(body[0]["addr"], addr.to_string());
+        assert_eq!(
+            body[0]["keys"],
+            serde_json::json!(["alpha", "nested::beta", "other::gamma"])
+        );
+    }
+
+    #[tokio::test]
+    async fn set_compressed_sends_namespaced_admin_property_update() {
+        let (addr, handle) = one_admin_response(AdminResponse::KeyPropertyUpdated).await;
+        let state = state_for_seed(addr.to_string(), addr.port());
+
+        let response = set_compressed(
+            State(state),
+            Path((addr.to_string(), "alpha".into())),
+            Query(NamespaceQuery {
+                namespace: Some("tenant".into()),
+            }),
+            Json(SetCompressedBody { compressed: true }),
+        )
+        .await
+        .into_response();
+
+        let request = handle.await.unwrap();
+        assert!(matches!(
+            request,
+            AdminRequest::SetKeyProperty {
+                ref key,
+                ref name,
+                ref value
+            } if key == "tenant::alpha" && name == "compressed" && value == "true"
+        ));
+
+        let body = json_body(response).await;
+        assert_eq!(body[0]["ok"], true);
+        assert_eq!(body[0]["error"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn set_keys_ttl_sends_namespaced_pattern() {
+        let (addr, handle) = one_admin_response(AdminResponse::TtlUpdated { updated: 3 }).await;
+        let state = state_for_seed(addr.to_string(), addr.port());
+
+        let response = set_keys_ttl(
+            State(state),
+            Path(addr.to_string()),
+            Query(NamespaceQuery {
+                namespace: Some("tenant".into()),
+            }),
+            Json(SetTtlBody {
+                pattern: "session:*".into(),
+                ttl_secs: Some(60),
+            }),
+        )
+        .await
+        .into_response();
+
+        let request = handle.await.unwrap();
+        assert!(matches!(
+            request,
+            AdminRequest::SetKeysTtl {
+                ref pattern,
+                ttl_secs: Some(60)
+            } if pattern == "tenant::session:*"
+        ));
+
+        let body = json_body(response).await;
+        assert_eq!(body[0]["updated"], 3);
+        assert_eq!(body[0]["error"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn single_key_handlers_reject_invalid_keys_before_proxying() {
+        let state = state_for_seed("127.0.0.1:7779".into(), 7779);
+
+        let get_response = get_key(
+            State(Arc::clone(&state)),
+            Path(("127.0.0.1:7779".into(), "../secret".into())),
+            Query(NamespaceQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(get_response.status(), StatusCode::BAD_REQUEST);
+
+        let set_response = set_key(
+            State(Arc::clone(&state)),
+            Path(("127.0.0.1:7779".into(), "bad/key".into())),
+            Query(NamespaceQuery::default()),
+            Json(SetKeyBody {
+                value: "value".into(),
+                ttl_secs: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(set_response.status(), StatusCode::BAD_REQUEST);
+
+        let delete_response = delete_key(
+            State(state),
+            Path(("127.0.0.1:7779".into(), "".into())),
+            Query(NamespaceQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(delete_response.status(), StatusCode::BAD_REQUEST);
+    }
+}

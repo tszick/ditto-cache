@@ -659,8 +659,10 @@ fn glob_match(pattern: &str, s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{KvStore, MAX_TTL_SECS};
+    use super::{Entry, ExportEntry, KvStore, LimitError, MAX_TTL_SECS};
     use bytes::Bytes;
+    use lz4_flex::compress_prepend_size;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     #[test]
     fn set_ttl_by_pattern_clamps_extreme_ttl() {
@@ -680,5 +682,327 @@ mod tests {
             .expect("ttl should be set");
         assert!(ttl <= MAX_TTL_SECS);
         assert!(ttl >= MAX_TTL_SECS.saturating_sub(1));
+    }
+
+    #[test]
+    fn limits_runtime_setters_and_stats_track_hits_misses_and_limits() {
+        let store = KvStore::new(1, 0, 4, 1, false, 4096);
+
+        assert_eq!(
+            store.check_limits("oversized", &Bytes::from_static(b"12345")),
+            Err(LimitError::ValueTooLarge)
+        );
+        store.set("alpha".to_string(), Bytes::from_static(b"one"), 1, None);
+        assert_eq!(
+            store.check_limits("beta", &Bytes::from_static(b"two")),
+            Err(LimitError::KeyLimitReached)
+        );
+        assert!(store
+            .check_limits("alpha", &Bytes::from_static(b"two"))
+            .is_ok());
+
+        assert!(store.get("alpha").is_some());
+        assert!(store.get("missing").is_none());
+        let stats = store.stats();
+        assert_eq!(stats.key_count, 1);
+        assert_eq!(stats.hit_count, 1);
+        assert_eq!(stats.miss_count, 1);
+        assert_eq!(stats.value_size_limit_bytes, 4);
+        assert_eq!(stats.max_keys_limit, 1);
+
+        store.set_value_size_limit(8);
+        store.set_max_keys(2);
+        store.set_compression_enabled(true);
+        store.set_compression_threshold(4096).unwrap();
+        let stats = store.stats();
+        assert_eq!(stats.value_size_limit_bytes, 8);
+        assert_eq!(stats.max_keys_limit, 2);
+        assert!(stats.compression_enabled);
+        assert_eq!(stats.compression_threshold_bytes, 4096);
+    }
+
+    #[test]
+    fn compression_paths_decompress_for_read_and_manual_toggles_are_idempotent() {
+        let store = KvStore::new(1, 0, 1024, 10, true, 4);
+        let value = Bytes::from_static(b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        store.set("compressed".to_string(), value.clone(), 7, None);
+
+        assert_eq!(store.is_compressed("compressed"), Some(true));
+        let read = store
+            .get("compressed")
+            .expect("compressed key should exist");
+        assert_eq!(read.value, value);
+        assert!(!read.compressed);
+        assert_eq!(store.is_compressed("compressed"), Some(true));
+
+        store
+            .set_key_compressed("compressed", false)
+            .expect("manual decompression should work");
+        assert_eq!(store.is_compressed("compressed"), Some(false));
+        store
+            .set_key_compressed("compressed", false)
+            .expect("already decompressed is ok");
+
+        store
+            .set_key_compressed("compressed", true)
+            .expect("manual compression should work");
+        assert_eq!(store.is_compressed("compressed"), Some(true));
+        store
+            .set_key_compressed("compressed", true)
+            .expect("already compressed is ok");
+        assert_eq!(
+            store.set_key_compressed("missing", true),
+            Err("key not found")
+        );
+    }
+
+    #[test]
+    fn decompression_guards_return_raw_bytes_or_errors_for_invalid_payloads() {
+        let store = KvStore::new(1, 0, 8, 10, false, 4096);
+        let valid_large = Bytes::from(compress_prepend_size(b"this is too large"));
+        {
+            let mut inner = store.inner.lock().unwrap();
+            inner.data.insert(
+                "bomb".to_string(),
+                Entry {
+                    value: valid_large.clone(),
+                    version: 1,
+                    expires_at: None,
+                    freq_count: 1,
+                    compressed: true,
+                },
+            );
+            inner.lfu.insert("bomb");
+            inner.used_bytes += super::entry_size("bomb", &valid_large);
+        }
+
+        let guarded = store.get("bomb").expect("bomb key should exist");
+        assert_eq!(guarded.value, valid_large);
+        assert!(guarded.compressed);
+        assert_eq!(
+            store.set_key_compressed("bomb", false),
+            Err("decompressed size exceeds limit")
+        );
+
+        let mut invalid_payload = 3u32.to_le_bytes().to_vec();
+        invalid_payload.extend_from_slice(b"bad-lz4");
+        let invalid = Bytes::from(invalid_payload);
+        {
+            let mut inner = store.inner.lock().unwrap();
+            inner.data.insert(
+                "invalid\nkey".to_string(),
+                Entry {
+                    value: invalid.clone(),
+                    version: 2,
+                    expires_at: None,
+                    freq_count: 1,
+                    compressed: true,
+                },
+            );
+            inner.lfu.insert("invalid\nkey");
+            inner.used_bytes += super::entry_size("invalid\nkey", &invalid);
+        }
+
+        let raw = store.get("invalid\nkey").expect("invalid key should exist");
+        assert_eq!(raw.value, invalid);
+        assert!(raw.compressed);
+        assert_eq!(
+            store.set_key_compressed("invalid\nkey", false),
+            Err("decompression failed")
+        );
+        assert_eq!(super::sanitize_for_log("bad\nkey\rname"), "badkeyname");
+    }
+
+    #[test]
+    fn keys_delete_flush_expiry_and_glob_matching_cover_store_lifecycle() {
+        let store = KvStore::new(1, 0, 1024, 10, false, 4096);
+        store.set("tenant:a:1".to_string(), Bytes::from_static(b"a"), 1, None);
+        store.set("tenant:a:2".to_string(), Bytes::from_static(b"b"), 2, None);
+        store.set(
+            "tenant:b:1".to_string(),
+            Bytes::from_static(b"c"),
+            3,
+            Some(1),
+        );
+
+        assert_eq!(
+            sorted(store.keys(Some("tenant:a:*"))),
+            vec!["tenant:a:1".to_string(), "tenant:a:2".to_string()]
+        );
+        assert_eq!(
+            sorted(store.keys(Some("*:b:*"))),
+            vec!["tenant:b:1".to_string()]
+        );
+        assert_eq!(
+            sorted(store.keys(Some("tenant:*:2"))),
+            vec!["tenant:a:2".to_string()]
+        );
+        assert!(store.keys(Some("tenant:c:*")).is_empty());
+
+        assert!(store.delete("tenant:a:1"));
+        assert!(!store.delete("tenant:a:1"));
+        assert!(store.get("tenant:a:1").is_none());
+
+        std::thread::sleep(Duration::from_millis(1100));
+        assert!(store.get("tenant:b:1").is_none());
+        let stats = store.stats();
+        assert_eq!(stats.key_count, 1);
+        assert!(stats.miss_count >= 2);
+
+        store.flush();
+        let stats = store.stats();
+        assert_eq!(stats.key_count, 0);
+        assert_eq!(stats.memory_used_bytes, 0);
+    }
+
+    #[test]
+    fn snapshot_restore_default_ttl_and_pattern_ttl_skip_expired_entries() {
+        let store = KvStore::new(1, 1, 1024, 10, false, 4096);
+        store.set("default-ttl".to_string(), Bytes::from_static(b"v"), 1, None);
+        let ttl = store
+            .get("default-ttl")
+            .and_then(|entry| entry.ttl_remaining_secs())
+            .expect("default ttl should apply");
+        assert!(ttl <= 1);
+
+        store.set_default_ttl_secs(0);
+        store.set("no-ttl".to_string(), Bytes::from_static(b"v"), 2, None);
+        assert!(store
+            .get("no-ttl")
+            .expect("key should exist")
+            .ttl_remaining_secs()
+            .is_none());
+
+        let future_ms = (SystemTime::now() + Duration::from_secs(60))
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let past_ms = (SystemTime::now() - Duration::from_secs(60))
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let restored = KvStore::new(1, 0, 1024, 10, false, 4096);
+        restored.restore(vec![
+            (
+                "future".to_string(),
+                ExportEntry {
+                    value: b"future".to_vec(),
+                    version: 3,
+                    expires_at_ms: Some(future_ms),
+                },
+            ),
+            (
+                "past".to_string(),
+                ExportEntry {
+                    value: b"past".to_vec(),
+                    version: 4,
+                    expires_at_ms: Some(past_ms),
+                },
+            ),
+        ]);
+
+        assert_eq!(
+            restored.get("future").unwrap().value,
+            Bytes::from_static(b"future")
+        );
+        assert!(restored
+            .get("past")
+            .expect("past restore timestamp becomes non-expiring")
+            .ttl_remaining_secs()
+            .is_none());
+
+        restored.set(
+            "expired".to_string(),
+            Bytes::from_static(b"expired"),
+            5,
+            Some(1),
+        );
+        std::thread::sleep(Duration::from_millis(1100));
+        assert_eq!(restored.set_ttl_by_pattern("*", Some(5)), 2);
+        assert!(restored.get("expired").is_none());
+
+        let snapshot = restored.snapshot();
+        let future = snapshot
+            .iter()
+            .find(|(key, _)| key == "future")
+            .expect("future entry should be exported");
+        assert_eq!(future.1.value, b"future");
+        assert_eq!(future.1.version, 3);
+        assert!(future.1.expires_at_ms.is_some());
+    }
+
+    #[test]
+    fn memory_cap_eviction_prefers_least_frequently_used_existing_key() {
+        let store = KvStore::new(1, 0, 1024, 10, false, 4096);
+        store.set("hot".to_string(), Bytes::from_static(b"hot"), 1, None);
+        store.set("cold".to_string(), Bytes::from_static(b"cold"), 2, None);
+        assert!(store.get("hot").is_some());
+
+        {
+            let mut inner = store.inner.lock().unwrap();
+            inner.max_bytes = super::entry_size("hot", &Bytes::from_static(b"hot"))
+                + super::entry_size("new", &Bytes::from_static(b"new"))
+                + 5;
+        }
+
+        assert!(store.get("hot").is_some());
+        assert!(store.get("cold").is_some());
+        store.set("new".to_string(), Bytes::from_static(b"new"), 3, None);
+
+        assert!(store.get("hot").is_some());
+        assert!(store.get("cold").is_none());
+        assert!(store.get("new").is_some());
+        assert!(store.stats().evictions >= 1);
+    }
+
+    #[test]
+    fn compression_threshold_only_increases_from_minimum() {
+        let store = KvStore::new(1, 0, 1024, 10, false, 1024);
+
+        assert_eq!(
+            store.set_compression_threshold(2048),
+            Err("threshold can only be increased; minimum is 4096 bytes")
+        );
+        assert_eq!(store.set_compression_threshold(4096), Ok(4096));
+        assert_eq!(
+            store.set_compression_threshold(4095),
+            Err("threshold can only be increased; minimum is 4096 bytes")
+        );
+        assert_eq!(store.set_compression_threshold(8192), Ok(8192));
+        assert_eq!(store.stats().compression_threshold_bytes, 8192);
+    }
+
+    #[test]
+    fn export_entry_handles_corrupt_or_oversized_compressed_payloads() {
+        let corrupt = Entry {
+            value: Bytes::from_static(b"bad-lz4"),
+            version: 1,
+            expires_at: Some(Instant::now() - Duration::from_secs(1)),
+            freq_count: 9,
+            compressed: true,
+        };
+        let exported = ExportEntry::from(&corrupt);
+        assert_eq!(exported.value, b"bad-lz4");
+        assert_eq!(exported.version, 1);
+        assert!(exported.expires_at_ms.is_some());
+
+        let mut oversized = (u32::MAX).to_le_bytes().to_vec();
+        oversized.extend_from_slice(b"payload");
+        let entry = Entry {
+            value: Bytes::from(oversized.clone()),
+            version: 2,
+            expires_at: None,
+            freq_count: 1,
+            compressed: true,
+        };
+        let exported = ExportEntry::from(&entry);
+        assert_eq!(exported.value, oversized);
+        assert_eq!(entry.freq_count, 1);
+    }
+
+    fn sorted(keys: Vec<String>) -> Vec<String> {
+        let mut keys = keys;
+        keys.sort();
+        keys
     }
 }
