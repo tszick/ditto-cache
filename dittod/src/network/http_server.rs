@@ -564,6 +564,22 @@ mod tests {
             status_for_error(&ErrorCode::NoQuorum),
             StatusCode::SERVICE_UNAVAILABLE
         );
+        assert_eq!(
+            status_for_error(&ErrorCode::NodeInactive),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            status_for_error(&ErrorCode::KeyNotFound),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status_for_error(&ErrorCode::WriteTimeout),
+            StatusCode::GATEWAY_TIMEOUT
+        );
+        assert_eq!(
+            status_for_error(&ErrorCode::ValueTooLarge),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 
     #[test]
@@ -739,6 +755,25 @@ mod tests {
         .await;
         assert_eq!(empty_batch.status, 400);
 
+        let too_many_batch = http_json(
+            &addr,
+            "POST",
+            "/keys/batch",
+            &[],
+            Some(serde_json::json!({
+                "items": (0..=MAX_BATCH_SET_ITEMS)
+                    .map(|idx| serde_json::json!({
+                        "key": format!("key-{idx}"),
+                        "value": "value",
+                        "ttl_secs": null
+                    }))
+                    .collect::<Vec<_>>()
+            })),
+        )
+        .await;
+        assert_eq!(too_many_batch.status, 400);
+        assert_eq!(too_many_batch.body["error"], "too_many_items");
+
         let batch = http_json(
             &addr,
             "POST",
@@ -779,6 +814,19 @@ mod tests {
 
         let missing = http_json(&addr, "GET", "/key/alpha", &[], None).await;
         assert_eq!(missing.status, 404);
+
+        let delete_missing = http_json(&addr, "DELETE", "/key/missing", &[], None).await;
+        assert_eq!(delete_missing.status, 204);
+
+        let health = http_json(&addr, "GET", "/health/summary", &[], None).await;
+        assert_eq!(health.status, 200);
+        assert_eq!(health.body["availability"], "ready");
+        assert_eq!(health.body["tcp_production_safe"], false);
+        assert_eq!(
+            health.body["tcp_supported_topology"],
+            "unsupported-for-production"
+        );
+        assert_eq!(health.body["strict_security_enforced"], true);
 
         server.abort();
     }

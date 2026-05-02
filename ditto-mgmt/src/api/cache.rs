@@ -668,6 +668,15 @@ mod tests {
         })
     }
 
+    fn state_with_cfg(cfg: MgmtConfig) -> SharedState {
+        Arc::new(AppState {
+            cfg: Arc::new(cfg),
+            tls: None,
+            http_client: reqwest::Client::new(),
+            addr_cache: Mutex::new(None),
+        })
+    }
+
     async fn one_admin_response(
         response: AdminResponse,
     ) -> (SocketAddr, tokio::task::JoinHandle<AdminRequest>) {
@@ -695,9 +704,147 @@ mod tests {
         (addr, handle)
     }
 
+    async fn one_http_response(
+        status: &str,
+        body: &str,
+    ) -> (SocketAddr, tokio::task::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let status = status.to_string();
+        let body = body.to_string();
+
+        let handle = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0u8; 512];
+            loop {
+                let n = stream.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let header_end = request
+                .windows(4)
+                .position(|w| w == b"\r\n\r\n")
+                .map(|pos| pos + 4)
+                .unwrap_or(request.len());
+            let header_text = String::from_utf8_lossy(&request[..header_end]);
+            let content_len = header_text
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix("content-length:")
+                        .or_else(|| line.strip_prefix("Content-Length:"))
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                })
+                .unwrap_or(0);
+            while request.len().saturating_sub(header_end) < content_len {
+                let n = stream.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+            }
+
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            String::from_utf8_lossy(&request).to_string()
+        });
+
+        (addr, handle)
+    }
+
+    fn proxy_state_for_http_addr(http_addr: SocketAddr) -> SharedState {
+        let cluster_port = http_addr.port() + 1;
+        state_for_seed(format!("127.0.0.1:{cluster_port}"), cluster_port)
+    }
+
     async fn json_body(response: Response) -> serde_json::Value {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&body).unwrap()
+    }
+
+    #[test]
+    fn cache_key_url_and_namespace_helpers_cover_edge_cases() {
+        assert!(is_valid_cache_key("user:42.alpha_beta-1"));
+        assert!(!is_valid_cache_key(""));
+        assert!(!is_valid_cache_key("nested/key"));
+        assert!(!is_valid_cache_key("white space"));
+
+        assert_eq!(encode_key_for_url("user:42"), "user%3A42");
+        assert_eq!(
+            normalize_namespace(Some(" tenant ".into())).as_deref(),
+            Some("tenant")
+        );
+        assert_eq!(normalize_namespace(Some("   ".into())), None);
+        assert_eq!(
+            namespaced_key(&Some("tenant".into()), "alpha"),
+            "tenant::alpha"
+        );
+        assert_eq!(
+            namespaced_pattern(&Some("tenant".into()), None).as_deref(),
+            Some("tenant::*")
+        );
+        assert_eq!(
+            namespaced_pattern(&None, Some("user:*".into())).as_deref(),
+            Some("user:*")
+        );
+        assert_eq!(
+            strip_namespace_prefix(&Some("tenant".into()), "tenant::alpha".into()),
+            "alpha"
+        );
+        assert_eq!(
+            strip_namespace_prefix(&Some("tenant".into()), "other::alpha".into()),
+            "other::alpha"
+        );
+    }
+
+    #[test]
+    fn node_http_request_applies_optional_basic_auth_and_namespace_header() {
+        let mut cfg = MgmtConfig::default();
+        cfg.http_client_auth.username = Some("node-user".into());
+        cfg.http_client_auth.password = Some("node-pass".into());
+        let state = state_with_cfg(cfg);
+
+        let request = node_http_request(
+            state.http_client.get("http://127.0.0.1:7778/key/alpha"),
+            &state,
+            Some("tenant".into()),
+        )
+        .build()
+        .unwrap();
+
+        assert_eq!(
+            request
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .unwrap(),
+            "Basic bm9kZS11c2VyOm5vZGUtcGFzcw=="
+        );
+        assert_eq!(request.headers().get(NAMESPACE_HEADER).unwrap(), "tenant");
+
+        let no_auth_state = state_for_seed("127.0.0.1:7779".into(), 7779);
+        let request = node_http_request(
+            no_auth_state
+                .http_client
+                .get("http://127.0.0.1:7778/key/alpha"),
+            &no_auth_state,
+            Some("bad\r\nnamespace".into()),
+        )
+        .build()
+        .unwrap();
+        assert!(request
+            .headers()
+            .get(reqwest::header::AUTHORIZATION)
+            .is_none());
+        assert!(request.headers().get(NAMESPACE_HEADER).is_none());
     }
 
     #[tokio::test]
@@ -771,6 +918,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn set_compressed_formats_not_found_error_and_unexpected_response() {
+        let (missing_addr, missing_handle) = one_admin_response(AdminResponse::NotFound).await;
+        let missing_state = state_for_seed(missing_addr.to_string(), missing_addr.port());
+        let response = set_compressed(
+            State(missing_state),
+            Path((missing_addr.to_string(), "alpha".into())),
+            Query(NamespaceQuery::default()),
+            Json(SetCompressedBody { compressed: false }),
+        )
+        .await
+        .into_response();
+        assert!(matches!(
+            missing_handle.await.unwrap(),
+            AdminRequest::SetKeyProperty { .. }
+        ));
+        let body = json_body(response).await;
+        assert_eq!(body[0]["ok"], false);
+        assert_eq!(body[0]["error"], "key not found");
+
+        let (unexpected_addr, unexpected_handle) = one_admin_response(AdminResponse::Flushed).await;
+        let unexpected_state = state_for_seed(unexpected_addr.to_string(), unexpected_addr.port());
+        let response = set_compressed(
+            State(unexpected_state),
+            Path((unexpected_addr.to_string(), "alpha".into())),
+            Query(NamespaceQuery::default()),
+            Json(SetCompressedBody { compressed: false }),
+        )
+        .await
+        .into_response();
+        assert!(matches!(
+            unexpected_handle.await.unwrap(),
+            AdminRequest::SetKeyProperty { .. }
+        ));
+        let body = json_body(response).await;
+        assert_eq!(body[0]["ok"], false);
+        assert_eq!(body[0]["error"], "unexpected response");
+    }
+
+    #[tokio::test]
     async fn set_keys_ttl_sends_namespaced_pattern() {
         let (addr, handle) = one_admin_response(AdminResponse::TtlUpdated { updated: 3 }).await;
         let state = state_for_seed(addr.to_string(), addr.port());
@@ -801,6 +987,107 @@ mod tests {
         let body = json_body(response).await;
         assert_eq!(body[0]["updated"], 3);
         assert_eq!(body[0]["error"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn set_keys_ttl_formats_unexpected_response() {
+        let (addr, handle) = one_admin_response(AdminResponse::Flushed).await;
+        let state = state_for_seed(addr.to_string(), addr.port());
+
+        let response = set_keys_ttl(
+            State(state),
+            Path(addr.to_string()),
+            Query(NamespaceQuery::default()),
+            Json(SetTtlBody {
+                pattern: "*".into(),
+                ttl_secs: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert!(matches!(
+            handle.await.unwrap(),
+            AdminRequest::SetKeysTtl { .. }
+        ));
+        let body = json_body(response).await;
+        assert_eq!(body[0]["updated"], 0);
+        assert_eq!(body[0]["error"], "unexpected response");
+    }
+
+    #[tokio::test]
+    async fn get_key_proxies_successful_node_http_response() {
+        let (http_addr, handle) = one_http_response("200 OK", "value-body").await;
+        let state = proxy_state_for_http_addr(http_addr);
+
+        let response = get_key(
+            State(state),
+            Path((
+                format!("127.0.0.1:{}", http_addr.port() + 1),
+                "user:42".into(),
+            )),
+            Query(NamespaceQuery {
+                namespace: Some("tenant".into()),
+            }),
+        )
+        .await
+        .into_response();
+
+        let request = handle.await.unwrap();
+        assert!(request.starts_with("GET /key/user%3A42 HTTP/1.1"));
+        assert!(request.contains("x-ditto-namespace: tenant"));
+        let body = json_body(response).await;
+        assert_eq!(body["value"], "value-body");
+    }
+
+    #[tokio::test]
+    async fn set_key_proxies_value_ttl_and_success_status() {
+        let (http_addr, handle) = one_http_response("204 No Content", "").await;
+        let state = proxy_state_for_http_addr(http_addr);
+
+        let response = set_key(
+            State(state),
+            Path((
+                format!("127.0.0.1:{}", http_addr.port() + 1),
+                "alpha".into(),
+            )),
+            Query(NamespaceQuery::default()),
+            Json(SetKeyBody {
+                value: "stored-value".into(),
+                ttl_secs: Some(30),
+            }),
+        )
+        .await
+        .into_response();
+
+        let request = handle.await.unwrap();
+        assert!(request.starts_with("PUT /key/alpha?ttl=30 HTTP/1.1"));
+        assert!(request.ends_with("stored-value"));
+        let body = json_body(response).await;
+        assert_eq!(body["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn delete_key_preserves_node_http_error_status_and_body() {
+        let (http_addr, handle) = one_http_response("404 Not Found", "missing").await;
+        let state = proxy_state_for_http_addr(http_addr);
+
+        let response = delete_key(
+            State(state),
+            Path((
+                format!("127.0.0.1:{}", http_addr.port() + 1),
+                "alpha".into(),
+            )),
+            Query(NamespaceQuery::default()),
+        )
+        .await
+        .into_response();
+
+        let request = handle.await.unwrap();
+        assert!(request.starts_with("DELETE /key/alpha HTTP/1.1"));
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = json_body(response).await;
+        assert_eq!(body["error"], "missing");
     }
 
     #[tokio::test]

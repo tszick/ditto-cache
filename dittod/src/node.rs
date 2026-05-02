@@ -4404,7 +4404,8 @@ fn dir_size_bytes(path: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        CircuitState, ClientRequestSource, GetFlight, NodeHandle, TokenBucket, PROTOCOL_VERSION,
+        CircuitState, ClientRequestSource, GetFlight, NodeHandle, TokenBucket, HOT_KEY_STATE_MAX,
+        NAMESPACE_LATENCY_STATE_MAX, PROTOCOL_VERSION,
     };
     use crate::config::{Config, WriteQuorumMode};
     use crate::store::kv_store::ExportEntry;
@@ -4412,7 +4413,7 @@ mod tests {
     use bytes::Bytes;
     use ditto_protocol::{
         AdminRequest, AdminResponse, ClientRequest, ClientResponse, ClusterMessage, ErrorCode,
-        LogEntry, NodeStatus,
+        LogEntry, NamespaceQuotaUsage, NodeStatus,
     };
     use sha2::{Digest, Sha256};
     use std::sync::{atomic::Ordering, Arc};
@@ -5323,6 +5324,121 @@ mod tests {
             stats.namespace_quota_reject_trend.as_str(),
             "rising" | "surging"
         ));
+    }
+
+    #[tokio::test]
+    async fn latency_and_hot_key_top_helpers_format_ranked_summaries() {
+        let node = test_node(Config::default());
+
+        for _ in 0..3 {
+            node.observe_namespace_latency(Some("tenant-a"), 0);
+            node.observe_hot_key_usage(Some("tenant-a::alpha"));
+        }
+        node.observe_namespace_latency(Some("tenant-b"), 5);
+        node.observe_hot_key_usage(Some("tenant-b::beta"));
+        node.observe_namespace_latency(None, 2);
+        node.observe_hot_key_usage(None);
+
+        assert_eq!(NodeHandle::latency_bucket_index(0), 0);
+        assert_eq!(NodeHandle::latency_bucket_index(5), 1);
+        assert_eq!(NodeHandle::latency_bucket_index(20), 2);
+        assert_eq!(NodeHandle::latency_bucket_index(100), 3);
+        assert_eq!(NodeHandle::latency_bucket_index(500), 4);
+        assert_eq!(NodeHandle::latency_bucket_index(501), 5);
+
+        let get = ClientRequest::Get {
+            key: "alpha".into(),
+            namespace: None,
+        };
+        assert_eq!(
+            node.request_namespace_label(&get).as_deref(),
+            Some("default")
+        );
+        assert_eq!(
+            node.request_hot_key_label(&get, Some("tenant-a"))
+                .as_deref(),
+            Some("tenant-a::alpha")
+        );
+        assert_eq!(node.request_namespace_label(&ClientRequest::Ping), None);
+        assert_eq!(
+            node.request_hot_key_label(
+                &ClientRequest::DeleteByPattern {
+                    pattern: "*".into(),
+                    namespace: Some("tenant-a".into())
+                },
+                Some("tenant-a")
+            ),
+            None
+        );
+
+        let latency = node.namespace_latency_top(5);
+        assert_eq!(latency[0].namespace, "tenant-a");
+        assert_eq!(latency[0].request_total, 3);
+        assert_eq!(latency[0].latency_p95_estimate_ms, Some(1));
+        assert!(
+            NodeHandle::format_namespace_latency_top(&latency).contains("tenant-a:3(p95=1,p99=1)")
+        );
+        assert_eq!(NodeHandle::format_namespace_latency_top(&[]), "-");
+
+        let hot_keys = node.hot_key_top_usage(10);
+        assert_eq!(hot_keys[0].key, "tenant-a::alpha");
+        assert_eq!(hot_keys[0].request_total, 3);
+        assert_eq!(
+            NodeHandle::format_hot_key_top_usage(&hot_keys),
+            "tenant-a::alpha:3,tenant-b::beta:1"
+        );
+        assert_eq!(NodeHandle::format_hot_key_top_usage(&[]), "-");
+
+        let quota_rows = vec![NamespaceQuotaUsage {
+            namespace: "tenant-a".into(),
+            key_count: 3,
+            quota_limit: 10,
+            usage_pct: 30,
+            remaining_keys: 7,
+        }];
+        assert_eq!(
+            NodeHandle::format_namespace_quota_top_usage(&quota_rows),
+            "tenant-a:3/10(30%)"
+        );
+        assert_eq!(NodeHandle::format_namespace_quota_top_usage(&[]), "-");
+
+        for idx in 0..=NAMESPACE_LATENCY_STATE_MAX {
+            node.observe_namespace_latency(Some(&format!("ns-{idx}")), 0);
+        }
+        assert_eq!(
+            node.namespace_latency_runtime.lock().unwrap().len(),
+            NAMESPACE_LATENCY_STATE_MAX
+        );
+        for idx in 0..=HOT_KEY_STATE_MAX {
+            node.observe_hot_key_usage(Some(&format!("key-{idx}")));
+        }
+        assert_eq!(
+            node.hot_key_usage_runtime.lock().unwrap().len(),
+            HOT_KEY_STATE_MAX
+        );
+
+        assert_eq!(
+            NodeHandle::estimated_latency_percentile_ms([0; 6], 95),
+            None
+        );
+        assert_eq!(
+            NodeHandle::estimated_latency_percentile_ms([1, 1, 1, 1, 1, 1], 0),
+            None
+        );
+        assert_eq!(
+            NodeHandle::estimated_latency_percentile_ms([1, 1, 1, 1, 1, 1], 101),
+            None
+        );
+        assert_eq!(
+            NodeHandle::estimated_latency_percentile_ms([0, 0, 0, 0, 0, 2], 50),
+            Some(1000)
+        );
+
+        let stats = node.stats().await;
+        assert_eq!(
+            NodeHandle::format_request_latency_buckets(&stats),
+            "<=1ms:0;<=5ms:0;<=20ms:0;<=100ms:0;<=500ms:0;>500ms:0"
+        );
     }
 
     #[tokio::test]

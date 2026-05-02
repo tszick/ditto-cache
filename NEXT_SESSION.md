@@ -6,7 +6,7 @@ Date: 2026-05-01
 
 - `ditto-client` commit: `99b34fa upgrade: client test coverage`
 - `ditto-cache` HEAD before this continuation: `ae88017 upgrade: test coverage`
-- Current continuation has uncommitted test-only changes in `ditto-cache`.
+- Current continuation moved `ditto-cache` over the 80% workspace line coverage goal.
 
 ## What was completed
 
@@ -26,10 +26,10 @@ Main test additions:
 
 ## Current cache coverage
 
-`ditto-cache` improved, but is still far from the 80% goal:
+`ditto-cache` reached the 80% workspace line coverage goal:
 
-- Workspace line coverage: `77.31%`
-- `ditto-protocol` line coverage: `84.26%`
+- Workspace line coverage: `80.08%`
+- `ditto-protocol` line coverage: `84.62%`
 
 Latest continuation added:
 
@@ -62,10 +62,15 @@ Latest continuation added:
 - TCP client handler tests for auth rejection, auth success + ping dispatch, and watch/unwatch push events in `dittod/src/network/tcp_server.rs`
 - Broad admin `SetProperty` runtime/config update test for `dittod/src/node.rs`, including inactive-only bind/port changes, cache/store limits, replication, tenancy, rate limit, hot-key, circuit breaker, and invalid compression-threshold handling
 - Extracted `dittod/src/main.rs` environment override parsing into testable helpers, with tests for primary and legacy startup knobs plus invalid numeric/empty token handling
+- `dittoctl/src/main.rs` Basic Auth header and password hash helper tests
+- `ditto-mgmt/src/auth.rs` same-origin normalization edge tests, including dotted host authorities
+- `ditto-mgmt/src/api/cache.rs` cache helper, node HTTP proxy, Basic Auth propagation, and error-formatting tests
+- `dittod/src/network/http_server.rs` health summary, batch guardrail, delete idempotency, and error status mapping coverage
+- `dittod/src/node.rs` namespace latency, hot-key top-list, request label, percentile, and formatter helper coverage
 
 The largest remaining gaps are in:
 
-- `ditto-mgmt` cache API error/result formatting edges and auth edges
+- `ditto-mgmt` auth middleware end-to-end request paths and remaining management startup paths
 - `dittoctl/src/main.rs` password/input paths
 - remaining `dittod` runtime edges in `node.rs`, HTTP/TLS paths, and daemon startup paths that still require heavier integration
 - successful mTLS acceptor/connector handshakes if/when cert fixtures are added
@@ -96,8 +101,15 @@ cargo test --workspace
 cargo fmt -p dittod
 cargo fmt -p ditto-mgmt -p dittoctl
 cargo llvm-cov -p dittod --summary-only
+cargo fmt -p dittoctl -p ditto-mgmt
+cargo fmt -p dittod
+cargo test -p dittoctl
+cargo test -p ditto-mgmt
+cargo test -p dittod
+cargo test --workspace
+cargo llvm-cov --workspace --summary-only
 ```
 
 ## Next recommended work
 
-Continue with `ditto-cache` coverage. The best next step is likely `ditto-mgmt` cache/auth edge cases or `dittoctl/src/main.rs` password/input paths; `dittod` can still improve, but the remaining daemon startup paths are heavier integration work. Successful mTLS handshake tests with cert fixtures are also still useful.
+`ditto-cache` is now over the 80% line coverage goal. Next useful work is to commit these test changes, then optionally harden remaining heavier paths: `ditto-mgmt` auth middleware end-to-end request coverage, `dittoctl/src/main.rs` interactive password/input paths, daemon startup integration, and successful mTLS handshake tests with cert fixtures.

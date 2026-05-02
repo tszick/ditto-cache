@@ -81,20 +81,8 @@ async fn main() -> Result<()> {
         builder = builder.danger_accept_invalid_certs(true);
     }
 
-    match (&cfg.mgmt.username, &cfg.mgmt.password) {
-        (Some(username), Some(password)) => {
-            let mut headers = HeaderMap::new();
-            let auth = STANDARD.encode(format!("{}:{}", username, password));
-            headers.insert(
-                AUTHORIZATION,
-                HeaderValue::from_str(&format!("Basic {}", auth))?,
-            );
-            builder = builder.default_headers(headers);
-        }
-        (None, None) => {}
-        _ => anyhow::bail!(
-            "dittoctl config requires both mgmt.username and mgmt.password when Basic Auth is configured"
-        ),
+    if let Some(headers) = basic_auth_headers(&cfg)? {
+        builder = builder.default_headers(headers);
     }
 
     let http_client = builder.build()?;
@@ -111,13 +99,34 @@ async fn main() -> Result<()> {
 /// Prompt for a password (no echo), hash it with bcrypt, and print the result.
 fn cmd_hash_password() -> Result<()> {
     let password = rpassword_read()?;
+    println!("{}", hash_password_value(&password)?);
+    Ok(())
+}
+
+fn hash_password_value(password: &str) -> Result<String> {
     if password.is_empty() {
         anyhow::bail!("password must not be empty");
     }
-    let hash = bcrypt::hash(&password, bcrypt::DEFAULT_COST)
-        .map_err(|e| anyhow::anyhow!("bcrypt hash failed: {}", e))?;
-    println!("{}", hash);
-    Ok(())
+    Ok(bcrypt::hash(password, bcrypt::DEFAULT_COST)
+        .map_err(|e| anyhow::anyhow!("bcrypt hash failed: {}", e))?)
+}
+
+fn basic_auth_headers(cfg: &CtlConfig) -> Result<Option<HeaderMap>> {
+    match (&cfg.mgmt.username, &cfg.mgmt.password) {
+        (Some(username), Some(password)) => {
+            let mut headers = HeaderMap::new();
+            let auth = STANDARD.encode(format!("{}:{}", username, password));
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Basic {}", auth))?,
+            );
+            Ok(Some(headers))
+        }
+        (None, None) => Ok(None),
+        _ => anyhow::bail!(
+            "dittoctl config requires both mgmt.username and mgmt.password when Basic Auth is configured"
+        ),
+    }
 }
 
 /// Read a password from stdin without echoing it to the terminal.
@@ -231,5 +240,33 @@ mod tests {
         assert!(cfg.mgmt.password.is_none());
         assert!(!cfg.mgmt.insecure_skip_verify);
         assert_eq!(cfg.output.format, "binary");
+    }
+
+    #[test]
+    fn basic_auth_headers_encode_credentials_and_reject_partial_config() {
+        let mut cfg = CtlConfig::default();
+        assert!(basic_auth_headers(&cfg).unwrap().is_none());
+
+        cfg.mgmt.username = Some("admin".into());
+        cfg.mgmt.password = Some("secret".into());
+        let headers = basic_auth_headers(&cfg).unwrap().unwrap();
+        assert_eq!(
+            headers.get(AUTHORIZATION).unwrap(),
+            "Basic YWRtaW46c2VjcmV0"
+        );
+
+        cfg.mgmt.password = None;
+        let err = basic_auth_headers(&cfg).unwrap_err();
+        assert!(err.to_string().contains("requires both"));
+    }
+
+    #[test]
+    fn hash_password_value_rejects_empty_and_produces_bcrypt_hash() {
+        let err = hash_password_value("").unwrap_err();
+        assert!(err.to_string().contains("must not be empty"));
+
+        let hash = hash_password_value("secret").unwrap();
+        assert!(bcrypt::verify("secret", &hash).unwrap());
+        assert!(!bcrypt::verify("wrong", &hash).unwrap());
     }
 }

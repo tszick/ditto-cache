@@ -132,13 +132,45 @@ fn origin_authority(value: &str) -> Option<String> {
 }
 
 fn normalize_authority(value: &str) -> String {
-    value.trim().trim_end_matches('.').to_ascii_lowercase()
+    let value = value.trim();
+    if let Some((host, port)) = value.rsplit_once(':') {
+        if port.chars().all(|c| c.is_ascii_digit()) && !host.contains(':') {
+            return format!("{}:{}", host.trim_end_matches('.'), port).to_ascii_lowercase();
+        }
+    }
+    value.trim_end_matches('.').to_ascii_lowercase()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::same_origin_for_unsafe_request;
+    use super::{normalize_authority, origin_authority, same_origin_for_unsafe_request};
     use axum::{body::Body, http::Request};
+
+    #[test]
+    fn safe_methods_skip_same_origin_checks() {
+        for method in ["GET", "HEAD", "OPTIONS", "TRACE"] {
+            let req = Request::builder()
+                .method(method)
+                .uri("/api/nodes")
+                .body(Body::empty())
+                .unwrap();
+            assert!(
+                same_origin_for_unsafe_request(&req),
+                "{method} should be accepted without origin metadata"
+            );
+        }
+    }
+
+    #[test]
+    fn unsafe_request_rejects_missing_host_header() {
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/api/cache/local/keys/alpha")
+            .body(Body::empty())
+            .unwrap();
+
+        assert!(!same_origin_for_unsafe_request(&req));
+    }
 
     #[test]
     fn unsafe_request_rejects_cross_origin_browser_origin() {
@@ -192,5 +224,19 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert!(!same_origin_for_unsafe_request(&malformed_referer));
+    }
+
+    #[test]
+    fn origin_authority_normalizes_case_ports_and_trailing_dots() {
+        assert_eq!(
+            origin_authority("https://LOCALHOST.:7781/admin").as_deref(),
+            Some("localhost:7781")
+        );
+        assert_eq!(
+            origin_authority("http://Example.COM/path").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(origin_authority("not a url"), None);
+        assert_eq!(normalize_authority(" EXAMPLE.com. "), "example.com");
     }
 }
