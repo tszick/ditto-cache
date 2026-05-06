@@ -10,7 +10,8 @@ dev/runtime environment, where the runtime surface is already scanned.
 
 - Gitleaks secret scanning.
 - Trivy filesystem scanning for HIGH and CRITICAL vulnerabilities and
-  misconfigurations.
+  misconfigurations. Dockerfile checks are skipped because container/image
+  hardening is handled in Tinyme's runtime scanning scope.
 - `cargo audit` for Rust dependency advisories.
 - Nuclei DAST only when manually started with an explicitly authorized
   `dast_target_url`.
@@ -25,7 +26,8 @@ docker run --rm -v "$(pwd):/repo" zricethezav/gitleaks:latest \
 
 docker run --rm -v "$(pwd):/repo" aquasec/trivy:latest \
   fs /repo --scanners vuln,misconfig --severity HIGH,CRITICAL \
-  --ignore-unfixed --skip-dirs /repo/target
+  --ignore-unfixed --skip-dirs /repo/target \
+  --skip-files /repo/Dockerfile.dittod-build
 
 cargo audit
 ```

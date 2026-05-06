@@ -6,7 +6,8 @@ This playbook validates resilience behavior for Sprint 4 hardening goals.
 
 - Docker Desktop is running.
 - Ditto cluster is up from `../ditto-docker/docker-compose.yml`.
-- Node HTTP auth credentials are default (`ditto / qwe123asd`) or updated in commands.
+- Node HTTP auth credentials are exported in the shell:
+  `export DITTO_HTTP_USERNAME=ditto DITTO_HTTP_PASSWORD='<dev password>'`.
 
 ## 1) Automated Chaos Smoke (Recommended)
 
@@ -42,14 +43,14 @@ What it validates:
 docker network disconnect -f ditto-docker_ditto-net ditto-node-2
 
 # write while partitioned
-docker exec ditto-node-1 sh -lc "curl -sfk -u ditto:qwe123asd -X PUT https://localhost:7778/key/chaos:manual -d 'ok'"
+docker exec ditto-node-1 sh -lc "curl -sfk -u ${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD} -X PUT https://localhost:7778/key/chaos:manual -d 'ok'"
 
 # reconnect and wait for catch-up
 docker network connect ditto-docker_ditto-net ditto-node-2
 sleep 6
 
 # verify node-2 catches up
-docker exec ditto-node-2 sh -lc "curl -sfk -u ditto:qwe123asd https://localhost:7778/key/chaos:manual"
+docker exec ditto-node-2 sh -lc "curl -sfk -u ${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD} https://localhost:7778/key/chaos:manual"
 ```
 
 Expected: node-2 returns the written value after reconnect.
@@ -58,10 +59,10 @@ Expected: node-2 returns the written value after reconnect.
 
 ```bash
 docker stop ditto-node-3
-docker exec ditto-node-1 sh -lc "curl -sfk -u ditto:qwe123asd -X PUT https://localhost:7778/key/chaos:restart -d 'ok'"
+docker exec ditto-node-1 sh -lc "curl -sfk -u ${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD} -X PUT https://localhost:7778/key/chaos:restart -d 'ok'"
 docker start ditto-node-3
 sleep 5
-docker exec ditto-node-3 sh -lc "curl -sfk -u ditto:qwe123asd https://localhost:7778/key/chaos:restart"
+docker exec ditto-node-3 sh -lc "curl -sfk -u ${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD} https://localhost:7778/key/chaos:restart"
 ```
 
 Expected: value is available on node-3 after restart.
@@ -71,10 +72,10 @@ Expected: value is available on node-3 after restart.
 ```bash
 docker pause ditto-node-3
 sleep 6
-docker exec ditto-node-1 sh -lc "curl -sfk -u ditto:qwe123asd -X PUT https://localhost:7778/key/chaos:delay -d 'ok'"
+docker exec ditto-node-1 sh -lc "curl -sfk -u ${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD} -X PUT https://localhost:7778/key/chaos:delay -d 'ok'"
 docker unpause ditto-node-3
 sleep 5
-docker exec ditto-node-3 sh -lc "curl -sfk -u ditto:qwe123asd https://localhost:7778/key/chaos:delay"
+docker exec ditto-node-3 sh -lc "curl -sfk -u ${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD} https://localhost:7778/key/chaos:delay"
 ```
 
 Expected: node-3 returns the written value after unpause/catch-up.

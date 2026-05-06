@@ -454,22 +454,24 @@ powershell -ExecutionPolicy Bypass -File .\scripts\chaos-smoke.ps1 -Iterations 1
 docker compose -f ../ditto-docker/docker-compose.yml up -d --build
 sleep 15
 # Nodes serve HTTPS when TLS is enabled; use --cacert or -k for self-signed certs.
-# HTTP Basic Auth is enabled in the default compose — add -u ditto:password.
+# HTTP Basic Auth is enabled in the default compose.
+export DITTO_HTTP_USERNAME=ditto
+export DITTO_HTTP_PASSWORD='<dev password>'
 # /ping is always auth-free (health check exempt).
-curl -sfk -u ditto:qwe123asd -X PUT https://localhost:7778/key/test -d "hello"
-curl -sfk -u ditto:qwe123asd https://localhost:7788/key/test    # same value from node-2
-curl -sfk -u ditto:qwe123asd https://localhost:7798/key/test    # same value from node-3
+curl -sfk -u "${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD}" -X PUT https://localhost:7778/key/test -d "hello"
+curl -sfk -u "${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD}" https://localhost:7788/key/test    # same value from node-2
+curl -sfk -u "${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD}" https://localhost:7798/key/test    # same value from node-3
 
 # Windows note:
 # If host curl fails with schannel (SEC_E_NO_CREDENTIALS), run smoke curl inside containers:
-docker exec ditto-node-1 sh -lc "curl -sfk -u ditto:qwe123asd -X PUT https://localhost:7778/key/test -d 'hello'"
-docker exec ditto-node-2 sh -lc "curl -sfk -u ditto:qwe123asd https://localhost:7778/key/test"
-docker exec ditto-node-3 sh -lc "curl -sfk -u ditto:qwe123asd https://localhost:7778/key/test"
+docker exec ditto-node-1 sh -lc "curl -sfk -u ${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD} -X PUT https://localhost:7778/key/test -d 'hello'"
+docker exec ditto-node-2 sh -lc "curl -sfk -u ${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD} https://localhost:7778/key/test"
+docker exec ditto-node-3 sh -lc "curl -sfk -u ${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD} https://localhost:7778/key/test"
 
 # Fault tolerance test
 docker stop ditto-node-3
-curl -sfk -u ditto:qwe123asd -X PUT https://localhost:7778/key/ft -d "still works"
-curl -sfk -u ditto:qwe123asd https://localhost:7788/key/ft
+curl -sfk -u "${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD}" -X PUT https://localhost:7778/key/ft -d "still works"
+curl -sfk -u "${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD}" https://localhost:7788/key/ft
 docker start ditto-node-3             # auto-syncs when restarted
 ```
 

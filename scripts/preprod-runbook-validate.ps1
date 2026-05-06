@@ -2,6 +2,8 @@
     [string]$ComposeDir = "..\\ditto-docker",
     [string]$Namespace = "preprod-drill",
     [int]$NodeLossIterations = 1,
+    [string]$AuthUser = $(if ($env:DITTO_HTTP_USERNAME) { $env:DITTO_HTTP_USERNAME } else { "ditto" }),
+    [string]$AuthPassword = $env:DITTO_HTTP_PASSWORD,
     [switch]$DryRun
 )
 
@@ -11,6 +13,20 @@ $ErrorActionPreference = "Stop"
 $chaosScript = Join-Path $PSScriptRoot "chaos-smoke.ps1"
 if (-not (Test-Path $chaosScript)) {
     throw "Missing chaos script: $chaosScript"
+}
+
+if ([string]::IsNullOrWhiteSpace($AuthPassword) -and -not $DryRun) {
+    $composeFile = Join-Path $ComposeDir "docker-compose.yml"
+    if (Test-Path $composeFile) {
+        $match = Select-String -Path $composeFile -Pattern 'DITTO_HTTP_PASSWORD=(.+)$' | Select-Object -First 1
+        if ($match) {
+            $AuthPassword = $match.Matches[0].Groups[1].Value.Trim()
+        }
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($AuthPassword) -and -not $DryRun) {
+    throw "Missing Ditto HTTP password. Set DITTO_HTTP_PASSWORD or pass -AuthPassword."
 }
 
 function Invoke-DockerCmd {
@@ -39,7 +55,8 @@ function Invoke-NodeCurl {
     if ($Method -eq "PUT") {
         $bodyArg = "-d '$Body'"
     }
-    $cmd = "curl -sfk -u ditto:qwe123asd $nsArg -X $Method https://localhost:7778/$Path $bodyArg"
+    $authArg = "-u ${AuthUser}:$AuthPassword"
+    $cmd = "curl -sfk $authArg $nsArg -X $Method https://localhost:7778/$Path $bodyArg"
     return Invoke-DockerCmd -CmdArgs @("exec", $NodeContainer, "sh", "-lc", $cmd)
 }
 

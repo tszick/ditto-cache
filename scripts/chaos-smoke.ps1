@@ -3,6 +3,8 @@ param(
     [int]$Iterations = 3,
     [string]$Namespace = "",
     [string]$NetworkName = "ditto-docker_ditto-net",
+    [string]$AuthUser = $(if ($env:DITTO_HTTP_USERNAME) { $env:DITTO_HTTP_USERNAME } else { "ditto" }),
+    [string]$AuthPassword = $env:DITTO_HTTP_PASSWORD,
     [int]$DelayPauseSeconds = 6,
     [switch]$SkipDelay,
     [switch]$SkipPartition,
@@ -11,6 +13,20 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($AuthPassword) -and -not $DryRun) {
+    $composeFile = Join-Path $ComposeDir "docker-compose.yml"
+    if (Test-Path $composeFile) {
+        $match = Select-String -Path $composeFile -Pattern 'DITTO_HTTP_PASSWORD=(.+)$' | Select-Object -First 1
+        if ($match) {
+            $AuthPassword = $match.Matches[0].Groups[1].Value.Trim()
+        }
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($AuthPassword) -and -not $DryRun) {
+    throw "Missing Ditto HTTP password. Set DITTO_HTTP_PASSWORD or pass -AuthPassword."
+}
 
 function Invoke-Docker {
     param([string[]]$CmdArgs)
@@ -40,7 +56,8 @@ function Invoke-NodeCurl {
     if ($Method -eq "PUT") {
         $bodyArg = "-d '$Body'"
     }
-    $cmd = "curl -sfk -u ditto:qwe123asd $nsHeader -X $Method https://localhost:7778/$Path $bodyArg"
+    $authArg = "-u ${AuthUser}:$AuthPassword"
+    $cmd = "curl -sfk $authArg $nsHeader -X $Method https://localhost:7778/$Path $bodyArg"
     return Invoke-Docker -CmdArgs @("exec", $NodeContainer, "sh", "-lc", $cmd)
 }
 
