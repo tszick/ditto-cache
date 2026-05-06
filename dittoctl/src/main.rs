@@ -271,6 +271,7 @@ mod tests {
         let password = format!("test-password-{}", std::process::id());
         let hash = hash_password_value(&password).unwrap();
         assert!(bcrypt::verify(&password, &hash).unwrap());
-        assert!(!bcrypt::verify("wrong", &hash).unwrap());
+        let wrong_password = format!("wrong-{password}");
+        assert!(!bcrypt::verify(&wrong_password, &hash).unwrap());
     }
 }
