@@ -22,9 +22,11 @@ Thumbs.db
 # Runtime logs
 *.log
 
+# Local-only review/security notes and generated reports
+/docs-local/
+
 # Client dist
 ditto-nodejs-client/dist/
 ditto-nodejs-client/node_modules/
 ditto-java-client/build/
 ditto-java-client/.gradle/
-
