@@ -1,6 +1,6 @@
 # Ditto Chaos Playbook
 
-This playbook validates resilience behavior for Sprint 4 hardening goals.
+This playbook validates local resilience behavior for a running Docker-based Ditto cluster.
 
 ## Prerequisites
 

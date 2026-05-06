@@ -484,10 +484,8 @@ docker start ditto-node-3             # auto-syncs when restarted
 | [docs/admin-guide.md](docs/admin-guide.md) | Full `dittoctl` reference + web dashboard guide |
 | [docs/architecture.md](docs/architecture.md) | Architecture, protocols, write/read flows, deployment sizing |
 | [docs/dittoctl-reference.md](docs/dittoctl-reference.md) | Supplementary CLI reference |
-| [docs/backlog-guide.md](docs/backlog-guide.md) | Product backlog + multi-sprint roadmap |
 | [docs/chaos-playbook.md](docs/chaos-playbook.md) | Chaos/fault validation scenarios (partition + delay + restart) |
 | [docs/operations-runbook.md](docs/operations-runbook.md) | Incident response and tenant quota operations |
-| [docs/release-readiness-checklist.md](docs/release-readiness-checklist.md) | Required CI/manual checks for a production-ready candidate |
 
 ---
 
@@ -511,7 +509,7 @@ Current GitHub Actions workflows:
     - protocol contract drift check,
     - performance regression gate,
     - `cargo check`, `cargo test --workspace`, repeated flaky-suite passes, `cargo test -p ditto-protocol`, `cargo audit`,
-    - final release-readiness summary job for the required PR gates.
+    - release gate summary job for the required PR gates.
 - `Protocol Contract` (`.github/workflows/protocol-contract.yml`)
   - Purpose: standalone protocol contract drift check for direct invocation and debugging; the same checks also run inside `Release Gate`.
   - Triggers: push/PR on `main`.
@@ -541,8 +539,7 @@ Manual run examples (GitHub UI):
 4. Choose `main` branch and run.
 5. For `Pre-Prod Runbook Validation`, set `real_run=true` only on a self-hosted Windows runner with access to `..\ditto-docker`.
 
-Required gate summary for release candidates:
-- see [docs/release-readiness-checklist.md](docs/release-readiness-checklist.md)
+Release and review notes are kept outside the public `docs/` tree.
 
 ---
 

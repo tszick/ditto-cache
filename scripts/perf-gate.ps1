@@ -2,7 +2,7 @@
     [int]$Samples = 120,
     [int]$Warmup = 20,
     [int]$Port = 17778,
-    [string]$BaselinePath = "docs/perf-baseline.json",
+    [string]$BaselinePath = "scripts/perf-baseline.json",
     [switch]$WriteBaseline
 )
 

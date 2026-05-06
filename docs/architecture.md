@@ -149,7 +149,7 @@ In `ditto-docker`:
 
 - 3 `dittod` nodes run with TLS enabled.
 - `ditto-mgmt` runs as a separate optional service for UI/API operations.
-- Client test environments (Node/Java/Python) use dedicated compose files under `clients/`.
+- Client test environments (Node.js, Go, Rust, Java, Python) use dedicated compose files under `clients/`.
 
 ## Practical implications
 
