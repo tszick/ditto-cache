@@ -7,13 +7,15 @@
       "protected_branches": ["main"],
       "required_checks": [
         "Release Readiness Summary",
-        "Runbook Validation (Real Run Gate)"
+        "Runbook Validation (Real Run Gate)",
+        "Security Scan Summary"
       ]
     },
     "ditto-client": {
       "protected_branches": ["main"],
       "required_checks": [
-        "Snapshot + SDK Parity"
+        "Snapshot + SDK Parity",
+        "Security Scan Summary"
       ]
     }
   },
