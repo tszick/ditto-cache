@@ -248,11 +248,13 @@ mod tests {
         assert!(basic_auth_headers(&cfg).unwrap().is_none());
 
         cfg.mgmt.username = Some("admin".into());
-        cfg.mgmt.password = Some("secret".into());
+        let password = format!("test-password-{}", std::process::id());
+        cfg.mgmt.password = Some(password.clone());
         let headers = basic_auth_headers(&cfg).unwrap().unwrap();
+        let expected = STANDARD.encode(format!("admin:{password}"));
         assert_eq!(
             headers.get(AUTHORIZATION).unwrap(),
-            "Basic YWRtaW46c2VjcmV0"
+            format!("Basic {expected}").as_str()
         );
 
         cfg.mgmt.password = None;
@@ -262,11 +264,13 @@ mod tests {
 
     #[test]
     fn hash_password_value_rejects_empty_and_produces_bcrypt_hash() {
-        let err = hash_password_value("").unwrap_err();
+        let empty_password = String::new();
+        let err = hash_password_value(&empty_password).unwrap_err();
         assert!(err.to_string().contains("must not be empty"));
 
-        let hash = hash_password_value("secret").unwrap();
-        assert!(bcrypt::verify("secret", &hash).unwrap());
+        let password = format!("test-password-{}", std::process::id());
+        let hash = hash_password_value(&password).unwrap();
+        assert!(bcrypt::verify(&password, &hash).unwrap());
         assert!(!bcrypt::verify("wrong", &hash).unwrap());
     }
 }

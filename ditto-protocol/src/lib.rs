@@ -973,12 +973,10 @@ impl From<AdminRequest> for pb::AdminRequest {
             AdminRequest::ClusterStatus => Request::ClusterStatus(pb::Empty {}),
             AdminRequest::BackupNow => Request::BackupNow(pb::Empty {}),
             AdminRequest::RestoreLatestSnapshot => Request::RestoreLatestSnapshot(pb::Empty {}),
-            AdminRequest::SetKeysTtl { pattern, ttl_secs } => {
-                Request::SetKeysTtl(pb::SetKeysTtl {
-                    pattern,
-                    ttl_secs: opt_u64(ttl_secs),
-                })
-            }
+            AdminRequest::SetKeysTtl { pattern, ttl_secs } => Request::SetKeysTtl(pb::SetKeysTtl {
+                pattern,
+                ttl_secs: opt_u64(ttl_secs),
+            }),
         };
         Self {
             request: Some(request),
@@ -1328,7 +1326,11 @@ impl From<NodeStats> for pb::NodeStats {
                 .into_iter()
                 .map(Into::into)
                 .collect(),
-            hot_key_top_usage: value.hot_key_top_usage.into_iter().map(Into::into).collect(),
+            hot_key_top_usage: value
+                .hot_key_top_usage
+                .into_iter()
+                .map(Into::into)
+                .collect(),
             anti_entropy_runs_total: value.anti_entropy_runs_total,
             anti_entropy_repair_trigger_total: value.anti_entropy_repair_trigger_total,
             anti_entropy_repair_throttled_total: value.anti_entropy_repair_throttled_total,
@@ -1449,7 +1451,11 @@ impl TryFrom<pb::NodeStats> for NodeStats {
                 .into_iter()
                 .map(Into::into)
                 .collect(),
-            hot_key_top_usage: value.hot_key_top_usage.into_iter().map(Into::into).collect(),
+            hot_key_top_usage: value
+                .hot_key_top_usage
+                .into_iter()
+                .map(Into::into)
+                .collect(),
             anti_entropy_runs_total: value.anti_entropy_runs_total,
             anti_entropy_repair_trigger_total: value.anti_entropy_repair_trigger_total,
             anti_entropy_repair_throttled_total: value.anti_entropy_repair_throttled_total,
@@ -1546,9 +1552,7 @@ impl From<AdminResponse> for pb::AdminResponse {
             }),
             AdminResponse::Ok => Response::Ok(pb::Empty {}),
             AdminResponse::NotFound => Response::NotFound(pb::Empty {}),
-            AdminResponse::Error { message } => {
-                Response::Error(pb::ErrorMessage { message })
-            }
+            AdminResponse::Error { message } => Response::Error(pb::ErrorMessage { message }),
         };
         Self {
             response: Some(response),
@@ -1719,31 +1723,93 @@ mod tests {
             let encoded = encode(&request).unwrap();
             let decoded: ClientRequest = decode(payload(&encoded), 1024).unwrap();
             match (request, decoded) {
-                (ClientRequest::Get { key: a, namespace: an }, ClientRequest::Get { key: b, namespace: bn }) => {
+                (
+                    ClientRequest::Get {
+                        key: a,
+                        namespace: an,
+                    },
+                    ClientRequest::Get {
+                        key: b,
+                        namespace: bn,
+                    },
+                ) => {
                     assert_eq!((a, an), (b, bn));
                 }
                 (
-                    ClientRequest::Set { key: a, value: av, ttl_secs: at, namespace: an },
-                    ClientRequest::Set { key: b, value: bv, ttl_secs: bt, namespace: bn },
+                    ClientRequest::Set {
+                        key: a,
+                        value: av,
+                        ttl_secs: at,
+                        namespace: an,
+                    },
+                    ClientRequest::Set {
+                        key: b,
+                        value: bv,
+                        ttl_secs: bt,
+                        namespace: bn,
+                    },
                 ) => assert_eq!((a, av, at, an), (b, bv, bt, bn)),
-                (ClientRequest::Delete { key: a, namespace: an }, ClientRequest::Delete { key: b, namespace: bn }) => {
+                (
+                    ClientRequest::Delete {
+                        key: a,
+                        namespace: an,
+                    },
+                    ClientRequest::Delete {
+                        key: b,
+                        namespace: bn,
+                    },
+                ) => {
                     assert_eq!((a, an), (b, bn));
                 }
                 (ClientRequest::Ping, ClientRequest::Ping) => {}
-                (ClientRequest::Auth { token: a }, ClientRequest::Auth { token: b }) => assert_eq!(a, b),
-                (ClientRequest::Watch { key: a, namespace: an }, ClientRequest::Watch { key: b, namespace: bn }) => {
-                    assert_eq!((a, an), (b, bn));
+                (ClientRequest::Auth { token: a }, ClientRequest::Auth { token: b }) => {
+                    assert_eq!(a, b)
                 }
-                (ClientRequest::Unwatch { key: a, namespace: an }, ClientRequest::Unwatch { key: b, namespace: bn }) => {
+                (
+                    ClientRequest::Watch {
+                        key: a,
+                        namespace: an,
+                    },
+                    ClientRequest::Watch {
+                        key: b,
+                        namespace: bn,
+                    },
+                ) => {
                     assert_eq!((a, an), (b, bn));
                 }
                 (
-                    ClientRequest::DeleteByPattern { pattern: a, namespace: an },
-                    ClientRequest::DeleteByPattern { pattern: b, namespace: bn },
+                    ClientRequest::Unwatch {
+                        key: a,
+                        namespace: an,
+                    },
+                    ClientRequest::Unwatch {
+                        key: b,
+                        namespace: bn,
+                    },
+                ) => {
+                    assert_eq!((a, an), (b, bn));
+                }
+                (
+                    ClientRequest::DeleteByPattern {
+                        pattern: a,
+                        namespace: an,
+                    },
+                    ClientRequest::DeleteByPattern {
+                        pattern: b,
+                        namespace: bn,
+                    },
                 ) => assert_eq!((a, an), (b, bn)),
                 (
-                    ClientRequest::SetTtlByPattern { pattern: a, ttl_secs: at, namespace: an },
-                    ClientRequest::SetTtlByPattern { pattern: b, ttl_secs: bt, namespace: bn },
+                    ClientRequest::SetTtlByPattern {
+                        pattern: a,
+                        ttl_secs: at,
+                        namespace: an,
+                    },
+                    ClientRequest::SetTtlByPattern {
+                        pattern: b,
+                        ttl_secs: bt,
+                        namespace: bn,
+                    },
                 ) => assert_eq!((a, at, an), (b, bt, bn)),
                 (a, b) => panic!("roundtrip changed request: {a:?} -> {b:?}"),
             }
@@ -1788,10 +1854,20 @@ mod tests {
             let decoded: ClientResponse = decode(payload(&encoded), 1024).unwrap();
             match (response, decoded) {
                 (
-                    ClientResponse::Value { key: a, value: av, version: aver },
-                    ClientResponse::Value { key: b, value: bv, version: bver },
+                    ClientResponse::Value {
+                        key: a,
+                        value: av,
+                        version: aver,
+                    },
+                    ClientResponse::Value {
+                        key: b,
+                        value: bv,
+                        version: bver,
+                    },
                 ) => assert_eq!((a, av, aver), (b, bv, bver)),
-                (ClientResponse::Ok { version: a }, ClientResponse::Ok { version: b }) => assert_eq!(a, b),
+                (ClientResponse::Ok { version: a }, ClientResponse::Ok { version: b }) => {
+                    assert_eq!(a, b)
+                }
                 (ClientResponse::Deleted, ClientResponse::Deleted)
                 | (ClientResponse::NotFound, ClientResponse::NotFound)
                 | (ClientResponse::Pong, ClientResponse::Pong)
@@ -1799,12 +1875,26 @@ mod tests {
                 | (ClientResponse::Watching, ClientResponse::Watching)
                 | (ClientResponse::Unwatched, ClientResponse::Unwatched) => {}
                 (
-                    ClientResponse::Error { code: ErrorCode::NamespaceQuotaExceeded, message: a },
-                    ClientResponse::Error { code: ErrorCode::NamespaceQuotaExceeded, message: b },
+                    ClientResponse::Error {
+                        code: ErrorCode::NamespaceQuotaExceeded,
+                        message: a,
+                    },
+                    ClientResponse::Error {
+                        code: ErrorCode::NamespaceQuotaExceeded,
+                        message: b,
+                    },
                 ) => assert_eq!(a, b),
                 (
-                    ClientResponse::WatchEvent { key: a, value: av, version: aver },
-                    ClientResponse::WatchEvent { key: b, value: bv, version: bver },
+                    ClientResponse::WatchEvent {
+                        key: a,
+                        value: av,
+                        version: aver,
+                    },
+                    ClientResponse::WatchEvent {
+                        key: b,
+                        value: bv,
+                        version: bver,
+                    },
                 ) => assert_eq!((a, av, aver), (b, bv, bver)),
                 (
                     ClientResponse::PatternDeleted { deleted: a },
@@ -1854,7 +1944,8 @@ mod tests {
                 ts_ms: 123,
             }],
         };
-        let decoded: ClusterMessage = decode(payload(&encode(&log_entries).unwrap()), 2048).unwrap();
+        let decoded: ClusterMessage =
+            decode(payload(&encode(&log_entries).unwrap()), 2048).unwrap();
         match decoded {
             ClusterMessage::LogEntries { entries } => {
                 assert_eq!(entries[0].key, "k");
@@ -1884,7 +1975,11 @@ mod tests {
             last_applied: 99,
         };
         match decode_gossip(&encode_gossip(&heartbeat).unwrap(), 2048).unwrap() {
-            GossipMessage::Heartbeat { status: NodeStatus::Syncing, last_applied: 99, .. } => {}
+            GossipMessage::Heartbeat {
+                status: NodeStatus::Syncing,
+                last_applied: 99,
+                ..
+            } => {}
             other => panic!("unexpected heartbeat roundtrip: {other:?}"),
         }
     }
@@ -1892,7 +1987,10 @@ mod tests {
     #[test]
     fn decode_rejects_bad_envelopes_and_limits() {
         let encoded = encode(&ClientRequest::Ping).unwrap();
-        assert!(decode::<ClientRequest>(payload(&encoded), 1).unwrap_err().to_string().contains("exceeds max"));
+        assert!(decode::<ClientRequest>(payload(&encoded), 1)
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds max"));
 
         let wrong_payload = pb::Envelope {
             version: 99,

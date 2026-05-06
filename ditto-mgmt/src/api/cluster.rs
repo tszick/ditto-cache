@@ -198,7 +198,7 @@ mod tests {
 
                 let request = match decode::<ClusterMessage>(&payload, 1024 * 1024).unwrap() {
                     ClusterMessage::Admin(req) => req,
-                    other => panic!("unexpected request: {other:?}"),
+                    _ => panic!("unexpected non-admin request"),
                 };
                 requests.push(request);
 
