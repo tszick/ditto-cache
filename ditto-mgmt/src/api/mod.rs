@@ -42,7 +42,7 @@ const CONTENT_SECURITY_POLICY: &str = concat!(
     "img-src 'self' data:; ",
     "font-src 'self' https://cdn.jsdelivr.net data:; ",
     "style-src 'self' https://cdn.jsdelivr.net 'sha256-Ap41oucsR2OX+YVA+Sxp6CXu3CilxJr3lHYwFkuIOFk='; ",
-    "script-src 'self' https://cdn.jsdelivr.net 'sha256-f74d5LY1hdx7dZ6vIN8MEtRTl9bAjjKisdTErY6sNZc='"
+    "script-src 'self' https://cdn.jsdelivr.net 'sha256-JVgK2FzgQp8/Vgz9PBYSBGwWu8O5KJoOiAnjOXZBYPg='"
 );
 
 /// Shared application state injected into every Axum handler via [`axum::extract::State`].

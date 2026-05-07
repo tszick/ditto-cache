@@ -22,6 +22,9 @@ pub struct MgmtConfig {
     /// HTTP REST port (7778), when auth is enabled there.
     #[serde(default)]
     pub http_client_auth: HttpClientAuthConfig,
+    /// Policy for displaying cached values in the web UI/API.
+    #[serde(default)]
+    pub cache_values: CacheValuePolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,6 +96,60 @@ pub struct HttpClientAuthConfig {
     pub password: Option<String>,
 }
 
+/// Controls how cached values are exposed by the management API.
+///
+/// Production default is intentionally conservative: values are masked and
+/// fingerprinted server-side; full reveal must be explicitly enabled.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheValuePolicy {
+    #[serde(default = "default_mask_values")]
+    pub mask_values_by_default: bool,
+    #[serde(default)]
+    pub allow_value_reveal: bool,
+    #[serde(default)]
+    pub allow_sensitive_value_reveal: bool,
+    #[serde(default = "default_sensitive_key_patterns")]
+    pub sensitive_key_patterns: Vec<String>,
+}
+
+impl Default for CacheValuePolicy {
+    fn default() -> Self {
+        Self {
+            mask_values_by_default: true,
+            allow_value_reveal: false,
+            allow_sensitive_value_reveal: false,
+            sensitive_key_patterns: default_sensitive_key_patterns(),
+        }
+    }
+}
+
+fn default_mask_values() -> bool {
+    true
+}
+
+fn default_sensitive_key_patterns() -> Vec<String> {
+    [
+        "token",
+        "session",
+        "secret",
+        "password",
+        "passwd",
+        "credential",
+        "auth",
+        "jwt",
+        "bearer",
+        "api_key",
+        "apikey",
+        "refresh",
+        "access",
+        "csrf",
+        "xsrf",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
 impl Default for MgmtConfig {
     fn default() -> Self {
         Self {
@@ -110,6 +167,7 @@ impl Default for MgmtConfig {
             tls: TlsConfig::default(),
             admin: AdminConfig::default(),
             http_client_auth: HttpClientAuthConfig::default(),
+            cache_values: CacheValuePolicy::default(),
         }
     }
 }
@@ -152,6 +210,13 @@ mod tests {
         assert!(cfg.admin.password_hash.is_none());
         assert!(cfg.http_client_auth.username.is_none());
         assert!(cfg.http_client_auth.password.is_none());
+        assert!(cfg.cache_values.mask_values_by_default);
+        assert!(!cfg.cache_values.allow_value_reveal);
+        assert!(!cfg.cache_values.allow_sensitive_value_reveal);
+        assert!(cfg
+            .cache_values
+            .sensitive_key_patterns
+            .contains(&"token".to_string()));
     }
 
     #[test]
@@ -174,5 +239,6 @@ mod tests {
         assert!(!cfg.tls.enabled);
         assert!(cfg.admin.password_hash.is_none());
         assert!(cfg.http_client_auth.password.is_none());
+        assert!(cfg.cache_values.mask_values_by_default);
     }
 }

@@ -26,6 +26,7 @@ use axum::{
 };
 use ditto_protocol::{AdminRequest, AdminResponse};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// Validate that a cache key contains only an allowlisted set of characters.
 /// This prevents malformed or control characters from affecting proxied URLs.
@@ -60,6 +61,30 @@ const NAMESPACE_HEADER: &str = "x-ditto-namespace";
 #[derive(Deserialize, Default, Clone)]
 pub struct NamespaceQuery {
     pub namespace: Option<String>,
+}
+
+#[derive(Deserialize, Default, Clone)]
+pub struct GetKeyQuery {
+    pub namespace: Option<String>,
+    #[serde(default)]
+    pub reveal: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CacheValueResponse {
+    key: String,
+    namespace: Option<String>,
+    length_bytes: usize,
+    sha256: String,
+    preview: String,
+    masked: bool,
+    reveal_allowed: bool,
+    reveal_blocked_reason: Option<String>,
+    upstream_version: Option<u64>,
+    sensitive: bool,
+    sensitive_reasons: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value: Option<String>,
 }
 
 fn normalize_namespace(ns: Option<String>) -> Option<String> {
@@ -239,7 +264,7 @@ pub async fn list_keys(
 pub async fn get_key(
     State(state): State<SharedState>,
     Path((target, key)): Path<(String, String)>,
-    Query(nsq): Query<NamespaceQuery>,
+    Query(q): Query<GetKeyQuery>,
 ) -> impl IntoResponse {
     // Validate the key before it is embedded in the proxied URL.  set_key and
     // delete_key already perform this check; apply it here for consistency and
@@ -252,7 +277,7 @@ pub async fn get_key(
             .into_response();
     }
 
-    let namespace = normalize_namespace(nsq.namespace);
+    let namespace = normalize_namespace(q.namespace);
     let authority = match http_authority_for_target(
         &target,
         state.cfg.connection.cluster_port,
@@ -275,7 +300,7 @@ pub async fn get_key(
         encode_key_for_url(&key)
     );
 
-    match node_http_request(state.http_client.get(&url), &state, namespace)
+    match node_http_request(state.http_client.get(&url), &state, namespace.clone())
         .send()
         .await
     {
@@ -283,7 +308,17 @@ pub async fn get_key(
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             if status.is_success() {
-                (StatusCode::OK, Json(serde_json::json!({ "value": body }))).into_response()
+                let (parsed_value, upstream_version) = parse_node_get_value(&body);
+                let value = parsed_value.as_deref().unwrap_or(&body);
+                let value = build_cache_value_response(
+                    &key,
+                    namespace.as_deref(),
+                    value,
+                    q.reveal,
+                    upstream_version,
+                    &state.cfg.cache_values,
+                );
+                (StatusCode::OK, Json(value)).into_response()
             } else {
                 (
                     StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
@@ -298,6 +333,144 @@ pub async fn get_key(
         )
             .into_response(),
     }
+}
+
+fn build_cache_value_response(
+    key: &str,
+    namespace: Option<&str>,
+    value: &str,
+    reveal_requested: bool,
+    upstream_version: Option<u64>,
+    policy: &crate::config::CacheValuePolicy,
+) -> CacheValueResponse {
+    let sensitive_reasons = sensitive_reasons(key, value, policy);
+    let sensitive = !sensitive_reasons.is_empty();
+    let reveal_allowed =
+        policy.allow_value_reveal && (!sensitive || policy.allow_sensitive_value_reveal);
+    let reveal_blocked_reason = if reveal_requested && !policy.allow_value_reveal {
+        Some("value reveal is disabled by policy".to_string())
+    } else if reveal_requested && sensitive && !policy.allow_sensitive_value_reveal {
+        Some("sensitive value reveal is disabled by policy".to_string())
+    } else {
+        None
+    };
+    let should_reveal = reveal_requested && reveal_allowed;
+    let masked = policy.mask_values_by_default && !should_reveal;
+
+    CacheValueResponse {
+        key: key.to_string(),
+        namespace: namespace.map(str::to_string),
+        length_bytes: value.len(),
+        sha256: sha256_hex(value),
+        preview: masked_preview(value),
+        masked,
+        reveal_allowed,
+        reveal_blocked_reason,
+        upstream_version,
+        sensitive,
+        sensitive_reasons,
+        value: should_reveal.then(|| value.to_string()),
+    }
+}
+
+fn parse_node_get_value(body: &str) -> (Option<String>, Option<u64>) {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(body) else {
+        return (None, None);
+    };
+    let value = json
+        .get("value")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let version = json.get("version").and_then(|value| value.as_u64());
+    (value, version)
+}
+
+fn sha256_hex(value: &str) -> String {
+    let digest = Sha256::digest(value.as_bytes());
+    digest.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn masked_preview(value: &str) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    if chars.is_empty() {
+        return "".into();
+    }
+    if chars.len() <= 8 {
+        return "***".into();
+    }
+    let start: String = chars.iter().take(4).collect();
+    let end: String = chars
+        .iter()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{start}...***...{end}")
+}
+
+fn sensitive_reasons(
+    key: &str,
+    value: &str,
+    policy: &crate::config::CacheValuePolicy,
+) -> Vec<String> {
+    let mut reasons = Vec::new();
+    let key_lower = key.to_ascii_lowercase();
+    for pattern in &policy.sensitive_key_patterns {
+        let pattern = pattern.to_ascii_lowercase();
+        if !pattern.is_empty() && key_lower.contains(&pattern) {
+            reasons.push(format!("key matched '{pattern}'"));
+        }
+    }
+
+    let value_lower = value.to_ascii_lowercase();
+    for marker in [
+        "access_token",
+        "refresh_token",
+        "session_id",
+        "id_token",
+        "client_secret",
+        "password",
+        "api_key",
+        "authorization",
+        "bearer ",
+    ] {
+        if value_lower.contains(marker) {
+            reasons.push(format!("value contains '{marker}'"));
+        }
+    }
+    if looks_like_jwt(value) {
+        reasons.push("value looks like a JWT".into());
+    }
+    if looks_like_secret_token(value) {
+        reasons.push("value looks like a high-entropy token".into());
+    }
+    reasons.sort();
+    reasons.dedup();
+    reasons
+}
+
+fn looks_like_jwt(value: &str) -> bool {
+    let parts: Vec<&str> = value.trim().split('.').collect();
+    parts.len() == 3
+        && parts.iter().all(|p| {
+            p.len() >= 8
+                && p.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        })
+}
+
+fn looks_like_secret_token(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.len() < 32 || trimmed.len() > 4096 || trimmed.contains(char::is_whitespace) {
+        return false;
+    }
+    let token_chars = trimmed
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+' | '/' | '='))
+        .count();
+    token_chars == trimmed.chars().count()
 }
 
 // ---------------------------------------------------------------------------
@@ -1026,8 +1199,9 @@ mod tests {
                 format!("127.0.0.1:{}", http_addr.port() + 1),
                 "user:42".into(),
             )),
-            Query(NamespaceQuery {
+            Query(GetKeyQuery {
                 namespace: Some("tenant".into()),
+                reveal: false,
             }),
         )
         .await
@@ -1037,7 +1211,113 @@ mod tests {
         assert!(request.starts_with("GET /key/user%3A42 HTTP/1.1"));
         assert!(request.contains("x-ditto-namespace: tenant"));
         let body = json_body(response).await;
-        assert_eq!(body["value"], "value-body");
+        assert_eq!(body["key"], "user:42");
+        assert_eq!(body["namespace"], "tenant");
+        assert_eq!(body["length_bytes"], 10);
+        assert_eq!(body["preview"], "valu...***...body");
+        assert_eq!(body["masked"], true);
+        assert_eq!(body["reveal_allowed"], false);
+        assert_eq!(body["reveal_blocked_reason"], serde_json::Value::Null);
+        assert_eq!(body["value"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn get_key_extracts_value_from_node_json_response() {
+        let (http_addr, handle) =
+            one_http_response("200 OK", r#"{"value":"access-token-body","version":42}"#).await;
+        let state = proxy_state_for_http_addr(http_addr);
+
+        let response = get_key(
+            State(state),
+            Path((
+                format!("127.0.0.1:{}", http_addr.port() + 1),
+                "access_token".into(),
+            )),
+            Query(GetKeyQuery {
+                namespace: None,
+                reveal: false,
+            }),
+        )
+        .await
+        .into_response();
+
+        let request = handle.await.unwrap();
+        assert!(request.starts_with("GET /key/access_token HTTP/1.1"));
+        let body = json_body(response).await;
+        assert_eq!(body["key"], "access_token");
+        assert_eq!(body["length_bytes"], 17);
+        assert_eq!(body["preview"], "acce...***...body");
+        assert_eq!(body["upstream_version"], 42);
+        assert_eq!(body["sensitive"], true);
+        assert_eq!(body["value"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn cache_value_response_masks_and_flags_sensitive_values() {
+        let policy = crate::config::CacheValuePolicy::default();
+        let body = build_cache_value_response(
+            "access_token",
+            Some("tenant"),
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123",
+            false,
+            None,
+            &policy,
+        );
+
+        assert!(body.masked);
+        assert!(body.sensitive);
+        assert!(!body.reveal_allowed);
+        assert!(body.value.is_none());
+        assert!(body.sensitive_reasons.iter().any(|r| r.contains("access")));
+        assert!(body.sensitive_reasons.iter().any(|r| r.contains("JWT")));
+    }
+
+    #[test]
+    fn cache_value_response_reveals_only_when_policy_allows() {
+        let mut policy = crate::config::CacheValuePolicy::default();
+        policy.allow_value_reveal = true;
+
+        let body = build_cache_value_response("profile", None, "plain-value", true, None, &policy);
+
+        assert!(!body.masked);
+        assert!(body.reveal_allowed);
+        assert_eq!(body.value.as_deref(), Some("plain-value"));
+    }
+
+    #[test]
+    fn cache_value_response_blocks_sensitive_reveal_without_sensitive_policy() {
+        let mut policy = crate::config::CacheValuePolicy::default();
+        policy.allow_value_reveal = true;
+
+        let body = build_cache_value_response(
+            "session_token",
+            None,
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123",
+            true,
+            Some(7),
+            &policy,
+        );
+
+        assert!(body.masked);
+        assert!(!body.reveal_allowed);
+        assert_eq!(body.upstream_version, Some(7));
+        assert_eq!(
+            body.reveal_blocked_reason.as_deref(),
+            Some("sensitive value reveal is disabled by policy")
+        );
+        assert!(body.value.is_none());
+    }
+
+    #[test]
+    fn parse_node_get_value_extracts_json_value_and_version() {
+        let (value, version) = parse_node_get_value(r#"{"value":"stored-token","version":42}"#);
+
+        assert_eq!(value.as_deref(), Some("stored-token"));
+        assert_eq!(version, Some(42));
+
+        let (value, version) = parse_node_get_value("legacy-raw-value");
+        assert!(value.is_none());
+        assert!(version.is_none());
     }
 
     #[tokio::test]
@@ -1097,7 +1377,7 @@ mod tests {
         let get_response = get_key(
             State(Arc::clone(&state)),
             Path(("127.0.0.1:7779".into(), "../secret".into())),
-            Query(NamespaceQuery::default()),
+            Query(GetKeyQuery::default()),
         )
         .await
         .into_response();

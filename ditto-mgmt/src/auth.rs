@@ -94,12 +94,7 @@ fn same_origin_for_unsafe_request(req: &Request<Body>) -> bool {
         return true;
     }
 
-    let Some(host) = req
-        .headers()
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .map(normalize_authority)
-    else {
+    let Some(host) = request_authority(req) else {
         return false;
     };
 
@@ -131,6 +126,18 @@ fn origin_authority(value: &str) -> Option<String> {
         })
 }
 
+fn request_authority(req: &Request<Body>) -> Option<String> {
+    req.headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(normalize_authority)
+        .or_else(|| {
+            req.uri()
+                .authority()
+                .map(|v| normalize_authority(v.as_str()))
+        })
+}
+
 fn normalize_authority(value: &str) -> String {
     let value = value.trim();
     if let Some((host, port)) = value.rsplit_once(':') {
@@ -143,7 +150,9 @@ fn normalize_authority(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_authority, origin_authority, same_origin_for_unsafe_request};
+    use super::{
+        normalize_authority, origin_authority, request_authority, same_origin_for_unsafe_request,
+    };
     use axum::{body::Body, http::Request};
 
     #[test]
@@ -203,6 +212,19 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert!(same_origin_for_unsafe_request(&cli));
+    }
+
+    #[test]
+    fn unsafe_request_allows_http2_authority_without_host_header() {
+        let req = Request::builder()
+            .method("PUT")
+            .uri("https://localhost:7781/api/cache/node-1/keys/access_token")
+            .header("origin", "https://localhost:7781")
+            .body(Body::empty())
+            .unwrap();
+
+        assert_eq!(request_authority(&req).as_deref(), Some("localhost:7781"));
+        assert!(same_origin_for_unsafe_request(&req));
     }
 
     #[test]
