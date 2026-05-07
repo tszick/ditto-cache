@@ -72,7 +72,7 @@ async fn main() -> Result<()> {
         return cmd_hash_password();
     }
 
-    let mut cfg = CtlConfig::load()?;
+    let mut cfg = load_ctl_config(cli.config.as_deref())?;
 
     let mut builder =
         reqwest::Client::builder().timeout(std::time::Duration::from_millis(cfg.mgmt.timeout_ms));
@@ -126,6 +126,13 @@ fn basic_auth_headers(cfg: &CtlConfig) -> Result<Option<HeaderMap>> {
         _ => anyhow::bail!(
             "dittoctl config requires both mgmt.username and mgmt.password when Basic Auth is configured"
         ),
+    }
+}
+
+fn load_ctl_config(path: Option<&std::path::Path>) -> Result<CtlConfig> {
+    match path {
+        Some(path) => CtlConfig::load_from_path(path),
+        None => CtlConfig::load(),
     }
 }
 
@@ -260,6 +267,40 @@ mod tests {
         cfg.mgmt.password = None;
         let err = basic_auth_headers(&cfg).unwrap_err();
         assert!(err.to_string().contains("requires both"));
+    }
+
+    #[test]
+    fn load_ctl_config_uses_explicit_config_path() {
+        let dir =
+            std::env::temp_dir().join(format!("dittoctl-main-config-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("custom.toml");
+        std::fs::write(
+            &path,
+            r#"
+[mgmt]
+url = "https://localhost:9443"
+timeout_ms = 1234
+username = "ditto"
+password = "secret"
+insecure_skip_verify = true
+
+[output]
+format = "json"
+"#,
+        )
+        .unwrap();
+
+        let cfg = load_ctl_config(Some(&path)).unwrap();
+
+        assert_eq!(cfg.mgmt.url, "https://localhost:9443");
+        assert_eq!(cfg.mgmt.timeout_ms, 1234);
+        assert_eq!(cfg.mgmt.username.as_deref(), Some("ditto"));
+        assert_eq!(cfg.mgmt.password.as_deref(), Some("secret"));
+        assert!(cfg.mgmt.insecure_skip_verify);
+        assert_eq!(cfg.output.format, "json");
+
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

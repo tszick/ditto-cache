@@ -59,7 +59,7 @@ impl CtlConfig {
         Self::load_from_path(config_path())
     }
 
-    fn load_from_path(path: impl AsRef<std::path::Path>) -> Result<Self> {
+    pub(crate) fn load_from_path(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let path = path.as_ref();
         if path.exists() {
             let raw = fs::read_to_string(path).with_context(|| format!("reading {:?}", path))?;

@@ -231,7 +231,7 @@ pub struct NodeHandle {
 impl NodeHandle {
     /// Construct a new [`NodeHandle`] wrapped in an [`Arc`].
     ///
-    /// A fresh random UUID is assigned as the node identity.
+    /// A stable UUID is derived from the configured node id.
     /// The [`ActiveSet`] is initialised with this node as the only known member.
     pub fn new(
         config: Config,
@@ -240,7 +240,7 @@ impl NodeHandle {
         tls_connector: Option<TlsConnector>,
         cluster_bind_ip: String,
     ) -> Arc<Self> {
-        let id = Uuid::new_v4();
+        let id = stable_node_uuid(&config.node.id);
         let local_addr: SocketAddr = format!("{}:{}", cluster_bind_ip, config.node.cluster_port)
             .parse()
             .unwrap_or_else(|_| "0.0.0.0:7779".parse().unwrap());
@@ -3388,15 +3388,15 @@ impl NodeHandle {
 
     /// Spawn a background task that periodically compacts the write log.
     ///
-    /// The *safe index* is the minimum `last_applied` across all active nodes —
-    /// entries at or below that index are no longer needed for recovery and can
-    /// be discarded.  Runs every 30 seconds.
+    /// The *safe index* is the minimum `last_applied` across every known node.
+    /// Offline nodes still need entries they missed while away, so compaction
+    /// must retain those entries until the node has recovered. Runs every 30 seconds.
     pub fn start_log_compaction(self: Arc<Self>) {
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_secs(30));
             loop {
                 ticker.tick().await;
-                let safe_index = self.active_set.lock().await.min_active_applied();
+                let safe_index = self.active_set.lock().await.min_recoverable_applied();
                 let mut log = self.write_log.lock().await;
                 let before = log.committed_index();
                 log.compact(safe_index);
@@ -4386,6 +4386,13 @@ impl NodeHandle {
     }
 }
 
+fn stable_node_uuid(node_id: &str) -> Uuid {
+    Uuid::new_v5(
+        &Uuid::NAMESPACE_URL,
+        format!("ditto-cache/node/{node_id}").as_bytes(),
+    )
+}
+
 /// Returns the total size (in bytes) of all regular files in `path`.
 /// Returns 0 if the directory does not exist or cannot be read.
 fn dir_size_bytes(path: &str) -> u64 {
@@ -4404,8 +4411,8 @@ fn dir_size_bytes(path: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        CircuitState, ClientRequestSource, GetFlight, NodeHandle, TokenBucket, HOT_KEY_STATE_MAX,
-        NAMESPACE_LATENCY_STATE_MAX, PROTOCOL_VERSION,
+        stable_node_uuid, CircuitState, ClientRequestSource, GetFlight, NodeHandle, TokenBucket,
+        HOT_KEY_STATE_MAX, NAMESPACE_LATENCY_STATE_MAX, PROTOCOL_VERSION,
     };
     use crate::config::{Config, WriteQuorumMode};
     use crate::store::kv_store::ExportEntry;
@@ -4460,6 +4467,16 @@ mod tests {
         };
         sidecar.set_extension(sidecar_ext);
         std::fs::write(sidecar, format!("{digest}\n")).expect("write snapshot checksum sidecar");
+    }
+
+    #[test]
+    fn node_identity_is_stable_for_configured_node_id() {
+        let node_a = stable_node_uuid("node-2");
+        let node_b = stable_node_uuid("node-2");
+        let node_c = stable_node_uuid("node-3");
+
+        assert_eq!(node_a, node_b);
+        assert_ne!(node_a, node_c);
     }
 
     #[test]

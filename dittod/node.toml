@@ -68,7 +68,7 @@ retain_days      = 30
 restore_on_start = false         # load newest local snapshot on startup before recovery
 max_snapshot_bytes = 536870912   # 512 MiB restore read limit; 0 = unlimited
 max_restore_entries = 100000     # restore entry count limit; 0 = unlimited
-# encryption_key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+# encryption_key = "<64-hex-char-backup-key>"
 # default is unset; overridden by DITTO_BACKUP_ENCRYPTION_KEY
 
 [persistence]

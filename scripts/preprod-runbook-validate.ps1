@@ -4,6 +4,8 @@
     [int]$NodeLossIterations = 1,
     [string]$AuthUser = $(if ($env:DITTO_HTTP_USERNAME) { $env:DITTO_HTTP_USERNAME } else { "ditto" }),
     [string]$AuthPassword = $env:DITTO_HTTP_PASSWORD,
+    [string]$MgmtAuthUser = $(if ($env:DITTO_MGMT_ADMIN_USER) { $env:DITTO_MGMT_ADMIN_USER } else { "admin" }),
+    [string]$MgmtAuthPassword = $env:DITTO_MGMT_ADMIN_PASSWORD,
     [switch]$DryRun
 )
 
@@ -27,6 +29,10 @@ if ([string]::IsNullOrWhiteSpace($AuthPassword) -and -not $DryRun) {
 
 if ([string]::IsNullOrWhiteSpace($AuthPassword) -and -not $DryRun) {
     throw "Missing Ditto HTTP password. Set DITTO_HTTP_PASSWORD or pass -AuthPassword."
+}
+
+if ([string]::IsNullOrWhiteSpace($MgmtAuthPassword) -and -not $DryRun) {
+    $MgmtAuthPassword = $AuthPassword
 }
 
 function Invoke-DockerCmd {
@@ -168,16 +174,18 @@ function Emit-RunbookDiagnostics {
 
 function Invoke-DittoctlDoctor {
     param(
-        [string]$RepoRoot
+        [string]$RepoRoot,
+        [string]$Username,
+        [string]$Password
     )
 
     $tempConfig = Join-Path ([System.IO.Path]::GetTempPath()) ("dittoctl-preprod-" + [guid]::NewGuid().ToString("N") + ".toml")
     $configBody = @"
 [mgmt]
-url = "https://localhost:7781"
-timeout_ms = 5000
-username = "admin"
-password = "qwe123asd"
+url = "https://127.0.0.1:7781"
+timeout_ms = 10000
+username = "$Username"
+password = "$Password"
 insecure_skip_verify = true
 
 [output]
@@ -222,9 +230,9 @@ if (-not $DryRun) {
 try {
     try {
         if ($DryRun) {
-            & $chaosScript -ComposeDir $ComposeDir -Iterations $NodeLossIterations -Namespace $Namespace -SkipDelay -SkipPartition -DryRun
+            & $chaosScript -ComposeDir $ComposeDir -Iterations $NodeLossIterations -Namespace $Namespace -AuthUser $AuthUser -AuthPassword $AuthPassword -SkipDelay -SkipPartition -DryRun
         } else {
-            & $chaosScript -ComposeDir $ComposeDir -Iterations $NodeLossIterations -Namespace $Namespace -SkipDelay -SkipPartition
+            & $chaosScript -ComposeDir $ComposeDir -Iterations $NodeLossIterations -Namespace $Namespace -AuthUser $AuthUser -AuthPassword $AuthPassword -SkipDelay -SkipPartition
             $restartKeyPath = "key/chaos_restart_$NodeLossIterations"
             $restartExpected = "v$NodeLossIterations"
             Assert-KeyReplicatedAcrossNodes `
@@ -320,7 +328,7 @@ try {
         if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
             throw "cargo is required on the self-hosted runner to execute dittoctl doctor during real-run validation"
         }
-        $doctorOutput = Invoke-DittoctlDoctor -RepoRoot $repoRoot
+        $doctorOutput = Invoke-DittoctlDoctor -RepoRoot $repoRoot -Username $MgmtAuthUser -Password $MgmtAuthPassword
 
         $scenario.restore_telemetry = "ok"
         $scenario.quota_namespace_telemetry = "ok"

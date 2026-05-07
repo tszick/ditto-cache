@@ -170,7 +170,7 @@ impl ActiveSet {
     }
 
     /// The minimum `last_applied` index across all active nodes.
-    /// Used for safe log compaction.
+    #[cfg(test)]
     pub fn min_active_applied(&self) -> u64 {
         self.active_nodes()
             .iter()
@@ -179,8 +179,51 @@ impl ActiveSet {
             .unwrap_or(0)
     }
 
+    /// The minimum `last_applied` index across all known nodes, including
+    /// nodes that are temporarily Offline.
+    ///
+    /// Log compaction must use this value so a restarted/offline node can still
+    /// fetch missed committed entries during recovery.
+    pub fn min_recoverable_applied(&self) -> u64 {
+        self.nodes
+            .values()
+            .map(|s| s.info.last_applied)
+            .min()
+            .unwrap_or(0)
+    }
+
     /// Snapshot for gossip broadcast.
     pub fn snapshot(&self) -> Vec<NodeInfo> {
         self.nodes.values().map(|s| s.info.clone()).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(id: Uuid, status: NodeStatus, last_applied: u64) -> NodeInfo {
+        NodeInfo {
+            id,
+            addr: "127.0.0.1:7779".parse().unwrap(),
+            cluster_port: 7779,
+            status,
+            last_applied,
+        }
+    }
+
+    #[test]
+    fn recoverable_applied_includes_offline_nodes_for_compaction_safety() {
+        let local_id = Uuid::from_u128(1);
+        let offline_id = Uuid::from_u128(2);
+        let active_id = Uuid::from_u128(3);
+        let mut set = ActiveSet::new(local_id, "127.0.0.1:7779".parse().unwrap(), 7779, 3000, 5);
+
+        set.set_local_applied(12);
+        set.upsert(info(active_id, NodeStatus::Active, 10));
+        set.upsert(info(offline_id, NodeStatus::Offline, 4));
+
+        assert_eq!(set.min_active_applied(), 10);
+        assert_eq!(set.min_recoverable_applied(), 4);
     }
 }

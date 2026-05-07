@@ -8,7 +8,14 @@ use crate::auth::basic_auth_middleware;
 use crate::config::MgmtConfig;
 use crate::node_client::all_cluster_addrs;
 use axum::{
+    body::Body,
+    http::{
+        header::{self, HeaderName, HeaderValue},
+        HeaderMap, Request,
+    },
     middleware,
+    middleware::Next,
+    response::Response,
     routing::{get, post},
     Router,
 };
@@ -24,6 +31,18 @@ use tokio_rustls::TlsConnector;
 /// `all_cluster_addrs()` makes a DNS lookup + one ClusterStatus RPC on every call;
 /// caching avoids that overhead on every 3-second UI poll.
 const ADDR_CACHE_TTL: Duration = Duration::from_secs(10);
+const CONTENT_SECURITY_POLICY: &str = concat!(
+    "default-src 'self'; ",
+    "base-uri 'none'; ",
+    "object-src 'none'; ",
+    "frame-ancestors 'none'; ",
+    "form-action 'self'; ",
+    "connect-src 'self'; ",
+    "img-src 'self' data:; ",
+    "font-src 'self' https://cdn.jsdelivr.net data:; ",
+    "style-src 'self' https://cdn.jsdelivr.net 'sha256-Ot0W1HSWL6xyZJNErj839Lgd8+3S56eYnlqLpmVaFlI='; ",
+    "script-src 'self' https://cdn.jsdelivr.net 'sha256-lxMxVgsxw59gL/KcYMXIL8mgDR4f6N3dZ0EOdkl3+fw='"
+);
 
 /// Shared application state injected into every Axum handler via [`axum::extract::State`].
 pub struct AppState {
@@ -115,7 +134,58 @@ pub fn build_router(state: SharedState) -> Router {
             Arc::clone(&state),
             basic_auth_middleware,
         ))
+        .layer(middleware::from_fn(security_headers_middleware))
         .with_state(state)
+}
+
+async fn security_headers_middleware(req: Request<Body>, next: Next) -> Response {
+    let mut response = next.run(req).await;
+    apply_security_headers(response.headers_mut());
+    response
+}
+
+fn apply_security_headers(headers: &mut HeaderMap) {
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, max-age=0"),
+    );
+    headers.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::STRICT_TRANSPORT_SECURITY,
+        HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+    );
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(CONTENT_SECURITY_POLICY),
+    );
+    headers.insert(
+        HeaderName::from_static("x-frame-options"),
+        HeaderValue::from_static("DENY"),
+    );
+    headers.insert(
+        HeaderName::from_static("referrer-policy"),
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        HeaderName::from_static("permissions-policy"),
+        HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+    );
+    headers.insert(
+        HeaderName::from_static("cross-origin-opener-policy"),
+        HeaderValue::from_static("same-origin"),
+    );
+    headers.insert(
+        HeaderName::from_static("cross-origin-resource-policy"),
+        HeaderValue::from_static("same-origin"),
+    );
+    headers.insert(
+        HeaderName::from_static("cross-origin-embedder-policy"),
+        HeaderValue::from_static("credentialless"),
+    );
 }
 
 #[cfg(test)]
@@ -169,5 +239,23 @@ mod tests {
     fn build_router_constructs_all_routes_with_shared_state() {
         let state = test_state(MgmtConfig::default());
         let _router = build_router(state);
+    }
+
+    #[tokio::test]
+    async fn security_headers_are_added_to_responses() {
+        let mut headers = HeaderMap::new();
+        apply_security_headers(&mut headers);
+
+        assert_eq!(
+            headers.get(header::X_CONTENT_TYPE_OPTIONS).unwrap(),
+            "nosniff"
+        );
+        assert_eq!(headers.get("x-frame-options").unwrap(), "DENY");
+        assert!(headers
+            .get(header::CONTENT_SECURITY_POLICY)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("frame-ancestors 'none'"));
     }
 }
