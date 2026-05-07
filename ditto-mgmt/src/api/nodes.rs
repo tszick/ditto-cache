@@ -344,15 +344,9 @@ pub struct NodeListResponse {
     pub nodes: Vec<NodeInfo>,
 }
 
-/// `GET /api/nodes` — Return health status of every node in the cluster.
-///
-/// Discovers all nodes via seed addresses + gossip, then queries each in sequence.
-/// Unreachable nodes appear in the response with `reachable: false`.
-pub async fn list_nodes(State(state): State<SharedState>) -> impl IntoResponse {
+pub async fn collect_nodes(state: SharedState) -> Vec<NodeInfo> {
     let addrs = state.cluster_addrs().await;
 
-    // Query all nodes concurrently so that one slow/unreachable node doesn't
-    // block the responses from the healthy ones.
     let mut tasks = tokio::task::JoinSet::new();
     for addr in addrs {
         let state = state.clone();
@@ -370,10 +364,18 @@ pub async fn list_nodes(State(state): State<SharedState>) -> impl IntoResponse {
             nodes.push(info);
         }
     }
-    // Stable order in the UI regardless of which task finishes first.
     nodes.sort_by(|a, b| a.addr.cmp(&b.addr));
+    nodes
+}
 
-    Json(NodeListResponse { nodes })
+/// `GET /api/nodes` — Return health status of every node in the cluster.
+///
+/// Discovers all nodes via seed addresses + gossip, then queries each in sequence.
+/// Unreachable nodes appear in the response with `reachable: false`.
+pub async fn list_nodes(State(state): State<SharedState>) -> impl IntoResponse {
+    Json(NodeListResponse {
+        nodes: collect_nodes(state).await,
+    })
 }
 
 // ---------------------------------------------------------------------------

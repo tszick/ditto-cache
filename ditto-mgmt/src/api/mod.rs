@@ -2,6 +2,7 @@
 
 pub mod cache;
 pub mod cluster;
+pub mod doctor;
 pub mod nodes;
 
 use crate::auth::basic_auth_middleware;
@@ -37,11 +38,11 @@ const CONTENT_SECURITY_POLICY: &str = concat!(
     "object-src 'none'; ",
     "frame-ancestors 'none'; ",
     "form-action 'self'; ",
-    "connect-src 'self'; ",
+    "connect-src 'self' https://cdn.jsdelivr.net; ",
     "img-src 'self' data:; ",
     "font-src 'self' https://cdn.jsdelivr.net data:; ",
-    "style-src 'self' https://cdn.jsdelivr.net 'sha256-Ot0W1HSWL6xyZJNErj839Lgd8+3S56eYnlqLpmVaFlI='; ",
-    "script-src 'self' https://cdn.jsdelivr.net 'sha256-lxMxVgsxw59gL/KcYMXIL8mgDR4f6N3dZ0EOdkl3+fw='"
+    "style-src 'self' https://cdn.jsdelivr.net 'sha256-Ap41oucsR2OX+YVA+Sxp6CXu3CilxJr3lHYwFkuIOFk='; ",
+    "script-src 'self' https://cdn.jsdelivr.net 'sha256-f74d5LY1hdx7dZ6vIN8MEtRTl9bAjjKisdTErY6sNZc='"
 );
 
 /// Shared application state injected into every Axum handler via [`axum::extract::State`].
@@ -111,6 +112,7 @@ pub fn build_router(state: SharedState) -> Router {
         // Cluster endpoints
         .route("/api/cluster", get(cluster::cluster_status))
         .route("/api/cluster/primary", get(cluster::cluster_primary))
+        .route("/api/doctor", get(doctor::doctor_status))
         // Cache admin endpoints (via admin TCP)
         .route("/api/cache/{target}/stats", get(cache::cache_stats))
         .route("/api/cache/{target}/flush", post(cache::flush_cache))

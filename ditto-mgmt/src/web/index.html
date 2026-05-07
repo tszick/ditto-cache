@@ -50,6 +50,29 @@
     .badge-primary-gradient { background: linear-gradient(135deg, #1f6feb, #388bfd); }
     .addr-subtitle { font-size: .75rem; }
     .memory-col { min-width: 140px; }
+    .overview-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+    .overview-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px; min-height: 116px; }
+    .overview-card.ok { border-color: rgba(46,160,67,.55); }
+    .overview-card.warn { border-color: rgba(210,153,34,.7); }
+    .overview-card.crit { border-color: rgba(248,81,73,.75); }
+    .overview-label { font-size: .72rem; color: #8b949e; text-transform: uppercase; letter-spacing: .08em; }
+    .overview-value { font-size: 1.35rem; font-weight: 700; line-height: 1.15; margin-top: 6px; }
+    .overview-note { color: #8b949e; font-size: .82rem; margin-top: 8px; }
+    .finding-list { margin: 8px 0 0; padding-left: 18px; color: #c9d1d9; font-size: .82rem; }
+    .finding-list li { margin: 2px 0; }
+    .ops-panel { background: #161b22; border: 1px solid #30363d; border-radius: 8px; }
+    .ops-tabs { border-bottom: 1px solid #30363d; }
+    .ops-tabs .nav-link { color: #8b949e; border: 0; border-radius: 0; }
+    .ops-tabs .nav-link.active { color: #e6edf3; background: #0d1117; border-bottom: 2px solid #388bfd; }
+    .ops-body { padding: 14px; }
+    .ops-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+    .ops-card { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 12px; }
+    .ops-card-title { color: #8b949e; font-size: .75rem; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 8px; }
+    .compact-table { font-size: .84rem; }
+    .compact-table td, .compact-table th { padding: .45rem .5rem; }
+    .form-control, .form-select { background-color: #0d1117; color: #e6edf3; border-color: #30363d; }
+    .form-control:focus, .form-select:focus { background-color: #0d1117; color: #e6edf3; border-color: #388bfd; box-shadow: 0 0 0 .2rem rgba(56,139,253,.15); }
+    .result-box { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; min-height: 84px; max-height: 280px; overflow: auto; padding: 10px; font-size: .82rem; white-space: pre-wrap; }
   </style>
 </head>
 <body>
@@ -76,6 +99,67 @@
 
   <!-- Cluster summary pills -->
   <div class="d-flex gap-2 mb-3 flex-wrap" id="cluster-summary"></div>
+
+  <!-- Production overview -->
+  <div class="overview-grid mb-3" id="production-overview"></div>
+
+  <!-- Production tools -->
+  <section class="ops-panel mb-3">
+    <ul class="nav nav-tabs ops-tabs" id="ops-tabs" role="tablist">
+      <li class="nav-item" role="presentation"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#doctor-tab" type="button"><i class="bi bi-shield-check me-1"></i>Doctor</button></li>
+      <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#namespace-tab" type="button"><i class="bi bi-diagram-3 me-1"></i>Namespaces</button></li>
+      <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#cache-tab" type="button"><i class="bi bi-search me-1"></i>Cache</button></li>
+      <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#backup-tab" type="button"><i class="bi bi-archive me-1"></i>Backup</button></li>
+      <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#observability-tab" type="button"><i class="bi bi-activity me-1"></i>Observability</button></li>
+      <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#topology-tab" type="button"><i class="bi bi-hdd-network me-1"></i>Topology</button></li>
+    </ul>
+    <div class="tab-content ops-body">
+      <div class="tab-pane fade show active" id="doctor-tab">
+        <div id="doctor-panel" class="ops-grid"></div>
+      </div>
+      <div class="tab-pane fade" id="namespace-tab">
+        <div id="namespace-panel"></div>
+      </div>
+      <div class="tab-pane fade" id="cache-tab">
+        <div class="ops-grid">
+          <div class="ops-card">
+            <div class="ops-card-title">Target and key</div>
+            <div class="row g-2">
+              <div class="col-md-6"><select class="form-select form-select-sm" id="cache-target"></select></div>
+              <div class="col-md-6"><input class="form-control form-control-sm" id="cache-namespace" placeholder="namespace"></div>
+              <div class="col-md-6"><input class="form-control form-control-sm" id="cache-pattern" placeholder="pattern, e.g. user:*"></div>
+              <div class="col-md-6"><input class="form-control form-control-sm" id="cache-key" placeholder="key"></div>
+              <div class="col-12"><textarea class="form-control form-control-sm" id="cache-value" rows="3" placeholder="value"></textarea></div>
+              <div class="col-md-6"><input class="form-control form-control-sm" id="cache-ttl" type="number" min="0" placeholder="ttl seconds"></div>
+              <div class="col-md-6"><select class="form-select form-select-sm" id="cache-compressed"><option value="true">compressed=true</option><option value="false">compressed=false</option></select></div>
+            </div>
+            <div class="d-flex flex-wrap gap-2 mt-3">
+              <button class="btn btn-sm btn-outline-primary" data-cache-action="list"><i class="bi bi-list-ul me-1"></i>List</button>
+              <button class="btn btn-sm btn-outline-secondary" data-cache-action="get"><i class="bi bi-box-arrow-in-down me-1"></i>Get</button>
+              <button class="btn btn-sm btn-outline-success" data-cache-action="set"><i class="bi bi-upload me-1"></i>Set</button>
+              <button class="btn btn-sm btn-outline-warning" data-cache-action="ttl"><i class="bi bi-clock-history me-1"></i>TTL</button>
+              <button class="btn btn-sm btn-outline-info" data-cache-action="compressed"><i class="bi bi-file-zip me-1"></i>Compression</button>
+              <button class="btn btn-sm btn-outline-danger" data-cache-action="delete"><i class="bi bi-trash me-1"></i>Delete</button>
+              <button class="btn btn-sm btn-danger" data-cache-action="flush"><i class="bi bi-exclamation-octagon me-1"></i>Flush</button>
+            </div>
+          </div>
+          <div class="ops-card">
+            <div class="ops-card-title">Result</div>
+            <div class="result-box font-monospace" id="cache-result">No cache operation yet.</div>
+          </div>
+        </div>
+      </div>
+      <div class="tab-pane fade" id="backup-tab">
+        <div id="backup-panel"></div>
+      </div>
+      <div class="tab-pane fade" id="observability-tab">
+        <div id="observability-panel"></div>
+      </div>
+      <div class="tab-pane fade" id="topology-tab">
+        <div id="topology-panel"></div>
+      </div>
+    </div>
+  </section>
 
   <!-- Node table -->
   <div class="card border-secondary">
@@ -127,6 +211,7 @@ let autoRefresh = true;
 let refreshTimer = null;
 let selectedAddr = null;
 let nodesData = [];
+let doctorData = null;
 
 // ---------------------------------------------------------------------------
 // Auto-refresh
@@ -161,6 +246,9 @@ async function fetchNodes() {
     nodesData = data.nodes || [];
     renderTable(nodesData);
     renderSummary(nodesData);
+    renderProductionOverview(nodesData);
+    renderProductionTools(nodesData);
+    fetchDoctor();
     document.getElementById('last-updated').textContent =
       'Last updated: ' + new Date().toLocaleTimeString();
     if (selectedAddr) refreshDetails(selectedAddr);
@@ -168,6 +256,332 @@ async function fetchNodes() {
     showToast('danger', 'Fetch error: ' + e.message);
   }
   scheduleRefresh();
+}
+
+async function fetchDoctor() {
+  try {
+    const resp = await fetch('/api/doctor');
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    doctorData = await resp.json();
+    renderDoctorPanel(doctorData);
+  } catch(e) {
+    doctorData = null;
+    document.getElementById('doctor-panel').innerHTML = `
+      <div class="ops-card border-danger">
+        <div class="ops-card-title">Doctor unavailable</div>
+        <div class="text-danger fw-semibold">${escapeHtml(e.message)}</div>
+      </div>`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Production overview
+// ---------------------------------------------------------------------------
+function renderProductionOverview(nodes) {
+  const overview = buildProductionOverview(nodes);
+  const el = document.getElementById('production-overview');
+  el.innerHTML = `
+    ${renderOverviewCard('Readiness', overview.readiness.level, overview.readiness.value, overview.readiness.note, overview.readiness.findings)}
+    ${renderOverviewCard('Security posture', overview.security.level, overview.security.value, overview.security.note, overview.security.findings)}
+    ${renderOverviewCard('Quota pressure', overview.quota.level, overview.quota.value, overview.quota.note, overview.quota.findings)}
+    ${renderOverviewCard('Latency/errors', overview.latency.level, overview.latency.value, overview.latency.note, overview.latency.findings)}
+    ${renderOverviewCard('Persistence', overview.persistence.level, overview.persistence.value, overview.persistence.note, overview.persistence.findings)}
+    ${renderOverviewCard('Operator actions', overview.actions.level, overview.actions.value, overview.actions.note, overview.actions.findings)}
+  `;
+}
+
+function buildProductionOverview(nodes) {
+  if (!nodes.length) {
+    const empty = {
+      level: 'warn',
+      value: 'No nodes',
+      note: 'No cluster data is currently available.',
+      findings: ['Check management seed configuration and node reachability.'],
+    };
+    return {
+      readiness: empty,
+      security: empty,
+      quota: empty,
+      latency: empty,
+      persistence: empty,
+      actions: empty,
+    };
+  }
+
+  const reachable = nodes.filter(n => n.reachable);
+  const active = reachable.filter(n => n.status === 'Active');
+  const inactive = reachable.filter(n => n.status === 'Inactive');
+  const unreachable = nodes.filter(n => !n.reachable);
+  const primaryCount = reachable.filter(n => n.is_primary).length;
+  const committed = reachable.map(n => n.committed_index).filter(v => Number.isFinite(v));
+  const committedSpread = committed.length ? Math.max(...committed) - Math.min(...committed) : 0;
+  const quotaTop = nodes.flatMap(n => (n.namespace_quota_top_usage || []).map(q => ({ ...q, node_name: n.node_name || n.addr })));
+  const quotaPeak = quotaTop.reduce((max, q) => Math.max(max, Number(q.usage_pct || 0)), 0);
+  const quotaRejectRate = sum(nodes, 'namespace_quota_reject_rate_per_min');
+  const risingQuota = nodes.some(n => ['rising', 'surging'].includes(String(n.namespace_quota_reject_trend || '').toLowerCase()));
+  const p99 = max(nodes, 'client_latency_p99_estimate_ms');
+  const clientErrors = sum(nodes, 'client_error_total');
+  const clientRequests = sum(nodes, 'client_requests_total');
+  const errorPct = clientRequests > 0 ? Math.round(clientErrors * 1000 / clientRequests) / 10 : 0;
+  const persistenceEnabled = reachable.filter(n => n.persistence_enabled === true).length;
+  const backupEnabled = reachable.filter(n => n.persistence_backup_enabled === true).length;
+  const restoreFailures = sum(nodes, 'snapshot_restore_failure_total') + sum(nodes, 'snapshot_restore_policy_block_total');
+  const degradedNodes = [...unreachable, ...inactive];
+
+  const readinessFindings = [];
+  if (unreachable.length) readinessFindings.push(`${unreachable.length} unreachable node(s)`);
+  if (!active.length) readinessFindings.push('No active nodes');
+  if (primaryCount !== 1) readinessFindings.push(`Primary count is ${primaryCount}`);
+  if (committedSpread > 0) readinessFindings.push(`Committed index spread is ${committedSpread}`);
+  const readinessLevel = readinessFindings.some(f => f.includes('unreachable') || f.includes('No active') || f.includes('Primary')) ? 'crit' : committedSpread > 0 ? 'warn' : 'ok';
+
+  const securityFindings = [];
+  const httpAuthKnown = reachable.length > 0;
+  if (httpAuthKnown) securityFindings.push('Management and node HTTP auth are required for this view');
+  if (degradedNodes.length) securityFindings.push('Degraded membership affects production readiness');
+
+  const quotaFindings = [];
+  if (quotaPeak >= 90) quotaFindings.push(`Top namespace usage is ${quotaPeak}%`);
+  if (quotaRejectRate >= 10) quotaFindings.push(`${quotaRejectRate} quota rejects/min`);
+  if (risingQuota) quotaFindings.push('Quota reject trend is rising');
+  const quotaLevel = quotaPeak >= 90 || quotaRejectRate >= 10 || risingQuota ? 'warn' : 'ok';
+
+  const latencyFindings = [];
+  if (p99 >= 500) latencyFindings.push(`p99 latency estimate is ${p99}ms`);
+  if (errorPct >= 1) latencyFindings.push(`Client error rate is ${errorPct}%`);
+  const latencyLevel = p99 >= 500 || errorPct >= 1 ? 'warn' : 'ok';
+
+  const persistenceFindings = [];
+  if (persistenceEnabled !== reachable.length) persistenceFindings.push(`${reachable.length - persistenceEnabled} reachable node(s) have persistence disabled`);
+  if (backupEnabled !== reachable.length) persistenceFindings.push(`${reachable.length - backupEnabled} reachable node(s) have backup disabled`);
+  if (restoreFailures > 0) persistenceFindings.push(`${restoreFailures} restore failure/block event(s)`);
+  const persistenceLevel = restoreFailures > 0 ? 'warn' : 'ok';
+
+  const actions = [
+    ...readinessFindings,
+    ...quotaFindings,
+    ...latencyFindings,
+    ...persistenceFindings,
+  ].slice(0, 4);
+
+  return {
+    readiness: {
+      level: readinessLevel,
+      value: readinessLevel === 'ok' ? 'Ready' : readinessLevel === 'crit' ? 'Critical' : 'Warning',
+      note: `${active.length}/${nodes.length} active, ${primaryCount} primary, spread ${committedSpread}`,
+      findings: readinessFindings.length ? readinessFindings : ['Cluster membership and primary election look healthy.'],
+    },
+    security: {
+      level: degradedNodes.length ? 'warn' : 'ok',
+      value: degradedNodes.length ? 'Review' : 'Guarded',
+      note: 'Full strict-security verdict will move to the planned doctor API.',
+      findings: securityFindings.length ? securityFindings : ['No degraded membership detected from node status.'],
+    },
+    quota: {
+      level: quotaLevel,
+      value: quotaLevel === 'ok' ? `${quotaPeak}% peak` : 'Pressure',
+      note: `${quotaRejectRate} rejects/min across reachable nodes`,
+      findings: quotaFindings.length ? quotaFindings : ['No namespace quota pressure detected.'],
+    },
+    latency: {
+      level: latencyLevel,
+      value: p99 ? `p99 ${p99}ms` : 'No samples',
+      note: `${clientErrors}/${clientRequests} client errors (${errorPct}%)`,
+      findings: latencyFindings.length ? latencyFindings : ['Client latency and error counters look normal.'],
+    },
+    persistence: {
+      level: persistenceLevel,
+      value: `${persistenceEnabled}/${reachable.length} enabled`,
+      note: `${backupEnabled}/${reachable.length} backup-enabled nodes`,
+      findings: persistenceFindings.length ? persistenceFindings : ['Persistence and restore counters look normal.'],
+    },
+    actions: {
+      level: actions.length ? (readinessLevel === 'crit' ? 'crit' : 'warn') : 'ok',
+      value: actions.length ? `${actions.length} item(s)` : 'None',
+      note: 'Highest-priority operator follow-up from current telemetry.',
+      findings: actions.length ? actions : ['No immediate operator action suggested.'],
+    },
+  };
+}
+
+function renderOverviewCard(label, level, value, note, findings) {
+  const icon = level === 'crit' ? 'x-octagon-fill' : level === 'warn' ? 'exclamation-triangle-fill' : 'check-circle-fill';
+  const textClass = level === 'crit' ? 'text-danger' : level === 'warn' ? 'text-warning' : 'text-success';
+  return `
+    <section class="overview-card ${level}">
+      <div class="overview-label">${escapeHtml(label)}</div>
+      <div class="overview-value ${textClass}"><i class="bi bi-${icon} me-2"></i>${escapeHtml(value)}</div>
+      <div class="overview-note">${escapeHtml(note)}</div>
+      <ul class="finding-list">${findings.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
+    </section>`;
+}
+
+// ---------------------------------------------------------------------------
+// Production tools
+// ---------------------------------------------------------------------------
+function renderProductionTools(nodes) {
+  renderCacheTargetOptions(nodes);
+  renderNamespacePanel(nodes);
+  renderBackupPanel(nodes);
+  renderObservabilityPanel(nodes);
+  renderTopologyPanel(nodes);
+  if (doctorData) renderDoctorPanel(doctorData);
+}
+
+function renderDoctorPanel(data) {
+  const level = severityToLevel(data.verdict);
+  const summary = data.summary || {};
+  const findings = data.findings || [];
+  document.getElementById('doctor-panel').innerHTML = `
+    <div class="ops-card ${level}">
+      <div class="ops-card-title">Verdict</div>
+      <div class="overview-value ${levelTextClass(level)}">${escapeHtml(String(data.verdict || 'unknown').toUpperCase())}</div>
+      <div class="overview-note">${summary.active_nodes ?? 0}/${summary.total_nodes ?? 0} active, ${summary.primary_count ?? 0} primary, spread ${summary.committed_index_spread ?? 0}</div>
+    </div>
+    <div class="ops-card">
+      <div class="ops-card-title">Pressure</div>
+      <div class="detail-value">Quota peak ${summary.quota_peak_usage_pct ?? 0}%</div>
+      <div class="overview-note">${summary.quota_reject_rate_per_min ?? 0} quota rejects/min, p99 ${summary.p99_latency_ms ?? 0}ms, errors ${summary.client_error_rate_pct ?? 0}%</div>
+    </div>
+    <div class="ops-card">
+      <div class="ops-card-title">Findings</div>
+      ${renderFindingsTable(findings)}
+    </div>`;
+}
+
+function renderFindingsTable(findings) {
+  if (!findings.length) return '<div class="text-secondary small">No findings.</div>';
+  return `
+    <div class="table-responsive">
+      <table class="table table-borderless compact-table mb-0">
+        <thead class="text-secondary"><tr><th>Severity</th><th>Scope</th><th>Finding</th><th>Action</th></tr></thead>
+        <tbody>${findings.map(f => `
+          <tr>
+            <td>${severityBadge(f.severity)}</td>
+            <td>${escapeHtml(f.scope)}</td>
+            <td>${escapeHtml(f.message)}</td>
+            <td>${escapeHtml(f.action)}</td>
+          </tr>`).join('')}</tbody>
+      </table>
+    </div>`;
+}
+
+function renderNamespacePanel(nodes) {
+  const rows = nodes.flatMap(n => (n.namespace_quota_top_usage || []).map(q => ({
+    node: n.node_name || n.addr,
+    namespace: q.namespace,
+    key_count: q.key_count,
+    quota_limit: q.quota_limit,
+    usage_pct: q.usage_pct,
+    remaining_keys: q.remaining_keys,
+    trend: n.namespace_quota_reject_trend || 'steady',
+    reject_rate: n.namespace_quota_reject_rate_per_min || 0,
+  }))).sort((a, b) => b.usage_pct - a.usage_pct);
+
+  document.getElementById('namespace-panel').innerHTML = `
+    <div class="ops-grid mb-2">
+      <div class="ops-card">
+        <div class="ops-card-title">Quota pressure</div>
+        <div class="detail-value">${rows[0]?.usage_pct ?? 0}% peak namespace usage</div>
+        <div class="overview-note">${sum(nodes, 'namespace_quota_reject_rate_per_min')} rejects/min across nodes</div>
+      </div>
+      <div class="ops-card">
+        <div class="ops-card-title">Tenancy</div>
+        <div class="detail-value">${nodes.filter(n => n.tenancy_enabled).length}/${nodes.filter(n => n.reachable).length} reachable enabled</div>
+        <div class="overview-note">Default namespaces: ${escapeHtml(unique(nodes.map(n => n.tenancy_default_namespace).filter(Boolean)).join(', ') || '-')}</div>
+      </div>
+    </div>
+    ${rows.length ? `
+      <div class="table-responsive">
+        <table class="table table-borderless table-hover compact-table mb-0">
+          <thead class="text-secondary"><tr><th>Node</th><th>Namespace</th><th>Keys</th><th>Quota</th><th>Usage</th><th>Remaining</th><th>Rejects/min</th><th>Trend</th></tr></thead>
+          <tbody>${rows.map(r => `
+            <tr>
+              <td>${escapeHtml(r.node)}</td>
+              <td>${escapeHtml(r.namespace)}</td>
+              <td>${r.key_count}</td>
+              <td>${r.quota_limit || 'unlimited'}</td>
+              <td>${quotaBadge(r.usage_pct)}</td>
+              <td>${r.remaining_keys}</td>
+              <td>${r.reject_rate}</td>
+              <td>${escapeHtml(r.trend)}</td>
+            </tr>`).join('')}</tbody>
+        </table>
+      </div>` : '<div class="text-secondary small">No namespace quota usage reported.</div>'}`;
+}
+
+function renderCacheTargetOptions(nodes) {
+  const select = document.getElementById('cache-target');
+  const previous = select.value;
+  const options = ['<option value="all">all nodes</option>']
+    .concat(nodes.filter(n => n.reachable).map(n => {
+      const value = n.node_name || n.addr;
+      return `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`;
+    }));
+  select.innerHTML = options.join('');
+  if ([...select.options].some(o => o.value === previous)) select.value = previous;
+}
+
+function renderBackupPanel(nodes) {
+  const rows = nodes.filter(n => n.reachable);
+  document.getElementById('backup-panel').innerHTML = `
+    <div class="table-responsive">
+      <table class="table table-borderless table-hover compact-table mb-0">
+        <thead class="text-secondary"><tr><th>Node</th><th>Status</th><th>Backup</th><th>Storage</th><th>Last load</th><th>Restore</th><th>Actions</th></tr></thead>
+        <tbody>${rows.map(n => {
+          const target = escapeHtml(n.node_name || n.addr);
+          const failures = Number(n.snapshot_restore_failure_total || 0) + Number(n.snapshot_restore_policy_block_total || 0);
+          return `
+            <tr>
+              <td>${escapeHtml(n.node_name || n.addr)}</td>
+              <td>${escapeHtml(n.status || '-')}</td>
+              <td>${boolBadge(n.persistence_backup_enabled)}</td>
+              <td>${fmtBytes(n.backup_dir_bytes)}</td>
+              <td>${escapeHtml(n.snapshot_last_load_path || '-')}${n.snapshot_last_load_age_secs != null ? ` (${fmtUptime(n.snapshot_last_load_age_secs)} ago)` : ''}</td>
+              <td>${n.snapshot_restore_success_total || 0} ok / ${failures} issue(s)</td>
+              <td>
+                <button class="btn btn-sm btn-outline-secondary me-1" data-action="backup" data-node-name="${target}"><i class="bi bi-archive"></i></button>
+                <button class="btn btn-sm btn-outline-warning" data-node-op="restore" data-node-name="${target}"><i class="bi bi-arrow-counterclockwise"></i></button>
+              </td>
+            </tr>`;
+        }).join('')}</tbody>
+      </table>
+    </div>`;
+}
+
+function renderObservabilityPanel(nodes) {
+  document.getElementById('observability-panel').innerHTML = `
+    <div class="ops-grid">
+      ${nodes.filter(n => n.reachable).map(n => `
+        <div class="ops-card">
+          <div class="ops-card-title">${escapeHtml(n.node_name || n.addr)}</div>
+          <div class="detail-value">p99 ${n.client_latency_p99_estimate_ms ?? 0}ms</div>
+          <div class="overview-note">requests tcp:${n.client_requests_tcp_total ?? 0} http:${n.client_requests_http_total ?? 0} internal:${n.client_requests_internal_total ?? 0}</div>
+          <div class="overview-note">errors auth:${n.client_error_auth_total ?? 0} throttle:${n.client_error_throttle_total ?? 0} availability:${n.client_error_availability_total ?? 0} validation:${n.client_error_validation_total ?? 0}</div>
+          <div class="overview-note">hot-key coalesced:${n.hot_key_coalesced_hits_total ?? 0} fallback:${n.hot_key_fallback_exec_total ?? 0} timeout:${n.hot_key_wait_timeout_total ?? 0} stale:${n.hot_key_stale_served_total ?? 0}</div>
+          <div class="overview-note">circuit ${escapeHtml(n.circuit_breaker_state || '-')} open:${n.circuit_breaker_open_total ?? 0} reject:${n.circuit_breaker_reject_total ?? 0}</div>
+        </div>`).join('')}
+    </div>`;
+}
+
+function renderTopologyPanel(nodes) {
+  const committed = nodes.filter(n => n.committed_index != null).map(n => n.committed_index);
+  const spread = committed.length ? Math.max(...committed) - Math.min(...committed) : 0;
+  document.getElementById('topology-panel').innerHTML = `
+    <div class="ops-grid">
+      <div class="ops-card">
+        <div class="ops-card-title">Cluster spread</div>
+        <div class="detail-value">${spread}</div>
+        <div class="overview-note">Committed index difference across reachable reported nodes.</div>
+      </div>
+      ${nodes.map(n => `
+        <div class="ops-card ${!n.reachable ? 'crit' : n.status === 'Active' ? 'ok' : 'warn'}">
+          <div class="ops-card-title">${escapeHtml(n.node_name || n.addr)}</div>
+          <div class="detail-value">${n.is_primary ? '<i class="bi bi-star-fill text-primary me-1"></i>' : ''}${escapeHtml(n.status || 'Unreachable')}</div>
+          <div class="overview-note">${escapeHtml(n.addr)} · committed ${n.committed_index ?? '-'}</div>
+          <div class="overview-note">heartbeat ${n.heartbeat_ms ?? '-'}ms · uptime ${n.uptime_secs != null ? fmtUptime(n.uptime_secs) : '-'}</div>
+        </div>`).join('')}
+    </div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -365,6 +779,86 @@ async function triggerBackup(addr) {
   }
 }
 
+async function restoreSnapshot(addr) {
+  if (!window.confirm(`Restore latest local snapshot on ${addr}?`)) return;
+  try {
+    const resp = await fetch(`/api/nodes/${encodeURIComponent(addr)}/restore-snapshot`, { method: 'POST' });
+    const data = await resp.json();
+    const result = Array.isArray(data) ? data[0] : data;
+    if (result && result.ok) {
+      showToast('success', `Restored ${result.entries} entries from ${result.path}`);
+    } else {
+      showToast('warning', `Restore: ${result?.error || 'unknown error'}`);
+    }
+    await fetchNodes();
+  } catch(e) {
+    showToast('danger', 'Error: ' + e.message);
+  }
+}
+
+async function runCacheAction(action) {
+  const target = document.getElementById('cache-target').value || 'all';
+  const namespace = document.getElementById('cache-namespace').value.trim();
+  const pattern = document.getElementById('cache-pattern').value.trim();
+  const key = document.getElementById('cache-key').value.trim();
+  const value = document.getElementById('cache-value').value;
+  const ttlRaw = document.getElementById('cache-ttl').value.trim();
+  const compressed = document.getElementById('cache-compressed').value === 'true';
+  const nsQuery = namespace ? `?namespace=${encodeURIComponent(namespace)}` : '';
+  const nsJoin = namespace ? `&namespace=${encodeURIComponent(namespace)}` : '';
+
+  try {
+    let resp;
+    if (action === 'list') {
+      const query = `?pattern=${encodeURIComponent(pattern || '*')}${nsJoin}`;
+      resp = await fetch(`/api/cache/${encodeURIComponent(target)}/keys${query}`);
+    } else if (action === 'get') {
+      requireKey(key);
+      resp = await fetch(`/api/cache/${encodeURIComponent(target)}/keys/${encodeURIComponent(key)}${nsQuery}`);
+    } else if (action === 'set') {
+      requireKey(key);
+      const ttl = ttlRaw === '' ? null : Number(ttlRaw);
+      resp = await fetch(`/api/cache/${encodeURIComponent(target)}/keys/${encodeURIComponent(key)}${nsQuery}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value, ttl_secs: ttl }),
+      });
+    } else if (action === 'delete') {
+      requireKey(key);
+      if (!window.confirm(`Delete key ${key} from ${target}${namespace ? ` namespace ${namespace}` : ''}?`)) return;
+      resp = await fetch(`/api/cache/${encodeURIComponent(target)}/keys/${encodeURIComponent(key)}${nsQuery}`, { method: 'DELETE' });
+    } else if (action === 'ttl') {
+      if (!pattern) throw new Error('Pattern is required for TTL updates.');
+      const ttl = ttlRaw === '' ? null : Number(ttlRaw);
+      resp = await fetch(`/api/cache/${encodeURIComponent(target)}/ttl${nsQuery}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pattern, ttl_secs: ttl }),
+      });
+    } else if (action === 'compressed') {
+      requireKey(key);
+      resp = await fetch(`/api/cache/${encodeURIComponent(target)}/keys/${encodeURIComponent(key)}/compressed${nsQuery}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ compressed }),
+      });
+    } else if (action === 'flush') {
+      const confirmation = window.prompt(`Type ${target} to flush cache on this target.`);
+      if (confirmation !== target) return;
+      resp = await fetch(`/api/cache/${encodeURIComponent(target)}/flush`, { method: 'POST' });
+    }
+
+    const text = await resp.text();
+    const parsed = parseJson(text);
+    document.getElementById('cache-result').textContent = JSON.stringify(parsed, null, 2);
+    showToast(resp.ok ? 'success' : 'warning', `${action} completed with HTTP ${resp.status}`);
+    await fetchNodes();
+  } catch(e) {
+    document.getElementById('cache-result').textContent = e.message;
+    showToast('danger', e.message);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -402,6 +896,61 @@ function fmtUptime(secs) {
   const m = Math.floor((secs%3600)/60);
   const s = secs % 60;
   return `${h}h ${m}m ${s}s`;
+}
+
+function sum(items, field) {
+  return items.reduce((total, item) => total + Number(item[field] || 0), 0);
+}
+
+function max(items, field) {
+  return items.reduce((highest, item) => Math.max(highest, Number(item[field] || 0)), 0);
+}
+
+function unique(values) {
+  return [...new Set(values)];
+}
+
+function requireKey(key) {
+  if (!key) throw new Error('Key is required.');
+}
+
+function parseJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+function severityToLevel(severity) {
+  const normalized = String(severity || '').toLowerCase();
+  if (normalized === 'critical') return 'crit';
+  if (normalized === 'warning') return 'warn';
+  return 'ok';
+}
+
+function levelTextClass(level) {
+  if (level === 'crit') return 'text-danger';
+  if (level === 'warn') return 'text-warning';
+  return 'text-success';
+}
+
+function severityBadge(severity) {
+  const level = severityToLevel(severity);
+  const cls = level === 'crit' ? 'bg-danger' : level === 'warn' ? 'bg-warning text-dark' : 'bg-success';
+  return `<span class="badge ${cls}">${escapeHtml(severity || 'ok')}</span>`;
+}
+
+function boolBadge(value) {
+  if (value === true) return '<span class="badge bg-success">enabled</span>';
+  if (value === false) return '<span class="badge bg-secondary">disabled</span>';
+  return '<span class="badge bg-secondary">unknown</span>';
+}
+
+function quotaBadge(value) {
+  const pct = Number(value || 0);
+  const cls = pct >= 90 ? 'bg-danger' : pct >= 80 ? 'bg-warning text-dark' : 'bg-success';
+  return `<span class="badge ${cls}">${pct}%</span>`;
 }
 
 function showToast(type, message) {
@@ -445,6 +994,24 @@ document.getElementById('nodes-tbody').addEventListener('click', event => {
   const row = event.target.closest('[data-select-addr]');
   if (row) {
     selectNode(row.dataset.selectAddr);
+  }
+});
+document.querySelector('.ops-panel').addEventListener('click', event => {
+  const cacheAction = event.target.closest('[data-cache-action]');
+  if (cacheAction) {
+    runCacheAction(cacheAction.dataset.cacheAction);
+    return;
+  }
+
+  const nodeOp = event.target.closest('[data-node-op]');
+  if (nodeOp && nodeOp.dataset.nodeOp === 'restore') {
+    restoreSnapshot(nodeOp.dataset.nodeName || '');
+    return;
+  }
+
+  const nodeAction = event.target.closest('[data-action]');
+  if (nodeAction && nodeAction.dataset.action === 'backup') {
+    triggerBackup(nodeAction.dataset.nodeName || '');
   }
 });
 
