@@ -391,7 +391,7 @@ password_hash = "$2b$12$..."  # generate with: dittoctl hash-password
 # Required only when DITTO_HTTP_AUTH_* is set on the nodes.
 # [http_client_auth]
 # username = "ditto"
-# password = "plaintext-password"
+# password = "<node-http-password>"
 ```
 
 ### Admin CLI — `~/.config/ditto/kvctl.toml`
@@ -457,21 +457,23 @@ sleep 15
 # HTTP Basic Auth is enabled in the default compose.
 export DITTO_HTTP_USERNAME=ditto
 export DITTO_HTTP_PASSWORD='<dev password>'
+printf "machine localhost login %s password %s\n" "$DITTO_HTTP_USERNAME" "$DITTO_HTTP_PASSWORD" > /tmp/ditto.netrc
+chmod 600 /tmp/ditto.netrc
 # /ping is always auth-free (health check exempt).
-curl -sfk -u "${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD}" -X PUT https://localhost:7778/key/test -d "hello"
-curl -sfk -u "${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD}" https://localhost:7788/key/test    # same value from node-2
-curl -sfk -u "${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD}" https://localhost:7798/key/test    # same value from node-3
+curl -sfk --netrc-file /tmp/ditto.netrc -X PUT https://localhost:7778/key/test -d "hello"
+curl -sfk --netrc-file /tmp/ditto.netrc https://localhost:7788/key/test    # same value from node-2
+curl -sfk --netrc-file /tmp/ditto.netrc https://localhost:7798/key/test    # same value from node-3
 
 # Windows note:
 # If host curl fails with schannel (SEC_E_NO_CREDENTIALS), run smoke curl inside containers:
-docker exec ditto-node-1 sh -lc "curl -sfk -u ${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD} -X PUT https://localhost:7778/key/test -d 'hello'"
-docker exec ditto-node-2 sh -lc "curl -sfk -u ${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD} https://localhost:7778/key/test"
-docker exec ditto-node-3 sh -lc "curl -sfk -u ${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD} https://localhost:7778/key/test"
+docker exec ditto-node-1 sh -lc 'printf "machine localhost login %s password %s\n" "$DITTO_HTTP_USERNAME" "$DITTO_HTTP_PASSWORD" > /tmp/ditto.netrc && chmod 600 /tmp/ditto.netrc && curl -sfk --netrc-file /tmp/ditto.netrc -X PUT https://localhost:7778/key/test -d "hello"'
+docker exec ditto-node-2 sh -lc 'printf "machine localhost login %s password %s\n" "$DITTO_HTTP_USERNAME" "$DITTO_HTTP_PASSWORD" > /tmp/ditto.netrc && chmod 600 /tmp/ditto.netrc && curl -sfk --netrc-file /tmp/ditto.netrc https://localhost:7778/key/test'
+docker exec ditto-node-3 sh -lc 'printf "machine localhost login %s password %s\n" "$DITTO_HTTP_USERNAME" "$DITTO_HTTP_PASSWORD" > /tmp/ditto.netrc && chmod 600 /tmp/ditto.netrc && curl -sfk --netrc-file /tmp/ditto.netrc https://localhost:7778/key/test'
 
 # Fault tolerance test
 docker stop ditto-node-3
-curl -sfk -u "${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD}" -X PUT https://localhost:7778/key/ft -d "still works"
-curl -sfk -u "${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD}" https://localhost:7788/key/ft
+curl -sfk --netrc-file /tmp/ditto.netrc -X PUT https://localhost:7778/key/ft -d "still works"
+curl -sfk --netrc-file /tmp/ditto.netrc https://localhost:7788/key/ft
 docker start ditto-node-3             # auto-syncs when restarted
 ```
 

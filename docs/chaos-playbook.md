@@ -43,14 +43,14 @@ What it validates:
 docker network disconnect -f ditto-docker_ditto-net ditto-node-2
 
 # write while partitioned
-docker exec ditto-node-1 sh -lc "curl -sfk -u ${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD} -X PUT https://localhost:7778/key/chaos:manual -d 'ok'"
+docker exec ditto-node-1 sh -lc 'printf "machine localhost login %s password %s\n" "$DITTO_HTTP_USERNAME" "$DITTO_HTTP_PASSWORD" > /tmp/ditto.netrc && chmod 600 /tmp/ditto.netrc && curl -sfk --netrc-file /tmp/ditto.netrc -X PUT https://localhost:7778/key/chaos:manual -d "ok"'
 
 # reconnect and wait for catch-up
 docker network connect ditto-docker_ditto-net ditto-node-2
 sleep 6
 
 # verify node-2 catches up
-docker exec ditto-node-2 sh -lc "curl -sfk -u ${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD} https://localhost:7778/key/chaos:manual"
+docker exec ditto-node-2 sh -lc 'printf "machine localhost login %s password %s\n" "$DITTO_HTTP_USERNAME" "$DITTO_HTTP_PASSWORD" > /tmp/ditto.netrc && chmod 600 /tmp/ditto.netrc && curl -sfk --netrc-file /tmp/ditto.netrc https://localhost:7778/key/chaos:manual'
 ```
 
 Expected: node-2 returns the written value after reconnect.
@@ -59,10 +59,10 @@ Expected: node-2 returns the written value after reconnect.
 
 ```bash
 docker stop ditto-node-3
-docker exec ditto-node-1 sh -lc "curl -sfk -u ${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD} -X PUT https://localhost:7778/key/chaos:restart -d 'ok'"
+docker exec ditto-node-1 sh -lc 'printf "machine localhost login %s password %s\n" "$DITTO_HTTP_USERNAME" "$DITTO_HTTP_PASSWORD" > /tmp/ditto.netrc && chmod 600 /tmp/ditto.netrc && curl -sfk --netrc-file /tmp/ditto.netrc -X PUT https://localhost:7778/key/chaos:restart -d "ok"'
 docker start ditto-node-3
 sleep 5
-docker exec ditto-node-3 sh -lc "curl -sfk -u ${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD} https://localhost:7778/key/chaos:restart"
+docker exec ditto-node-3 sh -lc 'printf "machine localhost login %s password %s\n" "$DITTO_HTTP_USERNAME" "$DITTO_HTTP_PASSWORD" > /tmp/ditto.netrc && chmod 600 /tmp/ditto.netrc && curl -sfk --netrc-file /tmp/ditto.netrc https://localhost:7778/key/chaos:restart'
 ```
 
 Expected: value is available on node-3 after restart.
@@ -72,10 +72,10 @@ Expected: value is available on node-3 after restart.
 ```bash
 docker pause ditto-node-3
 sleep 6
-docker exec ditto-node-1 sh -lc "curl -sfk -u ${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD} -X PUT https://localhost:7778/key/chaos:delay -d 'ok'"
+docker exec ditto-node-1 sh -lc 'printf "machine localhost login %s password %s\n" "$DITTO_HTTP_USERNAME" "$DITTO_HTTP_PASSWORD" > /tmp/ditto.netrc && chmod 600 /tmp/ditto.netrc && curl -sfk --netrc-file /tmp/ditto.netrc -X PUT https://localhost:7778/key/chaos:delay -d "ok"'
 docker unpause ditto-node-3
 sleep 5
-docker exec ditto-node-3 sh -lc "curl -sfk -u ${DITTO_HTTP_USERNAME}:${DITTO_HTTP_PASSWORD} https://localhost:7778/key/chaos:delay"
+docker exec ditto-node-3 sh -lc 'printf "machine localhost login %s password %s\n" "$DITTO_HTTP_USERNAME" "$DITTO_HTTP_PASSWORD" > /tmp/ditto.netrc && chmod 600 /tmp/ditto.netrc && curl -sfk --netrc-file /tmp/ditto.netrc https://localhost:7778/key/chaos:delay'
 ```
 
 Expected: node-3 returns the written value after unpause/catch-up.

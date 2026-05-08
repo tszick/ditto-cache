@@ -56,9 +56,18 @@ function Invoke-NodeCurl {
     if ($Method -eq "PUT") {
         $bodyArg = "-d '$Body'"
     }
-    $authArg = "-u ${AuthUser}:$AuthPassword"
-    $cmd = "curl -sfk $authArg $nsHeader -X $Method https://localhost:7778/$Path $bodyArg"
-    return Invoke-Docker -CmdArgs @("exec", $NodeContainer, "sh", "-lc", $cmd)
+    $previousCurlAuth = $env:DITTO_CURL_AUTH
+    $env:DITTO_CURL_AUTH = "${AuthUser}:$AuthPassword"
+    $cmd = "curl -sfk --user `"`$DITTO_CURL_AUTH`" $nsHeader -X $Method https://localhost:7778/$Path $bodyArg"
+    try {
+        return Invoke-Docker -CmdArgs @("exec", "-e", "DITTO_CURL_AUTH", $NodeContainer, "sh", "-lc", $cmd)
+    } finally {
+        if ($null -eq $previousCurlAuth) {
+            Remove-Item Env:\DITTO_CURL_AUTH -ErrorAction SilentlyContinue
+        } else {
+            $env:DITTO_CURL_AUTH = $previousCurlAuth
+        }
+    }
 }
 
 function Assert-Contains {

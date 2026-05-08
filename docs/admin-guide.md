@@ -64,7 +64,7 @@ password_hash = "$2b$12$..."
 
 [http_client_auth]
 username = "ditto"
-password = "plain-text-password"
+password = "<node-http-password>"
 ```
 
 Notes:
@@ -105,7 +105,7 @@ Example:
 url = "https://localhost:7781"
 timeout_ms = 3000
 username = "admin"
-password = "replace-me"
+password = "<mgmt-password>"
 insecure_skip_verify = true
 
 [output]
