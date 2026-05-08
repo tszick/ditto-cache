@@ -87,6 +87,10 @@ Paste hash into:
 - `mgmt.toml` -> `[admin].password_hash` (mgmt UI/API auth)
 - `node.toml` -> `[http_auth].password_hash` (node HTTP API auth)
 
+For SSO-backed management access, do not generate a mgmt Basic password hash.
+Configure `[admin].bearer_introspection_url` and the required scope/audience
+instead. Node HTTP auth still uses `[http_auth].password_hash`.
+
 ## Environment variable overrides (`ditto-mgmt`)
 
 - `DITTO_MGMT_BIND` -> `server.bind`

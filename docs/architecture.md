@@ -43,6 +43,9 @@ Internal cluster traffic
 
 - `ditto-mgmt` exposes cluster/node/cache admin APIs and the web dashboard.
 - `dittoctl` is an HTTP client for `ditto-mgmt`; it does not talk to nodes directly.
+- Management clients authenticate to `ditto-mgmt` with either HTTP Basic auth
+  or `Authorization: Bearer <oauth2-access-token>` when Bearer/OIDC
+  introspection is configured.
 
 ## Protocols and ports
 
@@ -109,6 +112,8 @@ Current key endpoints:
 Auth/TLS:
 - Optional HTTP Basic auth (`[http_auth]`).
 - Optional HTTPS when node TLS cert/key are configured for HTTP listener.
+- This node REST auth is separate from `ditto-mgmt` admin auth. Node REST does
+  not currently validate SSO/OIDC Bearer tokens directly.
 
 ## Replication model summary
 
@@ -138,8 +143,27 @@ Auth/TLS:
 `ditto-mgmt` is strict by default in this codebase:
 
 - refuses startup if management-to-node mTLS is disabled,
-- refuses startup if admin password hash is not configured,
+- refuses startup if neither Basic nor Bearer admin auth is configured,
 - refuses startup if management HTTPS cert/key are not configured.
+
+Mgmt admin auth modes:
+
+- Basic mode: `[admin].password_hash` plus optional `[admin].username`.
+- Bearer mode: either `[admin].bearer_token_sha256` for an opaque pre-shared
+  token hash, or `[admin].bearer_introspection_url` for OAuth2/OIDC token
+  introspection.
+- Bearer introspection accepts active OAuth2 access tokens and can require a
+  Ditto-specific scope and/or audience.
+- Basic and Bearer can be configured together for migration, but SSO-only
+  environments should omit `[admin].password_hash` so Basic is not accepted.
+
+Mgmt-to-node auth boundaries:
+
+- Admin RPC to nodes uses mTLS on `:7779`.
+- Mgmt cache proxy calls to node REST use `[http_client_auth]` service
+  credentials when node `[http_auth]` is enabled.
+- The end-user Bearer token is not forwarded to nodes because node REST/TCP do
+  not currently implement JWT/OIDC validation or RBAC.
 
 Both management plane and data plane enforce strict security defaults in this repository.
 
@@ -155,4 +179,6 @@ In `ditto-docker`:
 
 - If `ditto-mgmt` is down, app traffic to `dittod` (7777/7778) can still work.
 - If `ditto-mgmt` is down, `dittoctl` and web dashboard operations are unavailable.
+- Switching `ditto-mgmt` from Basic to Bearer does not change direct app-client
+  auth for `dittod` TCP/HTTP ports.
 - For long-lived watch workloads, keep auth configured correctly and avoid idle-kill timers on the client side.

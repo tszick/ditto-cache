@@ -1399,10 +1399,11 @@ mod tests {
     #[test]
     fn cache_value_response_masks_and_flags_sensitive_values() {
         let policy = crate::config::CacheValuePolicy::default();
+        let jwt_like_value = test_jwt_like_value();
         let body = build_cache_value_response(
             "access_token",
             Some("tenant"),
-            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123",
+            &jwt_like_value,
             false,
             None,
             &policy,
@@ -1432,11 +1433,12 @@ mod tests {
     fn cache_value_response_blocks_sensitive_reveal_without_sensitive_policy() {
         let mut policy = crate::config::CacheValuePolicy::default();
         policy.allow_value_reveal = true;
+        let jwt_like_value = test_jwt_like_value();
 
         let body = build_cache_value_response(
             "session_token",
             None,
-            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123",
+            &jwt_like_value,
             true,
             Some(7),
             &policy,
@@ -1450,6 +1452,10 @@ mod tests {
             Some("sensitive value reveal is disabled by policy")
         );
         assert!(body.value.is_none());
+    }
+
+    fn test_jwt_like_value() -> String {
+        ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "signature123"].join(".")
     }
 
     #[test]

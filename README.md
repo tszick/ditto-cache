@@ -445,6 +445,10 @@ dittoctl cache flush local
 dittoctl hash-password
 ```
 
+For SSO-backed management access, configure `ditto-mgmt` Bearer/OIDC
+introspection instead of `[admin].password_hash`. Node REST auth still uses
+`[http_auth].password_hash`.
+
 Full reference: [docs/admin-guide.md](docs/admin-guide.md)
 
 ---

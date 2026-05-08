@@ -163,5 +163,21 @@ Tuning notes:
   - targets the `ditto-docker` environment from a self-hosted Windows runner,
   - validates node-loss / recovery, restore telemetry, namespace quota telemetry, and namespace/hot-key probe paths,
   - validates release go/no-go security posture from `/health/summary` (`strict_security_enforced`, `insecure_runtime_enabled`, `tcp_production_safe`, `tcp_supported_topology`),
-  - runs `dittoctl node doctor all` against the same preprod cluster using authenticated HTTPS access to `ditto-mgmt`,
+  - runs `dittoctl node doctor all` against the same preprod cluster using authenticated HTTPS access to `ditto-mgmt` (Basic in local Docker, Bearer/OIDC in SSO environments),
   - should be used before major runtime changes or operational drills.
+
+## 8) Management Auth Operations
+
+`ditto-mgmt` accepts either Basic or Bearer admin auth, depending on `[admin]`
+configuration:
+
+- Local Docker/preprod lab mode can keep `[admin].password_hash` and use
+  `dittoctl` `username` / `password`.
+- SSO mode should configure Bearer introspection and omit `[admin].password_hash`
+  so Basic is not accepted.
+- Use a Ditto-specific required scope or audience for SSO mode, for example
+  `ditto.mgmt` or `ditto-mgmt`.
+
+This affects only management clients (`browser`, `dittoctl`) talking to
+`ditto-mgmt :7781`. Direct application clients talking to `dittod :7777` or
+`:7778` still use the node TCP token or node HTTP Basic auth.
