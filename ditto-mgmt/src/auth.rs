@@ -257,11 +257,22 @@ fn normalize_authority(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        bearer_token_matches_hash, claim_contains, normalize_authority, origin_authority,
-        request_authority, same_origin_for_unsafe_request,
+        admin_auth_middleware, bearer_token_matches_hash, claim_contains, normalize_authority,
+        origin_authority, request_authority, same_origin_for_unsafe_request,
+    };
+    use crate::{
+        api::{AppState, SharedState},
+        config::{AdminConfig, MgmtConfig},
     };
     use axum::{body::Body, http::Request};
+    use axum::{middleware, routing::get, Router};
     use serde_json::json;
+    use std::{net::SocketAddr, sync::Arc};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        sync::Mutex,
+    };
 
     #[test]
     fn safe_methods_skip_same_origin_checks() {
@@ -401,5 +412,189 @@ mod tests {
             Some(&json!("openid profile")),
             Some("ditto.mgmt")
         ));
+    }
+
+    fn auth_state(admin: AdminConfig, http_client: reqwest::Client) -> SharedState {
+        let mut cfg = MgmtConfig::default();
+        cfg.admin = admin;
+        Arc::new(AppState {
+            cfg: Arc::new(cfg),
+            tls: None,
+            http_client,
+            addr_cache: Mutex::new(None),
+        })
+    }
+
+    async fn spawn_auth_smoke_server(state: SharedState) -> SocketAddr {
+        let app = Router::new()
+            .route("/protected", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(
+                Arc::clone(&state),
+                admin_auth_middleware,
+            ))
+            .with_state(state);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        addr
+    }
+
+    async fn spawn_introspection_server(body: &'static str) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0u8; 512];
+            loop {
+                let n = stream.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn auth_middleware_smoke_allows_basic_when_configured() {
+        let admin = AdminConfig {
+            username: Some("admin".into()),
+            password_hash: Some(bcrypt::hash("pass", bcrypt::DEFAULT_COST).unwrap()),
+            ..AdminConfig::default()
+        };
+        let client = reqwest::Client::new();
+        let addr = spawn_auth_smoke_server(auth_state(admin, client.clone())).await;
+        let url = format!("http://{addr}/protected");
+
+        let missing = client.get(&url).send().await.unwrap();
+        assert_eq!(missing.status(), reqwest::StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            missing
+                .headers()
+                .get(reqwest::header::WWW_AUTHENTICATE)
+                .unwrap(),
+            r#"Basic realm="ditto-mgmt""#
+        );
+
+        let ok = client
+            .get(&url)
+            .basic_auth("admin", Some("pass"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), reqwest::StatusCode::OK);
+
+        let bearer = client
+            .get(&url)
+            .bearer_auth("not-enabled")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bearer.status(), reqwest::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn auth_middleware_smoke_allows_bearer_hash_without_basic() {
+        let admin = AdminConfig {
+            bearer_token_sha256: Some(
+                "4c5dc9b7708905f77f5e5d16316b5dfb425e68cb326dcd55a860e90a7707031e".into(),
+            ),
+            ..AdminConfig::default()
+        };
+        let client = reqwest::Client::new();
+        let addr = spawn_auth_smoke_server(auth_state(admin, client.clone())).await;
+        let url = format!("http://{addr}/protected");
+
+        let basic = client
+            .get(&url)
+            .basic_auth("admin", Some("pass"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(basic.status(), reqwest::StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            basic
+                .headers()
+                .get(reqwest::header::WWW_AUTHENTICATE)
+                .unwrap(),
+            r#"Bearer realm="ditto-mgmt""#
+        );
+
+        let ok = client
+            .get(&url)
+            .bearer_auth("test-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), reqwest::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn auth_middleware_smoke_allows_dual_basic_and_bearer_modes() {
+        let admin = AdminConfig {
+            username: Some("admin".into()),
+            password_hash: Some(bcrypt::hash("pass", bcrypt::DEFAULT_COST).unwrap()),
+            bearer_token_sha256: Some(
+                "4c5dc9b7708905f77f5e5d16316b5dfb425e68cb326dcd55a860e90a7707031e".into(),
+            ),
+            ..AdminConfig::default()
+        };
+        let client = reqwest::Client::new();
+        let addr = spawn_auth_smoke_server(auth_state(admin, client.clone())).await;
+        let url = format!("http://{addr}/protected");
+
+        let basic = client
+            .get(&url)
+            .basic_auth("admin", Some("pass"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(basic.status(), reqwest::StatusCode::OK);
+
+        let bearer = client
+            .get(&url)
+            .bearer_auth("test-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bearer.status(), reqwest::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn auth_middleware_smoke_allows_bearer_introspection() {
+        let introspection = spawn_introspection_server(
+            r#"{"active":true,"scope":"openid ditto.mgmt","aud":["ditto-mgmt"]}"#,
+        )
+        .await;
+        let admin = AdminConfig {
+            bearer_introspection_url: Some(format!("http://{introspection}/introspect")),
+            bearer_required_scope: Some("ditto.mgmt".into()),
+            bearer_required_audience: Some("ditto-mgmt".into()),
+            ..AdminConfig::default()
+        };
+        let client = reqwest::Client::new();
+        let addr = spawn_auth_smoke_server(auth_state(admin, client.clone())).await;
+        let url = format!("http://{addr}/protected");
+
+        let ok = client
+            .get(&url)
+            .bearer_auth("opaque-access-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), reqwest::StatusCode::OK);
     }
 }

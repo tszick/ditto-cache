@@ -156,6 +156,38 @@ mod tests {
     }
 
     #[test]
+    fn bearer_token_config_round_trips() {
+        let path = unique_test_file("bearer");
+        let cfg = CtlConfig {
+            mgmt: MgmtConfig {
+                url: "https://mgmt.example.test:9443".into(),
+                timeout_ms: 1500,
+                username: None,
+                password: None,
+                bearer_token: Some("sso-access-token".into()),
+                insecure_skip_verify: false,
+            },
+            output: OutputConfig {
+                format: "json".into(),
+            },
+        };
+
+        cfg.save_to_path(&path).expect("save bearer config");
+        let loaded = CtlConfig::load_from_path(&path).expect("reload bearer config");
+
+        assert_eq!(
+            loaded.mgmt.bearer_token.as_deref(),
+            Some("sso-access-token")
+        );
+        assert!(loaded.mgmt.username.is_none());
+        assert!(loaded.mgmt.password.is_none());
+
+        if let Some(root) = path.ancestors().nth(2) {
+            fs::remove_dir_all(root).ok();
+        }
+    }
+
+    #[test]
     fn load_from_path_reports_toml_parse_context() {
         let path = unique_test_file("invalid");
         fs::create_dir_all(path.parent().unwrap()).expect("create config dir");
