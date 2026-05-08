@@ -33,10 +33,10 @@ Default config location:
 In this codebase, `ditto-mgmt` runs in strict mode and refuses startup when:
 
 - `[tls].enabled` is `false` (management-to-node admin RPC must use mTLS),
-- `[admin].password_hash` is missing,
+- `[admin]` has neither Basic nor Bearer auth configured,
 - `[server].tls_cert` or `[server].tls_key` is missing.
 
-So management API/UI is effectively HTTPS + Basic Auth only.
+So management API/UI is effectively HTTPS plus configured admin auth.
 
 ## Minimal `mgmt.toml`
 
@@ -61,6 +61,12 @@ key  = "/certs/mgmt.key"
 [admin]
 username = "admin"
 password_hash = "$2b$12$..."
+# Optional SSO/Bearer mode instead of, or alongside, Basic:
+# bearer_introspection_url = "https://sso.example/oauth2/introspect"
+# bearer_introspection_client_id = "ditto-mgmt"
+# bearer_introspection_client_secret = "<client-secret>"
+# bearer_required_scope = "ditto.mgmt"
+# bearer_required_audience = "ditto-mgmt"
 
 [http_client_auth]
 username = "ditto"
@@ -88,6 +94,12 @@ Paste hash into:
 - `DITTO_MGMT_TLS_KEY` -> `server.tls_key`
 - `DITTO_MGMT_ADMIN_USER` -> `admin.username`
 - `DITTO_MGMT_ADMIN_PASSWORD_HASH` -> `admin.password_hash`
+- `DITTO_MGMT_ADMIN_BEARER_TOKEN_SHA256` -> `admin.bearer_token_sha256`
+- `DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_URL` -> `admin.bearer_introspection_url`
+- `DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_ID` -> `admin.bearer_introspection_client_id`
+- `DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_SECRET` -> `admin.bearer_introspection_client_secret`
+- `DITTO_MGMT_ADMIN_BEARER_REQUIRED_SCOPE` -> `admin.bearer_required_scope`
+- `DITTO_MGMT_ADMIN_BEARER_REQUIRED_AUDIENCE` -> `admin.bearer_required_audience`
 - `DITTO_MGMT_HTTP_AUTH_USER` -> `http_client_auth.username`
 - `DITTO_MGMT_HTTP_AUTH_PASSWORD` -> `http_client_auth.password`
 
@@ -106,6 +118,8 @@ url = "https://localhost:7781"
 timeout_ms = 3000
 username = "admin"
 password = "<mgmt-password>"
+# Or, for Bearer mode:
+# bearer_token = "<sso-access-token>"
 insecure_skip_verify = true
 
 [output]
@@ -113,7 +127,9 @@ format = "binary"
 ```
 
 Notes:
-- `username` / `password` are optional and only needed when `ditto-mgmt` Basic Auth is enabled.
+- `username` / `password` are only needed when `ditto-mgmt` Basic Auth is enabled.
+- `bearer_token` is only needed when `ditto-mgmt` Bearer Auth is enabled.
+- Do not configure Basic credentials and `bearer_token` together in `dittoctl`.
 - `insecure_skip_verify = true` is acceptable for local/self-signed dev or preprod labs; keep it `false` for production trust chains.
 
 ## Common admin workflows
@@ -239,7 +255,8 @@ dittoctl cache flush local
 
 - Keep cluster/admin channel (`:7779`) mTLS enabled.
 - Keep mgmt UI/API on HTTPS.
-- Set strong bcrypt password hashes for both mgmt and node HTTP auth.
+- Set strong bcrypt password hashes for node HTTP auth and for mgmt Basic auth when enabled.
+- Prefer Bearer introspection for SSO-backed mgmt access; require a Ditto-specific scope or audience.
 - Use distinct credentials for mgmt admin and node HTTP auth.
 - If using self-signed certs in dev, trust CA locally instead of disabling verification in production.
 
@@ -255,3 +272,16 @@ dittoctl cache flush local
   - verify node cluster port 7779 is reachable.
 - Mgmt proxy operations return auth errors:
   - verify `[http_client_auth]` matches node `[http_auth]` credentials.
+
+## Auth Boundary Notes
+
+`ditto-mgmt` Bearer mode protects the management UI/API. It does not make node
+REST (`:7778`) or binary TCP (`:7777`) SSO-aware:
+
+- mgmt-to-node admin calls still use mTLS on `:7779`,
+- mgmt cache proxy calls still use `[http_client_auth]` service credentials when node HTTP auth is enabled,
+- external clients calling node REST still use node `[http_auth]`,
+- external clients calling TCP still use the `Auth { token }` handshake when configured.
+
+End-user SSO/RBAC across node REST/TCP would require a separate protocol and
+client compatibility change.

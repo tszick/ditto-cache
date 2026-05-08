@@ -54,7 +54,10 @@ mod tests {
     async fn serve_logo_returns_embedded_png() {
         let response = serve_logo().await;
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.headers().get(header::CONTENT_TYPE).unwrap(), "image/png");
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/png"
+        );
 
         let body = to_bytes(response.into_body(), 256 * 1024)
             .await

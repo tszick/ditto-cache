@@ -65,11 +65,10 @@ pub struct TlsConfig {
     pub key: String,
 }
 
-/// Optional HTTP Basic Auth for the management server (port 7781).
+/// Optional admin authentication for the management server (port 7781).
 ///
-/// When `password_hash` is set, all `/api/*` and `/` endpoints require
-/// `Authorization: Basic <base64(user:pass)>`.  Browser clients will see a
-/// native login dialog; `dittoctl` and `curl` pass `-u user:pass`.
+/// Basic auth is enabled when `password_hash` is set. Bearer auth is enabled
+/// when either `bearer_token_sha256` or `bearer_introspection_url` is set.
 ///
 /// Generate a hash with: `dittoctl hash-password`
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -80,6 +79,32 @@ pub struct AdminConfig {
     /// bcrypt hash of the password.  When absent, auth is disabled.
     #[serde(default)]
     pub password_hash: Option<String>,
+    /// SHA-256 hex digest of an accepted opaque Bearer token.
+    #[serde(default)]
+    pub bearer_token_sha256: Option<String>,
+    /// OAuth2/OIDC token introspection endpoint for validating Bearer tokens.
+    #[serde(default)]
+    pub bearer_introspection_url: Option<String>,
+    /// Optional client id for introspection endpoint authentication.
+    #[serde(default)]
+    pub bearer_introspection_client_id: Option<String>,
+    /// Optional client secret for introspection endpoint authentication.
+    #[serde(default)]
+    pub bearer_introspection_client_secret: Option<String>,
+    /// Optional scope required in the introspection response.
+    #[serde(default)]
+    pub bearer_required_scope: Option<String>,
+    /// Optional audience required in the introspection response.
+    #[serde(default)]
+    pub bearer_required_audience: Option<String>,
+}
+
+impl AdminConfig {
+    pub fn auth_configured(&self) -> bool {
+        self.password_hash.is_some()
+            || self.bearer_token_sha256.is_some()
+            || self.bearer_introspection_url.is_some()
+    }
 }
 
 /// Credentials used by ditto-mgmt when forwarding cache GET/PUT/DELETE
@@ -208,6 +233,8 @@ mod tests {
         assert!(!cfg.tls.enabled);
         assert!(cfg.admin.username.is_none());
         assert!(cfg.admin.password_hash.is_none());
+        assert!(cfg.admin.bearer_token_sha256.is_none());
+        assert!(cfg.admin.bearer_introspection_url.is_none());
         assert!(cfg.http_client_auth.username.is_none());
         assert!(cfg.http_client_auth.password.is_none());
         assert!(cfg.cache_values.mask_values_by_default);
@@ -238,6 +265,7 @@ mod tests {
         assert_eq!(cfg.connection.seeds.len(), 2);
         assert!(!cfg.tls.enabled);
         assert!(cfg.admin.password_hash.is_none());
+        assert!(!cfg.admin.auth_configured());
         assert!(cfg.http_client_auth.password.is_none());
         assert!(cfg.cache_values.mask_values_by_default);
     }

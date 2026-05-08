@@ -24,6 +24,7 @@ Thumbs.db
 
 # Local-only review/security notes and generated reports
 /docs-local/
+Dockerfile.dittod-build
 
 # Client dist
 ditto-nodejs-client/dist/

@@ -5,7 +5,7 @@ pub mod cluster;
 pub mod doctor;
 pub mod nodes;
 
-use crate::auth::basic_auth_middleware;
+use crate::auth::admin_auth_middleware;
 use crate::config::MgmtConfig;
 use crate::node_client::all_cluster_addrs;
 use axum::{
@@ -132,10 +132,10 @@ pub fn build_router(state: SharedState) -> Router {
         // Web UI
         .route("/", get(crate::web::serve_index))
         .route("/ditto-logo.png", get(crate::web::serve_logo))
-        // Basic Auth across all routes (no-op when [admin] not configured).
+        // Admin auth across all routes (no-op when [admin] auth is not configured).
         .layer(middleware::from_fn_with_state(
             Arc::clone(&state),
-            basic_auth_middleware,
+            admin_auth_middleware,
         ))
         .layer(middleware::from_fn(security_headers_middleware))
         .with_state(state)

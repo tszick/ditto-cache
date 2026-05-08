@@ -1,12 +1,8 @@
-//! HTTP Basic Auth middleware for the ditto-mgmt server (port 7781).
+//! HTTP admin auth middleware for the ditto-mgmt server (port 7781).
 //!
-//! When `[admin] password_hash` is set in the config, every incoming request
-//! must carry a valid `Authorization: Basic <base64(user:pass)>` header.
-//! Requests without or with wrong credentials receive `401 Unauthorized` with a
-//! `WWW-Authenticate: Basic realm="ditto-mgmt"` header, which triggers the
-//! browser's native login dialog.
-//!
-//! When `password_hash` is absent the middleware is a no-op (auth disabled).
+//! Basic auth remains supported for local and CLI use. Bearer auth can validate
+//! either a configured SHA-256 token digest or an OAuth2/OIDC introspection
+//! endpoint response.
 
 use crate::api::SharedState;
 use axum::{
@@ -17,9 +13,20 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use reqwest::Url;
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
-/// Axum middleware: enforce HTTP Basic Auth when `[admin]` is configured.
-pub async fn basic_auth_middleware(
+#[derive(Debug, Deserialize)]
+struct IntrospectionResponse {
+    active: bool,
+    #[serde(default)]
+    scope: Option<serde_json::Value>,
+    #[serde(default)]
+    aud: Option<serde_json::Value>,
+}
+
+/// Axum middleware: enforce configured admin auth modes.
+pub async fn admin_auth_middleware(
     State(state): State<SharedState>,
     req: Request<Body>,
     next: Next,
@@ -32,24 +39,61 @@ pub async fn basic_auth_middleware(
             .into_response();
     }
 
-    let (expected_user, expected_hash) = match &state.cfg.admin.password_hash {
-        None => return next.run(req).await, // auth not configured → pass through
-        Some(hash) => {
-            let user = state
-                .cfg
-                .admin
-                .username
-                .as_deref()
-                .unwrap_or("admin")
-                .to_string();
-            (user, hash.clone())
-        }
-    };
+    if !state.cfg.admin.auth_configured() {
+        return next.run(req).await;
+    }
 
-    let credential = req
+    let authorization = req
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    if let Some(token) = authorization
+        .as_deref()
+        .and_then(|v| v.strip_prefix("Bearer "))
+    {
+        if bearer_authorized(&state, token).await {
+            return next.run(req).await;
+        }
+    }
+
+    if let Some(hash) = &state.cfg.admin.password_hash {
+        if basic_authorized(
+            authorization.as_deref(),
+            state.cfg.admin.username.as_deref(),
+            hash,
+        )
+        .await
+        {
+            return next.run(req).await;
+        }
+    }
+
+    let challenge = if state.cfg.admin.bearer_token_sha256.is_some()
+        || state.cfg.admin.bearer_introspection_url.is_some()
+    {
+        r#"Bearer realm="ditto-mgmt""#
+    } else {
+        r#"Basic realm="ditto-mgmt""#
+    };
+
+    (
+        StatusCode::UNAUTHORIZED,
+        [(header::WWW_AUTHENTICATE, challenge)],
+        Body::empty(),
+    )
+        .into_response()
+}
+
+async fn basic_authorized(
+    authorization: Option<&str>,
+    expected_user: Option<&str>,
+    expected_hash: &str,
+) -> bool {
+    let expected_user = expected_user.unwrap_or("admin").to_string();
+    let expected_hash = expected_hash.to_string();
+    let credential = authorization
         .and_then(|v| v.strip_prefix("Basic "))
         .and_then(|b64| {
             use base64::Engine;
@@ -72,17 +116,79 @@ pub async fn basic_auth_middleware(
     .await
     .unwrap_or(false);
 
-    let authorized = is_valid_user && is_valid_pass;
+    is_valid_user && is_valid_pass
+}
 
-    if authorized {
-        next.run(req).await
-    } else {
-        (
-            StatusCode::UNAUTHORIZED,
-            [(header::WWW_AUTHENTICATE, r#"Basic realm="ditto-mgmt""#)],
-            Body::empty(),
+async fn bearer_authorized(state: &SharedState, token: &str) -> bool {
+    if token.trim().is_empty() {
+        return false;
+    }
+
+    if let Some(expected_hash) = &state.cfg.admin.bearer_token_sha256 {
+        if bearer_token_matches_hash(token, expected_hash) {
+            return true;
+        }
+    }
+
+    let Some(url) = state.cfg.admin.bearer_introspection_url.as_deref() else {
+        return false;
+    };
+
+    let mut req = state.http_client.post(url).form(&[("token", token)]);
+    if let (Some(client_id), Some(client_secret)) = (
+        state.cfg.admin.bearer_introspection_client_id.as_deref(),
+        state
+            .cfg
+            .admin
+            .bearer_introspection_client_secret
+            .as_deref(),
+    ) {
+        req = req.basic_auth(client_id, Some(client_secret));
+    }
+
+    let Ok(resp) = req.send().await else {
+        return false;
+    };
+    if !resp.status().is_success() {
+        return false;
+    }
+    let Ok(body) = resp.json::<IntrospectionResponse>().await else {
+        return false;
+    };
+
+    body.active
+        && claim_contains(
+            body.scope.as_ref(),
+            state.cfg.admin.bearer_required_scope.as_deref(),
         )
-            .into_response()
+        && claim_contains(
+            body.aud.as_ref(),
+            state.cfg.admin.bearer_required_audience.as_deref(),
+        )
+}
+
+fn bearer_token_matches_hash(token: &str, expected_sha256_hex: &str) -> bool {
+    let digest = Sha256::digest(token.as_bytes());
+    let actual = digest
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
+    actual.eq_ignore_ascii_case(expected_sha256_hex.trim())
+}
+
+fn claim_contains(value: Option<&serde_json::Value>, required: Option<&str>) -> bool {
+    let Some(required) = required.filter(|v| !v.trim().is_empty()) else {
+        return true;
+    };
+    let required = required.trim();
+    match value {
+        Some(serde_json::Value::String(v)) => v.split_whitespace().any(|part| part == required),
+        Some(serde_json::Value::Array(values)) => values.iter().any(|v| {
+            v.as_str().is_some_and(|part| {
+                part == required || part.split_whitespace().any(|p| p == required)
+            })
+        }),
+        _ => false,
     }
 }
 
@@ -151,9 +257,11 @@ fn normalize_authority(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_authority, origin_authority, request_authority, same_origin_for_unsafe_request,
+        bearer_token_matches_hash, claim_contains, normalize_authority, origin_authority,
+        request_authority, same_origin_for_unsafe_request,
     };
     use axum::{body::Body, http::Request};
+    use serde_json::json;
 
     #[test]
     fn safe_methods_skip_same_origin_checks() {
@@ -260,5 +368,38 @@ mod tests {
         );
         assert_eq!(origin_authority("not a url"), None);
         assert_eq!(normalize_authority(" EXAMPLE.com. "), "example.com");
+    }
+
+    #[test]
+    fn bearer_hash_validation_uses_sha256_hex() {
+        assert!(bearer_token_matches_hash(
+            "test-token",
+            "4c5dc9b7708905f77f5e5d16316b5dfb425e68cb326dcd55a860e90a7707031e"
+        ));
+        assert!(bearer_token_matches_hash(
+            "test-token",
+            "4C5DC9B7708905F77F5E5D16316B5DFB425E68CB326DCD55A860E90A7707031E"
+        ));
+        assert!(!bearer_token_matches_hash(
+            "other",
+            "4c5dc9b7708905f77f5e5d16316b5dfb425e68cb326dcd55a860e90a7707031e"
+        ));
+    }
+
+    #[test]
+    fn bearer_claim_matching_handles_scope_strings_and_audience_arrays() {
+        assert!(claim_contains(
+            Some(&json!("openid ditto.mgmt")),
+            Some("ditto.mgmt")
+        ));
+        assert!(claim_contains(
+            Some(&json!(["account", "ditto-mgmt"])),
+            Some("ditto-mgmt")
+        ));
+        assert!(claim_contains(None, None));
+        assert!(!claim_contains(
+            Some(&json!("openid profile")),
+            Some("ditto.mgmt")
+        ));
     }
 }

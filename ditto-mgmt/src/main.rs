@@ -37,6 +37,24 @@ fn apply_env_overrides(cfg: &mut MgmtConfig) {
     if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_PASSWORD_HASH") {
         cfg.admin.password_hash = Some(v);
     }
+    if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_BEARER_TOKEN_SHA256") {
+        cfg.admin.bearer_token_sha256 = Some(v);
+    }
+    if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_URL") {
+        cfg.admin.bearer_introspection_url = Some(v);
+    }
+    if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_ID") {
+        cfg.admin.bearer_introspection_client_id = Some(v);
+    }
+    if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_SECRET") {
+        cfg.admin.bearer_introspection_client_secret = Some(v);
+    }
+    if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_BEARER_REQUIRED_SCOPE") {
+        cfg.admin.bearer_required_scope = Some(v);
+    }
+    if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_BEARER_REQUIRED_AUDIENCE") {
+        cfg.admin.bearer_required_audience = Some(v);
+    }
     if let Ok(v) = std::env::var("DITTO_MGMT_HTTP_AUTH_USER") {
         cfg.http_client_auth.username = Some(v);
     }
@@ -55,9 +73,9 @@ fn validate_strict_security(cfg: &MgmtConfig) -> Result<()> {
         );
     }
 
-    if cfg.admin.password_hash.is_none() {
+    if !cfg.admin.auth_configured() {
         anyhow::bail!(
-            "Strict security: [admin].password_hash must be configured. Refusing unauthenticated management API."
+            "Strict security: [admin] Basic or Bearer auth must be configured. Refusing unauthenticated management API."
         );
     }
 
@@ -150,6 +168,12 @@ mod tests {
             "DITTO_MGMT_TLS_KEY",
             "DITTO_MGMT_ADMIN_USER",
             "DITTO_MGMT_ADMIN_PASSWORD_HASH",
+            "DITTO_MGMT_ADMIN_BEARER_TOKEN_SHA256",
+            "DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_URL",
+            "DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_ID",
+            "DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_SECRET",
+            "DITTO_MGMT_ADMIN_BEARER_REQUIRED_SCOPE",
+            "DITTO_MGMT_ADMIN_BEARER_REQUIRED_AUDIENCE",
             "DITTO_MGMT_HTTP_AUTH_USER",
             "DITTO_MGMT_HTTP_AUTH_PASSWORD",
             "DITTO_MGMT_BIND",
@@ -165,6 +189,18 @@ mod tests {
         std::env::set_var("DITTO_MGMT_TLS_KEY", "key.pem");
         std::env::set_var("DITTO_MGMT_ADMIN_USER", "admin-user");
         std::env::set_var("DITTO_MGMT_ADMIN_PASSWORD_HASH", "$2b$hash");
+        std::env::set_var("DITTO_MGMT_ADMIN_BEARER_TOKEN_SHA256", "abc123");
+        std::env::set_var(
+            "DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_URL",
+            "https://sso.example/introspect",
+        );
+        std::env::set_var("DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_ID", "ditto");
+        std::env::set_var(
+            "DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_SECRET",
+            "secret",
+        );
+        std::env::set_var("DITTO_MGMT_ADMIN_BEARER_REQUIRED_SCOPE", "ditto.mgmt");
+        std::env::set_var("DITTO_MGMT_ADMIN_BEARER_REQUIRED_AUDIENCE", "ditto-mgmt");
         std::env::set_var("DITTO_MGMT_HTTP_AUTH_USER", "node-user");
         std::env::set_var("DITTO_MGMT_HTTP_AUTH_PASSWORD", "node-pass");
         std::env::set_var("DITTO_MGMT_BIND", "127.0.0.1");
@@ -176,6 +212,27 @@ mod tests {
         assert_eq!(cfg.server.tls_key.as_deref(), Some("key.pem"));
         assert_eq!(cfg.admin.username.as_deref(), Some("admin-user"));
         assert_eq!(cfg.admin.password_hash.as_deref(), Some("$2b$hash"));
+        assert_eq!(cfg.admin.bearer_token_sha256.as_deref(), Some("abc123"));
+        assert_eq!(
+            cfg.admin.bearer_introspection_url.as_deref(),
+            Some("https://sso.example/introspect")
+        );
+        assert_eq!(
+            cfg.admin.bearer_introspection_client_id.as_deref(),
+            Some("ditto")
+        );
+        assert_eq!(
+            cfg.admin.bearer_introspection_client_secret.as_deref(),
+            Some("secret")
+        );
+        assert_eq!(
+            cfg.admin.bearer_required_scope.as_deref(),
+            Some("ditto.mgmt")
+        );
+        assert_eq!(
+            cfg.admin.bearer_required_audience.as_deref(),
+            Some("ditto-mgmt")
+        );
         assert_eq!(cfg.http_client_auth.username.as_deref(), Some("node-user"));
         assert_eq!(cfg.http_client_auth.password.as_deref(), Some("node-pass"));
         assert_eq!(cfg.server.bind, "127.0.0.1");
@@ -191,9 +248,9 @@ mod tests {
 
         cfg.tls.enabled = true;
         let err = validate_strict_security(&cfg).expect_err("missing admin auth should fail");
-        assert!(err.to_string().contains("[admin].password_hash"));
+        assert!(err.to_string().contains("[admin] Basic or Bearer auth"));
 
-        cfg.admin.password_hash = Some("$2b$hash".into());
+        cfg.admin.bearer_token_sha256 = Some("abc123".into());
         let err = validate_strict_security(&cfg).expect_err("missing HTTPS cert/key should fail");
         assert!(err.to_string().contains("[server].tls_cert"));
 

@@ -26,6 +26,9 @@ pub struct MgmtConfig {
     /// Optional HTTP Basic Auth password for ditto-mgmt.
     #[serde(default)]
     pub password: Option<String>,
+    /// Optional Bearer token for ditto-mgmt.
+    #[serde(default)]
+    pub bearer_token: Option<String>,
     /// Accept invalid/self-signed TLS certs for local/dev management endpoints.
     #[serde(default)]
     pub insecure_skip_verify: bool,
@@ -45,6 +48,7 @@ impl Default for CtlConfig {
                 timeout_ms: 3000,
                 username: None,
                 password: None,
+                bearer_token: None,
                 insecure_skip_verify: false,
             },
             output: OutputConfig {
@@ -128,6 +132,7 @@ mod tests {
                 timeout_ms: 1500,
                 username: Some("alice".into()),
                 password: Some("secret".into()),
+                bearer_token: None,
                 insecure_skip_verify: true,
             },
             output: OutputConfig {

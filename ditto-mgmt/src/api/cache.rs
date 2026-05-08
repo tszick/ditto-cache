@@ -243,7 +243,11 @@ async fn flush_namespace(
             continue;
         };
 
-        let url = format!("{}://{}/keys/delete-by-pattern", state.http_scheme(), authority);
+        let url = format!(
+            "{}://{}/keys/delete-by-pattern",
+            state.http_scheme(),
+            authority
+        );
         match node_http_request(
             state.http_client.post(&url),
             &state,

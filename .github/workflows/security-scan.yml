@@ -54,7 +54,6 @@ jobs:
             --severity HIGH,CRITICAL \
             --ignore-unfixed \
             --skip-dirs /repo/target \
-            --skip-files /repo/Dockerfile.dittod-build \
             --format sarif \
             --output /repo/trivy-fs.sarif \
             --exit-code 1

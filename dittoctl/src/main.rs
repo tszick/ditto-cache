@@ -81,7 +81,7 @@ async fn main() -> Result<()> {
         builder = builder.danger_accept_invalid_certs(true);
     }
 
-    if let Some(headers) = basic_auth_headers(&cfg)? {
+    if let Some(headers) = auth_headers(&cfg)? {
         builder = builder.default_headers(headers);
     }
 
@@ -111,9 +111,21 @@ fn hash_password_value(password: &str) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("bcrypt hash failed: {}", e))?)
 }
 
-fn basic_auth_headers(cfg: &CtlConfig) -> Result<Option<HeaderMap>> {
-    match (&cfg.mgmt.username, &cfg.mgmt.password) {
-        (Some(username), Some(password)) => {
+fn auth_headers(cfg: &CtlConfig) -> Result<Option<HeaderMap>> {
+    match (
+        &cfg.mgmt.username,
+        &cfg.mgmt.password,
+        &cfg.mgmt.bearer_token,
+    ) {
+        (None, None, Some(token)) => {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {}", token))?,
+            );
+            Ok(Some(headers))
+        }
+        (Some(username), Some(password), None) => {
             let mut headers = HeaderMap::new();
             let auth = STANDARD.encode(format!("{}:{}", username, password));
             headers.insert(
@@ -122,9 +134,12 @@ fn basic_auth_headers(cfg: &CtlConfig) -> Result<Option<HeaderMap>> {
             );
             Ok(Some(headers))
         }
-        (None, None) => Ok(None),
+        (None, None, None) => Ok(None),
+        (Some(_), Some(_), Some(_)) => {
+            anyhow::bail!("dittoctl config must not set both Basic Auth and bearer_token")
+        }
         _ => anyhow::bail!(
-            "dittoctl config requires both mgmt.username and mgmt.password when Basic Auth is configured"
+            "dittoctl config requires both mgmt.username and mgmt.password for Basic Auth, or only mgmt.bearer_token for Bearer auth"
         ),
     }
 }
@@ -245,19 +260,20 @@ mod tests {
         assert_eq!(cfg.mgmt.timeout_ms, 3000);
         assert!(cfg.mgmt.username.is_none());
         assert!(cfg.mgmt.password.is_none());
+        assert!(cfg.mgmt.bearer_token.is_none());
         assert!(!cfg.mgmt.insecure_skip_verify);
         assert_eq!(cfg.output.format, "binary");
     }
 
     #[test]
-    fn basic_auth_headers_encode_credentials_and_reject_partial_config() {
+    fn auth_headers_encode_basic_or_bearer_and_reject_invalid_config() {
         let mut cfg = CtlConfig::default();
-        assert!(basic_auth_headers(&cfg).unwrap().is_none());
+        assert!(auth_headers(&cfg).unwrap().is_none());
 
         cfg.mgmt.username = Some("admin".into());
         let password = format!("test-password-{}", std::process::id());
         cfg.mgmt.password = Some(password.clone());
-        let headers = basic_auth_headers(&cfg).unwrap().unwrap();
+        let headers = auth_headers(&cfg).unwrap().unwrap();
         let expected = STANDARD.encode(format!("admin:{password}"));
         assert_eq!(
             headers.get(AUTHORIZATION).unwrap(),
@@ -265,8 +281,18 @@ mod tests {
         );
 
         cfg.mgmt.password = None;
-        let err = basic_auth_headers(&cfg).unwrap_err();
+        let err = auth_headers(&cfg).unwrap_err();
         assert!(err.to_string().contains("requires both"));
+
+        let mut cfg = CtlConfig::default();
+        cfg.mgmt.bearer_token = Some("token-123".into());
+        let headers = auth_headers(&cfg).unwrap().unwrap();
+        assert_eq!(headers.get(AUTHORIZATION).unwrap(), "Bearer token-123");
+
+        cfg.mgmt.username = Some("admin".into());
+        cfg.mgmt.password = Some("pass".into());
+        let err = auth_headers(&cfg).unwrap_err();
+        assert!(err.to_string().contains("must not set both"));
     }
 
     #[test]
