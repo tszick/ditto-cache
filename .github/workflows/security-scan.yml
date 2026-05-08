@@ -25,13 +25,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Run Gitleaks
         run: |
           docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest \
-            detect --source=/repo --no-banner --redact \
+            detect --source=/repo --no-git --no-banner --redact \
             --report-format sarif --report-path /repo/gitleaks.sarif
 
       - name: Upload Gitleaks SARIF

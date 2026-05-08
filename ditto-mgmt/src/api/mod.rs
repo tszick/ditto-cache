@@ -41,8 +41,8 @@ const CONTENT_SECURITY_POLICY: &str = concat!(
     "connect-src 'self' https://cdn.jsdelivr.net; ",
     "img-src 'self' data:; ",
     "font-src 'self' https://cdn.jsdelivr.net data:; ",
-    "style-src 'self' https://cdn.jsdelivr.net 'sha256-Ap41oucsR2OX+YVA+Sxp6CXu3CilxJr3lHYwFkuIOFk='; ",
-    "script-src 'self' https://cdn.jsdelivr.net 'sha256-JVgK2FzgQp8/Vgz9PBYSBGwWu8O5KJoOiAnjOXZBYPg='"
+    "style-src 'self' https://cdn.jsdelivr.net 'sha256-zout71JFYhls/gibmwN63ihb96tmhzhpWukdBnZh+Yc='; ",
+    "script-src 'self' https://cdn.jsdelivr.net 'sha256-DalhQAcWf8gFr0EPEf+nU8O0ufgjGPVW0TnkraCMESE='"
 );
 
 /// Shared application state injected into every Axum handler via [`axum::extract::State`].
@@ -131,6 +131,7 @@ pub fn build_router(state: SharedState) -> Router {
         )
         // Web UI
         .route("/", get(crate::web::serve_index))
+        .route("/ditto-logo.png", get(crate::web::serve_logo))
         // Basic Auth across all routes (no-op when [admin] not configured).
         .layer(middleware::from_fn_with_state(
             Arc::clone(&state),
@@ -194,6 +195,8 @@ fn apply_security_headers(headers: &mut HeaderMap) {
 mod tests {
     use super::*;
     use crate::config::MgmtConfig;
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
 
     fn test_state(mut cfg: MgmtConfig) -> SharedState {
         cfg.connection.seeds.clear();
@@ -259,5 +262,28 @@ mod tests {
             .to_str()
             .unwrap()
             .contains("frame-ancestors 'none'"));
+    }
+
+    #[test]
+    fn content_security_policy_hashes_match_embedded_web_ui() {
+        let html = include_str!("../web/index.html");
+        let style = tag_body(html, "<style>", "</style>");
+        let script = tag_body(html, "<script>", "</script>");
+        let style_hash = csp_hash(style);
+        let script_hash = csp_hash(script);
+
+        assert!(CONTENT_SECURITY_POLICY.contains(&format!("'sha256-{style_hash}'")));
+        assert!(CONTENT_SECURITY_POLICY.contains(&format!("'sha256-{script_hash}'")));
+    }
+
+    fn tag_body<'a>(input: &'a str, start: &str, end: &str) -> &'a str {
+        let start_idx = input.find(start).unwrap() + start.len();
+        let end_idx = input[start_idx..].find(end).unwrap() + start_idx;
+        &input[start_idx..end_idx]
+    }
+
+    fn csp_hash(input: &str) -> String {
+        let digest = Sha256::digest(input.as_bytes());
+        base64::engine::general_purpose::STANDARD.encode(digest)
     }
 }

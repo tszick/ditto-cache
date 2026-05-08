@@ -7,7 +7,7 @@
 //! | Method | Path | Description |
 //! |--------|------|-------------|
 //! | GET    | `/api/cache/:target/stats`              | Cache statistics |
-//! | POST   | `/api/cache/:target/flush`              | Flush all keys |
+//! | POST   | `/api/cache/:target/flush`              | Flush all keys, or one namespace with `?namespace=` |
 //! | GET    | `/api/cache/:target/keys`               | List keys (optional `?pattern=`) |
 //! | GET    | `/api/cache/:target/keys/:key`          | Get value (proxied) |
 //! | PUT    | `/api/cache/:target/keys/:key`          | Set value (proxied) |
@@ -168,14 +168,20 @@ pub async fn cache_stats(
 // POST /api/cache/:target/flush
 // ---------------------------------------------------------------------------
 
-/// `POST /api/cache/:target/flush` — Evict all keys from the cache.
+/// `POST /api/cache/:target/flush` — Evict keys from the cache.
 ///
 /// Use `target = "all"` to flush every node simultaneously.
+/// Include `?namespace=<tenant>` to delete only keys in one namespace.
 /// **Irreversible** — data is lost; use with caution in production.
 pub async fn flush_cache(
     State(state): State<SharedState>,
     Path(target): Path<String>,
+    Query(nsq): Query<NamespaceQuery>,
 ) -> impl IntoResponse {
+    if let Some(namespace) = normalize_namespace(nsq.namespace) {
+        return flush_namespace(state, target, namespace).await;
+    }
+
     let addrs = if target == "all" {
         state.cluster_addrs().await
     } else {
@@ -195,6 +201,95 @@ pub async fn flush_cache(
         }
     }
     Json(results).into_response()
+}
+
+async fn flush_namespace(
+    state: SharedState,
+    target: String,
+    namespace: String,
+) -> axum::response::Response {
+    let addrs = if target == "all" {
+        state.cluster_addrs().await
+    } else {
+        resolve_target(
+            &target,
+            state.cfg.connection.cluster_port,
+            &state.cfg.connection.seeds,
+        )
+        .await
+    };
+
+    let mut results = Vec::new();
+    for addr in addrs {
+        let authority = if target == "all" {
+            cluster_addr_http_authority(addr)
+        } else {
+            http_authority_for_target(
+                &target,
+                state.cfg.connection.cluster_port,
+                &state.cfg.connection.seeds,
+            )
+            .or_else(|| cluster_addr_http_authority(addr))
+        };
+
+        let Some(authority) = authority else {
+            results.push(serde_json::json!({
+                "addr": addr.to_string(),
+                "ok": false,
+                "deleted": 0,
+                "namespace": namespace.clone(),
+                "error": "invalid HTTP target"
+            }));
+            continue;
+        };
+
+        let url = format!("{}://{}/keys/delete-by-pattern", state.http_scheme(), authority);
+        match node_http_request(
+            state.http_client.post(&url),
+            &state,
+            Some(namespace.clone()),
+        )
+        .json(&serde_json::json!({ "pattern": "*" }))
+        .send()
+        .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                let body = resp.json::<serde_json::Value>().await.unwrap_or_default();
+                results.push(serde_json::json!({
+                    "addr": addr.to_string(),
+                    "ok": true,
+                    "deleted": body.get("deleted").and_then(|v| v.as_u64()).unwrap_or(0),
+                    "namespace": namespace.clone(),
+                    "error": null
+                }));
+            }
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                results.push(serde_json::json!({
+                    "addr": addr.to_string(),
+                    "ok": false,
+                    "deleted": 0,
+                    "namespace": namespace.clone(),
+                    "error": format!("HTTP {}: {}", status.as_u16(), body)
+                }));
+            }
+            Err(e) => results.push(serde_json::json!({
+                "addr": addr.to_string(),
+                "ok": false,
+                "deleted": 0,
+                "namespace": namespace.clone(),
+                "error": e.to_string()
+            })),
+        }
+    }
+    Json(results).into_response()
+}
+
+fn cluster_addr_http_authority(addr: std::net::SocketAddr) -> Option<String> {
+    addr.port()
+        .checked_sub(1)
+        .map(|http_port| format!("{}:{}", addr.ip(), http_port))
 }
 
 // ---------------------------------------------------------------------------
@@ -1057,6 +1152,51 @@ mod tests {
             body[0]["keys"],
             serde_json::json!(["alpha", "nested::beta", "other::gamma"])
         );
+    }
+
+    #[tokio::test]
+    async fn flush_without_namespace_uses_admin_flush() {
+        let (addr, handle) = one_admin_response(AdminResponse::Flushed).await;
+        let state = state_for_seed(addr.to_string(), addr.port());
+
+        let response = flush_cache(
+            State(state),
+            Path(addr.to_string()),
+            Query(NamespaceQuery::default()),
+        )
+        .await
+        .into_response();
+
+        assert!(matches!(handle.await.unwrap(), AdminRequest::FlushCache));
+        let body = json_body(response).await;
+        assert_eq!(body[0]["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn flush_with_namespace_deletes_by_pattern_over_http() {
+        let (http_addr, handle) = one_http_response("200 OK", r#"{"deleted":2}"#).await;
+        let state = proxy_state_for_http_addr(http_addr);
+        let target = format!("127.0.0.1:{}", http_addr.port() + 1);
+
+        let response = flush_cache(
+            State(state),
+            Path(target),
+            Query(NamespaceQuery {
+                namespace: Some(" tenant-a ".into()),
+            }),
+        )
+        .await
+        .into_response();
+
+        let request = handle.await.unwrap();
+        assert!(request.starts_with("POST /keys/delete-by-pattern HTTP/1.1"));
+        assert!(request.contains("x-ditto-namespace: tenant-a"));
+        assert!(request.ends_with(r#"{"pattern":"*"}"#));
+
+        let body = json_body(response).await;
+        assert_eq!(body[0]["ok"], true);
+        assert_eq!(body[0]["deleted"], 2);
+        assert_eq!(body[0]["namespace"], "tenant-a");
     }
 
     #[tokio::test]

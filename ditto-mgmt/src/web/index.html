@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Ditto Cluster Management</title>
+  <link rel="icon" href="data:,">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+" crossorigin="anonymous">
   <style>
@@ -73,6 +74,207 @@
     .form-control, .form-select { background-color: #0d1117; color: #e6edf3; border-color: #30363d; }
     .form-control:focus, .form-select:focus { background-color: #0d1117; color: #e6edf3; border-color: #388bfd; box-shadow: 0 0 0 .2rem rgba(56,139,253,.15); }
     .result-box { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; min-height: 84px; max-height: 280px; overflow: auto; padding: 10px; font-size: .82rem; white-space: pre-wrap; }
+    .confirmation-summary { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 10px; font-size: .86rem; }
+    .confirmation-summary dt { color: #8b949e; font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 2px; }
+    .confirmation-summary dd { color: #e6edf3; margin-bottom: 8px; word-break: break-all; }
+    :root {
+      --ditto-bg: #f7fbff;
+      --ditto-surface: rgba(255, 255, 255, 0.8);
+      --ditto-surface-strong: #ffffff;
+      --ditto-text: #18202b;
+      --ditto-muted: #5c6977;
+      --ditto-line: rgba(24, 32, 43, 0.09);
+      --ditto-blue: #22b7f2;
+      --ditto-blue-deep: #1694dc;
+      --ditto-green: #8bd63d;
+      --ditto-green-deep: #63b92f;
+      --ditto-orange: #ffbb43;
+      --ditto-navy: #1d2430;
+      --ditto-shadow: 0 24px 80px rgba(24, 58, 92, 0.14);
+      --font-display: "Space Grotesk", "Segoe UI", sans-serif;
+      --font-body: "Manrope", "Segoe UI", sans-serif;
+    }
+    html { color-scheme: light; }
+    body {
+      font-family: var(--font-body);
+      color: var(--ditto-text);
+      background:
+        radial-gradient(circle at top left, rgba(34, 183, 242, 0.25), transparent 28%),
+        radial-gradient(circle at 82% 14%, rgba(139, 214, 61, 0.2), transparent 22%),
+        radial-gradient(circle at bottom right, rgba(255, 187, 67, 0.16), transparent 24%),
+        linear-gradient(180deg, #f8fcff 0%, #eef6fb 100%);
+    }
+    .panel-bg,
+    .card,
+    .details-panel,
+    .ops-panel,
+    .overview-card,
+    .ops-card,
+    .detail-card,
+    .modal-content,
+    .confirmation-summary,
+    .result-box {
+      background: var(--ditto-surface);
+      border-color: rgba(255, 255, 255, 0.72) !important;
+      box-shadow: var(--ditto-shadow);
+      backdrop-filter: blur(16px);
+      color: var(--ditto-text);
+    }
+    .navbar {
+      background: rgba(248, 252, 255, 0.86) !important;
+      border-color: rgba(24, 32, 43, 0.05) !important;
+      backdrop-filter: blur(18px);
+    }
+    .navbar-brand {
+      color: var(--ditto-text) !important;
+      font-family: var(--font-display);
+      letter-spacing: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: .8rem;
+    }
+    .brand-logo {
+      width: 2.35rem;
+      height: 2.35rem;
+      object-fit: contain;
+      filter: drop-shadow(0 10px 24px rgba(24, 58, 92, 0.14));
+    }
+    .text-secondary,
+    .text-muted,
+    .overview-note,
+    .detail-label,
+    .ops-card-title,
+    .overview-label,
+    .table-heading,
+    .addr-subtitle {
+      color: var(--ditto-muted) !important;
+    }
+    .detail-value,
+    .overview-value,
+    .fw-semibold,
+    .modal-title,
+    .confirmation-summary dd {
+      color: var(--ditto-text);
+    }
+    .overview-label,
+    .detail-label,
+    .ops-card-title,
+    h1, h2, h3 {
+      font-family: var(--font-display);
+      letter-spacing: 0;
+    }
+    .ops-card,
+    .overview-card,
+    .detail-card,
+    .card,
+    .modal-content,
+    .result-box,
+    .confirmation-summary {
+      border-radius: 16px;
+    }
+    .overview-card,
+    .ops-card,
+    .detail-card {
+      background: rgba(255, 255, 255, 0.72);
+    }
+    .overview-card.ok,
+    .ops-card.ok {
+      border-top: 4px solid var(--ditto-green) !important;
+    }
+    .overview-card.warn,
+    .ops-card.warn {
+      border-top: 4px solid var(--ditto-orange) !important;
+    }
+    .overview-card.crit,
+    .ops-card.crit {
+      border-top: 4px solid #f85149 !important;
+    }
+    .badge-primary,
+    .badge-primary-gradient {
+      background: linear-gradient(135deg, var(--ditto-blue), var(--ditto-green)) !important;
+      color: #fff;
+    }
+    .badge-success-custom,
+    .bg-success {
+      background-color: var(--ditto-green-deep) !important;
+    }
+    .badge-warning-custom,
+    .bg-warning {
+      background-color: var(--ditto-orange) !important;
+    }
+    .bg-secondary {
+      background-color: rgba(24, 32, 43, 0.62) !important;
+    }
+    .btn-outline-secondary,
+    .btn-outline-primary,
+    .btn-outline-success,
+    .btn-outline-warning,
+    .btn-outline-info,
+    .btn-outline-danger {
+      background: rgba(255, 255, 255, 0.58);
+      border-color: rgba(24, 32, 43, 0.12);
+      color: var(--ditto-text);
+    }
+    .btn-outline-primary:hover,
+    .btn-primary,
+    .btn-danger {
+      background: linear-gradient(135deg, var(--ditto-blue), var(--ditto-green)) !important;
+      border-color: transparent !important;
+      color: #fff !important;
+    }
+    .ops-tabs {
+      border-color: rgba(24, 32, 43, 0.08);
+    }
+    .ops-tabs .nav-link {
+      color: var(--ditto-muted);
+      font-weight: 700;
+    }
+    .ops-tabs .nav-link.active {
+      color: var(--ditto-text);
+      background: rgba(255, 255, 255, 0.72);
+      border-bottom-color: var(--ditto-blue);
+    }
+    .table {
+      --bs-table-bg: transparent;
+      --bs-table-color: var(--ditto-text);
+      --bs-table-hover-bg: rgba(34, 183, 242, 0.08);
+      color: var(--ditto-text);
+    }
+    .table > :not(caption) > * > * {
+      color: var(--ditto-text);
+      border-color: rgba(24, 32, 43, 0.06);
+    }
+    .node-row:hover,
+    .node-row.selected {
+      background: rgba(34, 183, 242, 0.08) !important;
+    }
+    .form-control,
+    .form-select {
+      background-color: rgba(255, 255, 255, 0.78);
+      color: var(--ditto-text);
+      border-color: rgba(24, 32, 43, 0.12);
+    }
+    .form-control:focus,
+    .form-select:focus {
+      background-color: #fff;
+      color: var(--ditto-text);
+      border-color: rgba(34, 183, 242, 0.55);
+      box-shadow: 0 0 0 .2rem rgba(34, 183, 242, .15);
+    }
+    .findings-card {
+      max-height: 24rem;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    .findings-scroll {
+      overflow: auto;
+      min-height: 0;
+      padding-right: .25rem;
+    }
+    .compact-table {
+      color: var(--ditto-text);
+    }
   </style>
 </head>
 <body>
@@ -81,10 +283,10 @@
 <nav class="navbar navbar-expand-lg navbar-dark border-bottom border-secondary panel-bg">
   <div class="container-fluid px-4">
     <span class="navbar-brand">
-      <i class="bi bi-database-gear me-2 text-primary"></i>Ditto Cluster Management
+      <img class="brand-logo" src="/ditto-logo.png" alt="Ditto logo">Ditto Cluster Management
     </span>
     <div class="ms-auto d-flex align-items-center gap-3">
-      <span class="text-secondary small" id="last-updated">â€”</span>
+      <span class="text-secondary small" id="last-updated">-</span>
       <span class="badge bg-secondary refresh-badge" id="auto-refresh-badge">
         <i class="bi bi-arrow-repeat me-1"></i>Auto-refresh ON
       </span>
@@ -176,7 +378,8 @@
             <th>Status</th>
             <th>Name</th>
             <th>Primary</th>
-            <th>Committed</th>
+            <th>Keys</th>
+            <th>Log index</th>
             <th class="memory-col">Memory</th>
             <th>Heartbeat</th>
             <th class="uptime-col">Uptime</th>
@@ -184,8 +387,8 @@
           </tr>
         </thead>
         <tbody id="nodes-tbody">
-          <tr><td colspan="8" class="text-center text-secondary py-5">
-            <div class="spinner-border spinner-border-sm me-2" role="status"></div>Loadingâ€¦
+          <tr><td colspan="9" class="text-center text-secondary py-5">
+            <div class="spinner-border spinner-border-sm me-2" role="status"></div>Loading...
           </td></tr>
         </tbody>
       </table>
@@ -195,7 +398,7 @@
   <!-- Details panel -->
   <div class="card border-secondary mt-3 details-panel d-none" id="details-panel">
     <div class="card-header d-flex justify-content-between align-items-center border-secondary panel-bg">
-      <span><i class="bi bi-info-circle me-2 text-primary"></i>Node Details: <strong id="details-title">â€”</strong></span>
+      <span><i class="bi bi-info-circle me-2 text-primary"></i>Node Details: <strong id="details-title">-</strong></span>
       <button class="btn-close btn-close-white btn-sm" id="close-details"></button>
     </div>
     <div class="card-body">
@@ -208,6 +411,28 @@
 <!-- Toast container -->
 <div class="toast-container" id="toast-container"></div>
 
+<!-- Confirmation modal -->
+<div class="modal fade" id="confirmation-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content border-danger">
+      <div class="modal-header border-secondary">
+        <h5 class="modal-title" id="confirmation-title">Confirm operation</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-warning mb-3" id="confirmation-message"></p>
+        <dl class="confirmation-summary" id="confirmation-summary"></dl>
+        <label class="form-label small text-secondary mt-3" for="confirmation-input" id="confirmation-label"></label>
+        <input class="form-control" id="confirmation-input" autocomplete="off">
+      </div>
+      <div class="modal-footer border-secondary">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-danger" id="confirmation-approve" disabled>Confirm</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
 <script>
 // ---------------------------------------------------------------------------
@@ -218,6 +443,8 @@ let refreshTimer = null;
 let selectedAddr = null;
 let nodesData = [];
 let doctorData = null;
+let confirmationModal = null;
+let pendingConfirmation = null;
 
 // ---------------------------------------------------------------------------
 // Auto-refresh
@@ -449,7 +676,7 @@ function renderDoctorPanel(data) {
       <div class="detail-value">Quota peak ${summary.quota_peak_usage_pct ?? 0}%</div>
       <div class="overview-note">${summary.quota_reject_rate_per_min ?? 0} quota rejects/min, p99 ${summary.p99_latency_ms ?? 0}ms, errors ${summary.client_error_rate_pct ?? 0}%</div>
     </div>
-    <div class="ops-card">
+    <div class="ops-card findings-card">
       <div class="ops-card-title">Findings</div>
       ${renderFindingsTable(findings)}
     </div>`;
@@ -458,7 +685,7 @@ function renderDoctorPanel(data) {
 function renderFindingsTable(findings) {
   if (!findings.length) return '<div class="text-secondary small">No findings.</div>';
   return `
-    <div class="table-responsive">
+    <div class="table-responsive findings-scroll">
       <table class="table table-borderless compact-table mb-0">
         <thead class="text-secondary"><tr><th>Severity</th><th>Scope</th><th>Finding</th><th>Action</th></tr></thead>
         <tbody>${findings.map(f => `
@@ -584,8 +811,8 @@ function renderTopologyPanel(nodes) {
         <div class="ops-card ${!n.reachable ? 'crit' : n.status === 'Active' ? 'ok' : 'warn'}">
           <div class="ops-card-title">${escapeHtml(n.node_name || n.addr)}</div>
           <div class="detail-value">${n.is_primary ? '<i class="bi bi-star-fill text-primary me-1"></i>' : ''}${escapeHtml(n.status || 'Unreachable')}</div>
-          <div class="overview-note">${escapeHtml(n.addr)} · committed ${n.committed_index ?? '-'}</div>
-          <div class="overview-note">heartbeat ${n.heartbeat_ms ?? '-'}ms · uptime ${n.uptime_secs != null ? fmtUptime(n.uptime_secs) : '-'}</div>
+          <div class="overview-note">${escapeHtml(n.addr)} - committed ${n.committed_index ?? '-'}</div>
+          <div class="overview-note">heartbeat ${n.heartbeat_ms ?? '-'}ms - uptime ${n.uptime_secs != null ? fmtUptime(n.uptime_secs) : '-'}</div>
         </div>`).join('')}
     </div>`;
 }
@@ -638,10 +865,10 @@ function renderTable(nodes) {
     // Primary badge
     const primaryHtml = n.is_primary
       ? '<span class="badge badge-primary"><i class="bi bi-star-fill me-1"></i>PRIMARY</span>'
-      : '<span class="text-muted">â€”</span>';
+      : '<span class="text-muted">-</span>';
 
     // Memory bar
-    let memHtml = '<span class="text-muted">â€”</span>';
+    let memHtml = '<span class="text-muted">-</span>';
     if (n.memory_used_bytes != null && n.memory_max_bytes != null && n.memory_max_bytes > 0) {
       const pct = Math.round(n.memory_used_bytes * 100 / n.memory_max_bytes);
       const cls = pct >= 90 ? 'crit' : pct >= 70 ? 'warn' : '';
@@ -651,7 +878,7 @@ function renderTable(nodes) {
     }
 
     // Heartbeat
-    let hbHtml = '<span class="text-muted">â€”</span>';
+    let hbHtml = '<span class="text-muted">-</span>';
     if (n.heartbeat_ms != null) {
       const cls = n.heartbeat_ms < 10 ? 'heartbeat-good' : n.heartbeat_ms < 50 ? 'heartbeat-warn' : 'heartbeat-bad';
       hbHtml = `<span class="${cls} small fw-semibold">${n.heartbeat_ms}ms</span>`;
@@ -660,7 +887,7 @@ function renderTable(nodes) {
     // Uptime
     const uptimeHtml = n.uptime_secs != null
       ? `<span class="uptime-col small">${fmtUptime(n.uptime_secs)}</span>`
-      : '<span class="text-muted">â€”</span>';
+      : '<span class="text-muted">-</span>';
 
 
     // Actions
@@ -688,7 +915,8 @@ function renderTable(nodes) {
           <div class="text-muted addr-subtitle">${escapeHtml(n.addr)}</div>
         </td>
         <td>${primaryHtml}</td>
-        <td><span class="font-monospace small">${n.committed_index ?? 'â€”'}</span></td>
+        <td><span class="font-monospace small">${n.key_count ?? '-'}</span></td>
+        <td><span class="font-monospace small">${n.committed_index ?? '-'}</span></td>
         <td>${memHtml}</td>
         <td>${hbHtml}</td>
         <td>${uptimeHtml}</td>
@@ -721,7 +949,7 @@ function refreshDetails(addr) {
     ['Node ID',        node.node_id],
     ['Address',        node.addr],
     ['Status',         node.status],
-    ['Primary',        node.is_primary != null ? (node.is_primary ? 'Yes â˜…' : 'No') : null],
+    ['Primary',        node.is_primary != null ? (node.is_primary ? 'Yes *' : 'No') : null],
     ['Committed Index',node.committed_index],
     ['Memory Used',    node.memory_used_bytes != null ? fmtBytes(node.memory_used_bytes) : null],
     ['Memory Max',     node.memory_max_bytes  != null ? fmtBytes(node.memory_max_bytes)  : null],
@@ -786,7 +1014,16 @@ async function triggerBackup(addr) {
 }
 
 async function restoreSnapshot(addr) {
-  if (!window.confirm(`Restore latest local snapshot on ${addr}?`)) return;
+  const confirmed = await requestConfirmation({
+    title: 'Restore latest snapshot',
+    message: 'This can replace the node cache contents with the latest local snapshot.',
+    phrase: addr,
+    fields: [
+      ['Target node', addr],
+      ['Operation', 'restore latest snapshot'],
+    ],
+  });
+  if (!confirmed) return;
   try {
     const resp = await fetch(`/api/nodes/${encodeURIComponent(addr)}/restore-snapshot`, { method: 'POST' });
     const data = await resp.json();
@@ -833,10 +1070,33 @@ async function runCacheAction(action) {
       });
     } else if (action === 'delete') {
       requireKey(key);
-      if (!window.confirm(`Delete key ${key} from ${target}${namespace ? ` namespace ${namespace}` : ''}?`)) return;
+      const confirmed = await requestConfirmation({
+        title: 'Delete cache key',
+        message: 'This removes one key from the selected target.',
+        phrase: key,
+        fields: [
+          ['Target', target],
+          ['Namespace', namespace || '(default)'],
+          ['Key', key],
+        ],
+      });
+      if (!confirmed) return;
       resp = await fetch(`/api/cache/${encodeURIComponent(target)}/keys/${encodeURIComponent(key)}${nsQuery}`, { method: 'DELETE' });
     } else if (action === 'ttl') {
       if (!pattern) throw new Error('Pattern is required for TTL updates.');
+      const ttlDescription = ttlRaw === '' ? 'clear TTL' : `${Number(ttlRaw)} seconds`;
+      const confirmed = await requestConfirmation({
+        title: 'Update TTL by pattern',
+        message: 'This applies a TTL change to every key that matches the pattern.',
+        phrase: pattern,
+        fields: [
+          ['Target', target],
+          ['Namespace', namespace || '(default)'],
+          ['Pattern', pattern],
+          ['TTL', ttlDescription],
+        ],
+      });
+      if (!confirmed) return;
       const ttl = ttlRaw === '' ? null : Number(ttlRaw);
       resp = await fetch(`/api/cache/${encodeURIComponent(target)}/ttl${nsQuery}`, {
         method: 'POST',
@@ -851,9 +1111,21 @@ async function runCacheAction(action) {
         body: JSON.stringify({ compressed }),
       });
     } else if (action === 'flush') {
-      const confirmation = window.prompt(`Type ${target} to flush cache on this target.`);
-      if (confirmation !== target) return;
-      resp = await fetch(`/api/cache/${encodeURIComponent(target)}/flush`, { method: 'POST' });
+      const phrase = namespace || target;
+      const confirmed = await requestConfirmation({
+        title: 'Flush cache target',
+        message: namespace
+          ? 'This deletes every key in the selected namespace on the selected target.'
+          : 'This clears every key on the selected target.',
+        phrase,
+        fields: [
+          ['Target', target],
+          ['Namespace', namespace || '(all namespaces)'],
+          ['Operation', 'flush cache'],
+        ],
+      });
+      if (!confirmed) return;
+      resp = await fetch(`/api/cache/${encodeURIComponent(target)}/flush${nsQuery}`, { method: 'POST' });
     }
 
     const text = await resp.text();
@@ -889,7 +1161,7 @@ function escapeForSingleQuote(value) {
 }
 
 function fmtBytes(b) {
-  if (b == null) return 'â€”';
+  if (b == null) return '-';
   if (b < 1024) return b + ' B';
   if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
   if (b < 1073741824) return (b / 1048576).toFixed(1) + ' MB';
@@ -897,7 +1169,7 @@ function fmtBytes(b) {
 }
 
 function fmtUptime(secs) {
-  if (secs == null) return 'â€”';
+  if (secs == null) return '-';
   if (secs < 60)   return secs + 's';
   if (secs < 3600) return Math.floor(secs/60) + 'm ' + (secs%60) + 's';
   const h = Math.floor(secs/3600);
@@ -928,6 +1200,54 @@ function parseJson(text) {
   } catch {
     return text;
   }
+}
+
+function requestConfirmation({ title, message, phrase, fields }) {
+  const modalEl = document.getElementById('confirmation-modal');
+  const input = document.getElementById('confirmation-input');
+  const approve = document.getElementById('confirmation-approve');
+  document.getElementById('confirmation-title').textContent = title;
+  document.getElementById('confirmation-message').textContent = message;
+  document.getElementById('confirmation-summary').innerHTML = fields
+    .map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`)
+    .join('');
+  document.getElementById('confirmation-label').textContent = `Type "${phrase}" to confirm.`;
+  input.value = '';
+  approve.disabled = true;
+
+  if (!confirmationModal) {
+    confirmationModal = new bootstrap.Modal(modalEl);
+  }
+  if (pendingConfirmation) {
+    pendingConfirmation(false);
+  }
+
+  return new Promise(resolve => {
+    const cleanup = result => {
+      modalEl.removeEventListener('hidden.bs.modal', onHidden);
+      approve.removeEventListener('click', onApprove);
+      input.removeEventListener('input', onInput);
+      if (pendingConfirmation === cleanup) {
+        pendingConfirmation = null;
+      }
+      resolve(result);
+    };
+    const onInput = () => {
+      approve.disabled = input.value !== phrase;
+    };
+    const onApprove = () => {
+      confirmationModal.hide();
+      cleanup(true);
+    };
+    const onHidden = () => cleanup(false);
+
+    input.addEventListener('input', onInput);
+    approve.addEventListener('click', onApprove);
+    modalEl.addEventListener('hidden.bs.modal', onHidden);
+    pendingConfirmation = cleanup;
+    confirmationModal.show();
+    setTimeout(() => input.focus(), 150);
+  });
 }
 
 function severityToLevel(severity) {
