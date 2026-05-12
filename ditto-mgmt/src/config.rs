@@ -6,7 +6,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, str::FromStr};
 
 /// Top-level configuration for the management service.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +97,12 @@ pub struct AdminConfig {
     /// Optional audience required in the introspection response.
     #[serde(default)]
     pub bearer_required_audience: Option<String>,
+    /// Role assigned to authenticated Basic Auth callers.
+    #[serde(default = "default_admin_role")]
+    pub basic_role: AdminRole,
+    /// Role assigned to authenticated Bearer callers.
+    #[serde(default = "default_admin_role")]
+    pub bearer_role: AdminRole,
 }
 
 impl AdminConfig {
@@ -105,6 +111,42 @@ impl AdminConfig {
             || self.bearer_token_sha256.is_some()
             || self.bearer_introspection_url.is_some()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum AdminRole {
+    ReadOnly,
+    Operator,
+    #[default]
+    Admin,
+}
+
+impl AdminRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read-only",
+            Self::Operator => "operator",
+            Self::Admin => "admin",
+        }
+    }
+}
+
+impl FromStr for AdminRole {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "read-only" | "readonly" | "reader" => Ok(Self::ReadOnly),
+            "operator" | "ops" => Ok(Self::Operator),
+            "admin" | "administrator" => Ok(Self::Admin),
+            other => anyhow::bail!("invalid admin role '{other}'"),
+        }
+    }
+}
+
+fn default_admin_role() -> AdminRole {
+    AdminRole::Admin
 }
 
 /// Credentials used by ditto-mgmt when forwarding cache GET/PUT/DELETE
@@ -235,6 +277,8 @@ mod tests {
         assert!(cfg.admin.password_hash.is_none());
         assert!(cfg.admin.bearer_token_sha256.is_none());
         assert!(cfg.admin.bearer_introspection_url.is_none());
+        assert_eq!(cfg.admin.basic_role, AdminRole::Admin);
+        assert_eq!(cfg.admin.bearer_role, AdminRole::Admin);
         assert!(cfg.http_client_auth.username.is_none());
         assert!(cfg.http_client_auth.password.is_none());
         assert!(cfg.cache_values.mask_values_by_default);
@@ -268,5 +312,21 @@ mod tests {
         assert!(!cfg.admin.auth_configured());
         assert!(cfg.http_client_auth.password.is_none());
         assert!(cfg.cache_values.mask_values_by_default);
+    }
+
+    #[test]
+    fn admin_roles_parse_from_config_and_strings() {
+        let raw = r#"
+            username = "viewer"
+            password_hash = "$2b$hash"
+            basic_role = "read-only"
+            bearer_role = "operator"
+        "#;
+
+        let admin: AdminConfig = toml::from_str(raw).expect("parse admin role config");
+        assert_eq!(admin.basic_role, AdminRole::ReadOnly);
+        assert_eq!(admin.bearer_role, AdminRole::Operator);
+        assert_eq!("admin".parse::<AdminRole>().unwrap(), AdminRole::Admin);
+        assert!("root".parse::<AdminRole>().is_err());
     }
 }

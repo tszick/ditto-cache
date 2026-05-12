@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "policy_name": "ditto-cache-backup-restore-production-policy",
+  "generated_at": "2026-05-11T00:00:00Z",
+  "max_age_days": 90,
+  "backup_policy": {
+    "encrypted_backups_required": true,
+    "strict_startup_guard_required": true,
+    "required_key_algorithm": "AES-256-GCM",
+    "required_key_encoding": "hex",
+    "required_key_bytes": 32,
+    "plaintext_backups_allowed": "local-dev-only-with-DITTO_INSECURE"
+  },
+  "restore_policy": {
+    "restore_requires_import_gate": true,
+    "restore_limits_required": true,
+    "checksum_sidecar_required": true,
+    "live_preprod_restore_drill_required_for_release_candidate": true
+  },
+  "evidence": {
+    "startup_guard": {
+      "status": "implemented",
+      "files": ["dittod/src/main.rs"],
+      "tests": [
+        "backup_encryption_policy_requires_key_for_persistence_gates",
+        "backup_encryption_policy_allows_insecure_dev_bypass"
+      ]
+    },
+    "restore_validation": {
+      "status": "implemented",
+      "files": ["dittod/src/backup.rs", "dittod/src/node.rs"],
+      "tests": [
+        "run_backup_writes_encrypted_json_snapshot_and_can_restore_it",
+        "restore_snapshot_loads_entries_and_updates_stats",
+        "restore_snapshot_rejects_file_above_size_limit",
+        "restore_snapshot_rejects_entry_count_above_limit",
+        "restore_snapshot_missing_checksum_sidecar_increments_failure_counter"
+      ]
+    },
+    "latest_verification": {
+      "date": "2026-05-11",
+      "command": "cargo test -p dittod",
+      "status": "pass",
+      "passed_tests": 102
+    }
+  }
+}

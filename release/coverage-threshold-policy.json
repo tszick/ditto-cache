@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "policy_name": "ditto-cache-release-coverage-thresholds",
+  "generated_at": "2026-05-11T00:00:00Z",
+  "scope": "release-candidate",
+  "lanes": [
+    {
+      "name": "rust-workspace-line",
+      "description": "Rust workspace total line coverage from cargo llvm-cov --workspace --summary-only",
+      "minimum_percent": 35.0,
+      "raise_after": "2026-08-01"
+    }
+  ],
+  "exceptions": []
+}

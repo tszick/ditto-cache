@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "policy_name": "ditto-cache-release-dast-evidence",
+  "generated_at": "2026-05-11T00:00:00Z",
+  "max_age_days": 30,
+  "target": {
+    "name": "ditto-cache management API",
+    "environment": "local-preprod",
+    "base_url": "https://localhost"
+  },
+  "release_criteria": {
+    "required_passed_tools": ["owasp-zap-baseline"],
+    "block_on_severities": ["critical", "high"],
+    "allow_missing_local_report_files_in_ci": true
+  },
+  "tools": [
+    {
+      "name": "owasp-zap-baseline",
+      "required_for_release": true,
+      "status": "pass",
+      "scan_date": "2026-05-07",
+      "target_url": "https://localhost",
+      "summary": {
+        "exit_code": 0,
+        "fail_count": 0,
+        "warn_count": 5,
+        "pass_count": 65,
+        "informational_alert_count": 8,
+        "critical_count": 0,
+        "high_count": 0,
+        "medium_count": 0,
+        "low_count": 0
+      },
+      "accepted_findings": [
+        {
+          "category": "Cache-control / non-storable content",
+          "reason": "Scanner warning accepted for the current management UI/API responses; no sensitive payload caching exposure was found in this run."
+        },
+        {
+          "category": "Base64 disclosure",
+          "reason": "False positive on hash-like/static content such as SRI or encoded asset data."
+        },
+        {
+          "category": "Modern web application",
+          "reason": "Informational ZAP classification only."
+        },
+        {
+          "category": "Sec-Fetch-* request headers",
+          "reason": "Scanner/client behavior warning; no exploitable server-side issue was identified."
+        }
+      ],
+      "report_files": [
+        {
+          "path": "docs-local/zap-baseline-2026-05-07-strict-csp.json",
+          "sha256": "22871909f18b4fcb0cc32ab9bba1fdef03ea8dfada142b4c72f495336acb7ef5",
+          "local_only": true
+        },
+        {
+          "path": "docs-local/zap-baseline-2026-05-07-strict-csp.html",
+          "sha256": "9f0b93c7edf79ab3c6df6df1e0d81073b8a43bdab03979a2db78e2441d6c4b1d",
+          "local_only": true
+        }
+      ]
+    },
+    {
+      "name": "nuclei",
+      "required_for_release": false,
+      "status": "pass",
+      "scan_date": "2026-05-07",
+      "target_url": "https://localhost",
+      "summary": {
+        "critical_count": 0,
+        "high_count": 0,
+        "medium_count": 0,
+        "low_count": 0,
+        "info_count": 0
+      },
+      "report_files": [],
+      "notes": [
+        "Local manual scan recorded in docs-local/security-closure-status-2026-05-07.md with no findings printed.",
+        "Promote this tool to required_for_release once machine-readable CI artifacts are retained."
+      ]
+    }
+  ]
+}

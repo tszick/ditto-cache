@@ -15,12 +15,13 @@
       "protected_branches": ["main"],
       "required_checks": [
         "Snapshot + SDK Parity",
+        "Client Coverage Threshold Summary",
         "Security Scan Summary"
       ]
     }
   },
   "notes": [
-    "Release Readiness Summary already covers Runbook Validation (Dry Run Gate), Protocol Contract Drift Gate, Perf Baseline Regression Gate, and Rust Build and Test Gate.",
-    "Coverage no-regression gates are part of the conservative quality policy, but are not yet represented here as absolute release-candidate branch-protection requirements."
+    "Release Readiness Summary already covers Runbook Validation (Dry Run Gate), Protocol Contract Drift Gate, Perf Baseline Regression Gate, DAST Evidence Gate, Backup Restore Policy Gate, Coverage Threshold Gate, and Rust Build and Test Gate.",
+    "Coverage no-regression gates remain PR quality checks; absolute release-candidate thresholds are represented by Coverage Threshold Gate."
   ]
 }

@@ -4,7 +4,7 @@
 //! either a configured SHA-256 token digest or an OAuth2/OIDC introspection
 //! endpoint response.
 
-use crate::api::SharedState;
+use crate::{api::SharedState, config::AdminRole};
 use axum::{
     body::Body,
     extract::State,
@@ -28,7 +28,7 @@ struct IntrospectionResponse {
 /// Axum middleware: enforce configured admin auth modes.
 pub async fn admin_auth_middleware(
     State(state): State<SharedState>,
-    req: Request<Body>,
+    mut req: Request<Body>,
     next: Next,
 ) -> Response {
     if !same_origin_for_unsafe_request(&req) {
@@ -54,7 +54,9 @@ pub async fn admin_auth_middleware(
         .and_then(|v| v.strip_prefix("Bearer "))
     {
         if bearer_authorized(&state, token).await {
-            return next.run(req).await;
+            let role = state.cfg.admin.bearer_role;
+            req.extensions_mut().insert(role);
+            return authorize_role_or_reject(role, req, next).await;
         }
     }
 
@@ -66,7 +68,9 @@ pub async fn admin_auth_middleware(
         )
         .await
         {
-            return next.run(req).await;
+            let role = state.cfg.admin.basic_role;
+            req.extensions_mut().insert(role);
+            return authorize_role_or_reject(role, req, next).await;
         }
     }
 
@@ -84,6 +88,79 @@ pub async fn admin_auth_middleware(
         Body::empty(),
     )
         .into_response()
+}
+
+async fn authorize_role_or_reject(role: AdminRole, req: Request<Body>, next: Next) -> Response {
+    if role_allows_request(role, req.method(), req.uri().path(), req.uri().query()) {
+        return next.run(req).await;
+    }
+
+    tracing::warn!(
+        target: "ditto.audit",
+        audit = true,
+        event = "management_role_denied",
+        role = role.as_str(),
+        method = %req.method(),
+        path = %req.uri().path()
+    );
+
+    (
+        StatusCode::FORBIDDEN,
+        Body::from(format!(
+            "management role '{}' is not allowed to perform this operation",
+            role.as_str()
+        )),
+    )
+        .into_response()
+}
+
+fn role_allows_request(
+    role: AdminRole,
+    method: &Method,
+    path: &str,
+    query: Option<&str>,
+) -> bool {
+    if !path.starts_with("/api/") {
+        return true;
+    }
+
+    if is_sensitive_reveal(method, path, query) {
+        return matches!(role, AdminRole::Admin);
+    }
+
+    if is_safe_method(method) {
+        return true;
+    }
+
+    match role {
+        AdminRole::ReadOnly => false,
+        AdminRole::Operator => operator_allows_mutation(path),
+        AdminRole::Admin => true,
+    }
+}
+
+fn is_safe_method(method: &Method) -> bool {
+    matches!(
+        *method,
+        Method::GET | Method::HEAD | Method::OPTIONS | Method::TRACE
+    )
+}
+
+fn is_sensitive_reveal(method: &Method, path: &str, query: Option<&str>) -> bool {
+    *method == Method::GET
+        && path.starts_with("/api/cache/")
+        && path.contains("/keys/")
+        && query.unwrap_or("").split('&').any(|part| part == "reveal=true")
+}
+
+fn operator_allows_mutation(path: &str) -> bool {
+    if path.contains("/restore-snapshot") || path.contains("/property/") {
+        return false;
+    }
+
+    path.starts_with("/api/cache/")
+        || path.contains("/set-active")
+        || path.contains("/backup")
 }
 
 async fn basic_authorized(
@@ -258,13 +335,13 @@ fn normalize_authority(value: &str) -> String {
 mod tests {
     use super::{
         admin_auth_middleware, bearer_token_matches_hash, claim_contains, normalize_authority,
-        origin_authority, request_authority, same_origin_for_unsafe_request,
+        origin_authority, request_authority, role_allows_request, same_origin_for_unsafe_request,
     };
     use crate::{
         api::{AppState, SharedState},
-        config::{AdminConfig, MgmtConfig},
+        config::{AdminConfig, AdminRole, MgmtConfig},
     };
-    use axum::{body::Body, http::Request};
+    use axum::{body::Body, http::{Method, Request}};
     use axum::{middleware, routing::get, Router};
     use serde_json::json;
     use std::{net::SocketAddr, sync::Arc};
@@ -411,6 +488,58 @@ mod tests {
         assert!(!claim_contains(
             Some(&json!("openid profile")),
             Some("ditto.mgmt")
+        ));
+    }
+
+    #[test]
+    fn role_policy_separates_read_only_operator_and_admin() {
+        assert!(role_allows_request(
+            AdminRole::ReadOnly,
+            &Method::GET,
+            "/api/nodes",
+            None
+        ));
+        assert!(!role_allows_request(
+            AdminRole::ReadOnly,
+            &Method::POST,
+            "/api/cache/all/flush",
+            None
+        ));
+        assert!(role_allows_request(
+            AdminRole::Operator,
+            &Method::POST,
+            "/api/cache/all/flush",
+            None
+        ));
+        assert!(role_allows_request(
+            AdminRole::Operator,
+            &Method::POST,
+            "/api/nodes/local/backup",
+            None
+        ));
+        assert!(!role_allows_request(
+            AdminRole::Operator,
+            &Method::POST,
+            "/api/nodes/local/restore-snapshot",
+            None
+        ));
+        assert!(!role_allows_request(
+            AdminRole::Operator,
+            &Method::POST,
+            "/api/nodes/local/property/max-memory",
+            None
+        ));
+        assert!(!role_allows_request(
+            AdminRole::Operator,
+            &Method::GET,
+            "/api/cache/local/keys/token",
+            Some("reveal=true")
+        ));
+        assert!(role_allows_request(
+            AdminRole::Admin,
+            &Method::GET,
+            "/api/cache/local/keys/token",
+            Some("reveal=true")
         ));
     }
 
@@ -571,6 +700,39 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(bearer.status(), reqwest::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn auth_middleware_rejects_forbidden_role_operations() {
+        let admin = AdminConfig {
+            username: Some("viewer".into()),
+            password_hash: Some(bcrypt::hash("pass", bcrypt::DEFAULT_COST).unwrap()),
+            basic_role: AdminRole::ReadOnly,
+            ..AdminConfig::default()
+        };
+        let client = reqwest::Client::new();
+        let state = auth_state(admin, client.clone());
+        let app = Router::new()
+            .route("/api/cache/all/flush", axum::routing::post(|| async { "mutated" }))
+            .layer(middleware::from_fn_with_state(
+                Arc::clone(&state),
+                admin_auth_middleware,
+            ))
+            .with_state(state);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let forbidden = client
+            .post(format!("http://{addr}/api/cache/all/flush"))
+            .header("host", addr.to_string())
+            .basic_auth("viewer", Some("pass"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(forbidden.status(), reqwest::StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

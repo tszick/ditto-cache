@@ -6,6 +6,7 @@ pub mod doctor;
 pub mod nodes;
 
 use crate::auth::admin_auth_middleware;
+use crate::audit::audit_middleware;
 use crate::config::MgmtConfig;
 use crate::node_client::all_cluster_addrs;
 use axum::{
@@ -137,6 +138,7 @@ pub fn build_router(state: SharedState) -> Router {
             Arc::clone(&state),
             admin_auth_middleware,
         ))
+        .layer(middleware::from_fn(audit_middleware))
         .layer(middleware::from_fn(security_headers_middleware))
         .with_state(state)
 }

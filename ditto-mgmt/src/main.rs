@@ -13,6 +13,7 @@
 //! `~/.config/ditto/mgmt.toml` (created automatically on first run).
 
 mod api;
+mod audit;
 mod auth;
 mod config;
 mod node_client;
@@ -24,7 +25,7 @@ use api::{build_router, AppState};
 use config::MgmtConfig;
 use std::sync::Arc;
 
-fn apply_env_overrides(cfg: &mut MgmtConfig) {
+fn apply_env_overrides(cfg: &mut MgmtConfig) -> Result<()> {
     if let Ok(v) = std::env::var("DITTO_MGMT_TLS_CERT") {
         cfg.server.tls_cert = Some(v);
     }
@@ -55,6 +56,12 @@ fn apply_env_overrides(cfg: &mut MgmtConfig) {
     if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_BEARER_REQUIRED_AUDIENCE") {
         cfg.admin.bearer_required_audience = Some(v);
     }
+    if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_BASIC_ROLE") {
+        cfg.admin.basic_role = v.parse()?;
+    }
+    if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_BEARER_ROLE") {
+        cfg.admin.bearer_role = v.parse()?;
+    }
     if let Ok(v) = std::env::var("DITTO_MGMT_HTTP_AUTH_USER") {
         cfg.http_client_auth.username = Some(v);
     }
@@ -64,6 +71,7 @@ fn apply_env_overrides(cfg: &mut MgmtConfig) {
     if let Ok(v) = std::env::var("DITTO_MGMT_BIND") {
         cfg.server.bind = v;
     }
+    Ok(())
 }
 
 fn validate_strict_security(cfg: &MgmtConfig) -> Result<()> {
@@ -109,7 +117,7 @@ async fn main() -> Result<()> {
         MgmtConfig::load()?
     };
 
-    apply_env_overrides(&mut cfg);
+    apply_env_overrides(&mut cfg)?;
     validate_strict_security(&cfg)?;
 
     let tls = tls::build_connector(&cfg.tls)?;
@@ -174,6 +182,8 @@ mod tests {
             "DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_SECRET",
             "DITTO_MGMT_ADMIN_BEARER_REQUIRED_SCOPE",
             "DITTO_MGMT_ADMIN_BEARER_REQUIRED_AUDIENCE",
+            "DITTO_MGMT_ADMIN_BASIC_ROLE",
+            "DITTO_MGMT_ADMIN_BEARER_ROLE",
             "DITTO_MGMT_HTTP_AUTH_USER",
             "DITTO_MGMT_HTTP_AUTH_PASSWORD",
             "DITTO_MGMT_BIND",
@@ -201,12 +211,14 @@ mod tests {
         );
         std::env::set_var("DITTO_MGMT_ADMIN_BEARER_REQUIRED_SCOPE", "ditto.mgmt");
         std::env::set_var("DITTO_MGMT_ADMIN_BEARER_REQUIRED_AUDIENCE", "ditto-mgmt");
+        std::env::set_var("DITTO_MGMT_ADMIN_BASIC_ROLE", "operator");
+        std::env::set_var("DITTO_MGMT_ADMIN_BEARER_ROLE", "read-only");
         std::env::set_var("DITTO_MGMT_HTTP_AUTH_USER", "node-user");
         std::env::set_var("DITTO_MGMT_HTTP_AUTH_PASSWORD", "node-pass");
         std::env::set_var("DITTO_MGMT_BIND", "127.0.0.1");
 
         let mut cfg = MgmtConfig::default();
-        apply_env_overrides(&mut cfg);
+        apply_env_overrides(&mut cfg).unwrap();
 
         assert_eq!(cfg.server.tls_cert.as_deref(), Some("cert.pem"));
         assert_eq!(cfg.server.tls_key.as_deref(), Some("key.pem"));
@@ -233,6 +245,8 @@ mod tests {
             cfg.admin.bearer_required_audience.as_deref(),
             Some("ditto-mgmt")
         );
+        assert_eq!(cfg.admin.basic_role, config::AdminRole::Operator);
+        assert_eq!(cfg.admin.bearer_role, config::AdminRole::ReadOnly);
         assert_eq!(cfg.http_client_auth.username.as_deref(), Some("node-user"));
         assert_eq!(cfg.http_client_auth.password.as_deref(), Some("node-pass"));
         assert_eq!(cfg.server.bind, "127.0.0.1");

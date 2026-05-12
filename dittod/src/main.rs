@@ -53,6 +53,38 @@ fn tcp_client_auth_required(config: &Config, resolved_bind: &str, insecure: bool
         && config.node.client_auth_token.is_none()
 }
 
+fn validate_backup_encryption_policy(config: &Config, insecure: bool) -> Result<()> {
+    if insecure {
+        return Ok(());
+    }
+
+    let persistence_can_write_or_read_snapshots = config.backup.enabled
+        || config.backup.restore_on_start
+        || config.persistence.backup_allowed
+        || config.persistence.import_allowed
+        || config.persistence.export_allowed;
+    if !persistence_can_write_or_read_snapshots {
+        return Ok(());
+    }
+
+    let Some(key) = config.backup.encryption_key.as_deref() else {
+        anyhow::bail!(
+            "Strict security: backup.encryption_key must be configured when backup, export, or import persistence gates are enabled. Production backups/restores must be encrypted."
+        );
+    };
+
+    let key_bytes = hex::decode(key.trim())
+        .map_err(|e| anyhow::anyhow!("Strict security: backup.encryption_key is not valid hex: {}", e))?;
+    if key_bytes.len() != 32 {
+        anyhow::bail!(
+            "Strict security: backup.encryption_key must be 32 bytes (64 hex chars), got {} bytes.",
+            key_bytes.len()
+        );
+    }
+
+    Ok(())
+}
+
 fn first_override<F>(get: &F, primary: &str, fallback: Option<&str>) -> Option<String>
 where
     F: Fn(&str) -> Option<String>,
@@ -537,6 +569,8 @@ async fn main() -> Result<()> {
         );
     }
 
+    validate_backup_encryption_policy(&config, insecure)?;
+
     info!(
         "Starting dittod  node_id={}  active={}",
         config.node.id, config.node.active
@@ -787,7 +821,7 @@ fn rotate_old_logs(dir: &str, retain_days: u64) {
 mod tests {
     use super::{
         apply_env_overrides_with, apply_replication_guardrails, parse_bool_env, rotate_old_logs,
-        tcp_client_auth_required,
+        tcp_client_auth_required, validate_backup_encryption_policy,
     };
     use crate::config::{Config, WriteQuorumMode};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1046,6 +1080,35 @@ mod tests {
         let mut cfg = Config::default();
         cfg.node.client_port = 0;
         assert!(!tcp_client_auth_required(&cfg, "0.0.0.0", false));
+    }
+
+    #[test]
+    fn backup_encryption_policy_requires_key_for_persistence_gates() {
+        let mut cfg = Config::default();
+        validate_backup_encryption_policy(&cfg, false).expect("disabled persistence should pass");
+
+        cfg.persistence.platform_allowed = true;
+        cfg.persistence.backup_allowed = true;
+        let err = validate_backup_encryption_policy(&cfg, false)
+            .expect_err("strict production backup gate requires encryption key");
+        assert!(err.to_string().contains("backup.encryption_key"));
+
+        cfg.backup.encryption_key = Some("abc123".into());
+        let err =
+            validate_backup_encryption_policy(&cfg, false).expect_err("short key should fail");
+        assert!(err.to_string().contains("32 bytes"));
+
+        cfg.backup.encryption_key =
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into());
+        validate_backup_encryption_policy(&cfg, false).expect("valid key should pass");
+    }
+
+    #[test]
+    fn backup_encryption_policy_allows_insecure_dev_bypass() {
+        let mut cfg = Config::default();
+        cfg.persistence.platform_allowed = true;
+        cfg.persistence.import_allowed = true;
+        validate_backup_encryption_policy(&cfg, true).expect("insecure dev mode bypasses policy");
     }
 
     #[test]

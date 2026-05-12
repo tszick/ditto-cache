@@ -61,12 +61,14 @@ key  = "/certs/mgmt.key"
 [admin]
 username = "admin"
 password_hash = "$2b$12$..."
+basic_role = "admin" # read-only | operator | admin
 # Optional SSO/Bearer mode instead of, or alongside, Basic:
 # bearer_introspection_url = "https://sso.example/oauth2/introspect"
 # bearer_introspection_client_id = "ditto-mgmt"
 # bearer_introspection_client_secret = "<client-secret>"
 # bearer_required_scope = "ditto.mgmt"
 # bearer_required_audience = "ditto-mgmt"
+# bearer_role = "operator"
 
 [http_client_auth]
 username = "ditto"
@@ -104,8 +106,20 @@ instead. Node HTTP auth still uses `[http_auth].password_hash`.
 - `DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_SECRET` -> `admin.bearer_introspection_client_secret`
 - `DITTO_MGMT_ADMIN_BEARER_REQUIRED_SCOPE` -> `admin.bearer_required_scope`
 - `DITTO_MGMT_ADMIN_BEARER_REQUIRED_AUDIENCE` -> `admin.bearer_required_audience`
+- `DITTO_MGMT_ADMIN_BASIC_ROLE` -> `admin.basic_role`
+- `DITTO_MGMT_ADMIN_BEARER_ROLE` -> `admin.bearer_role`
 - `DITTO_MGMT_HTTP_AUTH_USER` -> `http_client_auth.username`
 - `DITTO_MGMT_HTTP_AUTH_PASSWORD` -> `http_client_auth.password`
+
+## Management roles
+
+`ditto-mgmt` assigns a role after Basic or Bearer authentication:
+
+- `read-only`: may call normal read endpoints, but cannot mutate state or use `reveal=true`.
+- `operator`: may run operational actions such as cache mutation, flush, TTL changes, set-active, and backup; restore, node property writes, and cache value reveal remain admin-only.
+- `admin`: full management access.
+
+Forbidden role attempts return HTTP 403 and emit a `ditto.audit` event with `event = "management_role_denied"`.
 
 ## Configure `dittoctl`
 
@@ -254,6 +268,7 @@ dittoctl cache flush local
 `cache flush all` requires interactive confirmation.
 `node backup` is rejected when persistence backup is disabled by policy.
 `node restore-snapshot` is rejected when persistence import is disabled by policy.
+In strict production mode, enabling backup, export, import, scheduled backup, or startup restore also requires `backup.encryption_key` to be a 64-character hex AES-256-GCM key. Plaintext backups are local/dev-only and require `DITTO_INSECURE=true`.
 
 ## Security checklist
 
@@ -262,6 +277,7 @@ dittoctl cache flush local
 - Set strong bcrypt password hashes for node HTTP auth and for mgmt Basic auth when enabled.
 - Prefer Bearer introspection for SSO-backed mgmt access; require a Ditto-specific scope or audience.
 - Use distinct credentials for mgmt admin and node HTTP auth.
+- Set `backup.encryption_key` before enabling any persistence backup/export/import gate.
 - If using self-signed certs in dev, trust CA locally instead of disabling verification in production.
 
 ## Troubleshooting

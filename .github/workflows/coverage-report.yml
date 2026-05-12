@@ -27,6 +27,12 @@ jobs:
           cargo llvm-cov --workspace --lcov --output-path coverage/lcov.info
           cargo llvm-cov --workspace --summary-only | tee coverage/summary.txt
 
+      - name: Enforce release coverage threshold
+        run: |
+          set -euo pipefail
+          line_pct=$(grep -E '^TOTAL' coverage/summary.txt | awk '{gsub("%","",$NF); print $NF}' | tail -n1)
+          python scripts/validate-coverage-thresholds.py --metric "rust-workspace-line:${line_pct}"
+
       - name: Upload coverage artifacts
         uses: actions/upload-artifact@v4
         with:

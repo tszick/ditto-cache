@@ -156,6 +156,11 @@ Mgmt admin auth modes:
   Ditto-specific scope and/or audience.
 - Basic and Bearer can be configured together for migration, but SSO-only
   environments should omit `[admin].password_hash` so Basic is not accepted.
+- Basic and Bearer callers are assigned roles with `[admin].basic_role` and
+  `[admin].bearer_role`: `read-only`, `operator`, or `admin`.
+- `read-only` cannot mutate state or reveal cache values. `operator` can perform
+  operational cache/node actions, but restore, node property writes, and
+  `reveal=true` cache value reads require `admin`.
 
 Mgmt-to-node auth boundaries:
 

@@ -2359,7 +2359,53 @@ impl NodeHandle {
         ]
     }
 
+    fn admin_audit_labels(req: &AdminRequest) -> Option<(&'static str, &'static str)> {
+        match req {
+            AdminRequest::SetProperty { .. } => Some(("set_property", "node")),
+            AdminRequest::GetKeyInfo { .. } => Some(("reveal_key_info", "cache_key")),
+            AdminRequest::SetKeyProperty { .. } => Some(("set_key_property", "cache_key")),
+            AdminRequest::FlushCache => Some(("flush", "cache")),
+            AdminRequest::BackupNow => Some(("backup", "node")),
+            AdminRequest::RestoreLatestSnapshot => Some(("restore_snapshot", "node")),
+            AdminRequest::SetKeysTtl { .. } => Some(("set_ttl", "cache_keys")),
+            _ => None,
+        }
+    }
+
+    fn admin_audit_target(req: &AdminRequest) -> Option<String> {
+        match req {
+            AdminRequest::SetProperty { name, .. } => Some(sanitize_for_log(name)),
+            AdminRequest::GetKeyInfo { key } => Some(sanitize_for_log(key)),
+            AdminRequest::SetKeyProperty { key, name, .. } => {
+                Some(format!("{}:{}", sanitize_for_log(key), sanitize_for_log(name)))
+            }
+            AdminRequest::SetKeysTtl { pattern, .. } => Some(sanitize_for_log(pattern)),
+            _ => None,
+        }
+    }
+
+    fn audit_admin_request(&self, req: &AdminRequest) {
+        let Some((action, resource)) = Self::admin_audit_labels(req) else {
+            return;
+        };
+        let target = Self::admin_audit_target(req).unwrap_or_else(|| "none".into());
+        let node_name = self.config.lock().unwrap().node.id.clone();
+        tracing::info!(
+            target: "ditto.audit",
+            audit = true,
+            event = "node_admin_request",
+            node_id = %self.id,
+            node_name = %node_name,
+            action = action,
+            resource = resource,
+            request_target = %target,
+            actor = "admin-protocol",
+            auth_scheme = "cluster-admin-tls-or-network-policy"
+        );
+    }
+
     async fn handle_admin(self: Arc<Self>, req: AdminRequest) -> AdminResponse {
+        self.audit_admin_request(&req);
         match req {
             AdminRequest::Describe => AdminResponse::Properties(self.all_properties().await),
 
@@ -5600,6 +5646,30 @@ mod tests {
             .await;
         assert!(matches!(flushed, AdminResponse::Flushed));
         assert!(node.store.keys(None).is_empty());
+    }
+
+    #[test]
+    fn admin_audit_labels_cover_sensitive_admin_operations() {
+        assert_eq!(
+            NodeHandle::admin_audit_labels(&AdminRequest::FlushCache),
+            Some(("flush", "cache"))
+        );
+        assert_eq!(
+            NodeHandle::admin_audit_labels(&AdminRequest::GetKeyInfo {
+                key: "secret".into()
+            }),
+            Some(("reveal_key_info", "cache_key"))
+        );
+        assert_eq!(
+            NodeHandle::admin_audit_target(&AdminRequest::SetKeyProperty {
+                key: "tenant\nkey".into(),
+                name: "compressed".into(),
+                value: "true".into()
+            })
+            .as_deref(),
+            Some("tenantkey:compressed")
+        );
+        assert_eq!(NodeHandle::admin_audit_labels(&AdminRequest::GetStats), None);
     }
 
     #[tokio::test]

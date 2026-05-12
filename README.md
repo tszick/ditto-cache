@@ -386,12 +386,14 @@ enabled = true
 [admin]
 username      = "admin"
 password_hash = "$2b$12$..."  # generate with: dittoctl hash-password
+basic_role    = "admin"       # read-only | operator | admin
 # Optional SSO/Bearer mode for ditto-mgmt:
 # bearer_introspection_url = "https://sso.example/oauth2/introspect"
 # bearer_introspection_client_id = "ditto-mgmt"
 # bearer_introspection_client_secret = "<client-secret>"
 # bearer_required_scope = "ditto.mgmt"
 # bearer_required_audience = "ditto-mgmt"
+# bearer_role = "operator"
 
 # Optional: credentials for proxying cache requests to dittod HTTP port (7778).
 # Required only when DITTO_HTTP_AUTH_* is set on the nodes.
@@ -593,6 +595,10 @@ is independent of the TLS certificates.  Generate a key with:
 ```bash
 openssl rand -hex 32
 ```
+
+Strict production mode refuses to start when scheduled backup, startup restore,
+or persistence backup/export/import gates are enabled without `backup.encryption_key`.
+Plaintext backups are reserved for local/dev runs using `DITTO_INSECURE=true`.
 
 Backups default to protobuf snapshots (`backup.format = "protobuf"`). JSON
 snapshots remain available by setting `backup.format = "json"` for debugging or
