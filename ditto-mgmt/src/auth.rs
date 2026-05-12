@@ -114,12 +114,7 @@ async fn authorize_role_or_reject(role: AdminRole, req: Request<Body>, next: Nex
         .into_response()
 }
 
-fn role_allows_request(
-    role: AdminRole,
-    method: &Method,
-    path: &str,
-    query: Option<&str>,
-) -> bool {
+fn role_allows_request(role: AdminRole, method: &Method, path: &str, query: Option<&str>) -> bool {
     if !path.starts_with("/api/") {
         return true;
     }
@@ -150,7 +145,10 @@ fn is_sensitive_reveal(method: &Method, path: &str, query: Option<&str>) -> bool
     *method == Method::GET
         && path.starts_with("/api/cache/")
         && path.contains("/keys/")
-        && query.unwrap_or("").split('&').any(|part| part == "reveal=true")
+        && query
+            .unwrap_or("")
+            .split('&')
+            .any(|part| part == "reveal=true")
 }
 
 fn operator_allows_mutation(path: &str) -> bool {
@@ -158,9 +156,7 @@ fn operator_allows_mutation(path: &str) -> bool {
         return false;
     }
 
-    path.starts_with("/api/cache/")
-        || path.contains("/set-active")
-        || path.contains("/backup")
+    path.starts_with("/api/cache/") || path.contains("/set-active") || path.contains("/backup")
 }
 
 async fn basic_authorized(
@@ -341,7 +337,10 @@ mod tests {
         api::{AppState, SharedState},
         config::{AdminConfig, AdminRole, MgmtConfig},
     };
-    use axum::{body::Body, http::{Method, Request}};
+    use axum::{
+        body::Body,
+        http::{Method, Request},
+    };
     use axum::{middleware, routing::get, Router};
     use serde_json::json;
     use std::{net::SocketAddr, sync::Arc};
@@ -713,7 +712,10 @@ mod tests {
         let client = reqwest::Client::new();
         let state = auth_state(admin, client.clone());
         let app = Router::new()
-            .route("/api/cache/all/flush", axum::routing::post(|| async { "mutated" }))
+            .route(
+                "/api/cache/all/flush",
+                axum::routing::post(|| async { "mutated" }),
+            )
             .layer(middleware::from_fn_with_state(
                 Arc::clone(&state),
                 admin_auth_middleware,

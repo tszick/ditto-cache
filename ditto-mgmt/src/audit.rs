@@ -85,7 +85,10 @@ fn audit_operation(method: &Method, path: &str, query: Option<&str>) -> Option<A
     if *method == Method::GET
         && path.starts_with("/api/cache/")
         && path.contains("/keys/")
-        && query.unwrap_or("").split('&').any(|part| part == "reveal=true")
+        && query
+            .unwrap_or("")
+            .split('&')
+            .any(|part| part == "reveal=true")
     {
         return Some(AuditOperation {
             action: "reveal_cache_value",
@@ -223,8 +226,9 @@ mod tests {
         .unwrap();
         assert_eq!(reveal.action, "reveal_cache_value");
 
-        assert!(audit_operation(&Method::GET, "/api/cache/local/keys/session_token", None)
-            .is_none());
+        assert!(
+            audit_operation(&Method::GET, "/api/cache/local/keys/session_token", None).is_none()
+        );
         assert!(audit_operation(&Method::GET, "/", None).is_none());
     }
 
@@ -253,7 +257,10 @@ mod tests {
 
     #[test]
     fn audit_actor_handles_missing_or_invalid_auth() {
-        assert_eq!(audit_actor(&request("POST", "/api/cache/all/flush")).subject, "anonymous");
+        assert_eq!(
+            audit_actor(&request("POST", "/api/cache/all/flush")).subject,
+            "anonymous"
+        );
 
         let invalid = Request::builder()
             .uri("/api/cache/all/flush")

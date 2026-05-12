@@ -5,8 +5,8 @@ pub mod cluster;
 pub mod doctor;
 pub mod nodes;
 
-use crate::auth::admin_auth_middleware;
 use crate::audit::audit_middleware;
+use crate::auth::admin_auth_middleware;
 use crate::config::MgmtConfig;
 use crate::node_client::all_cluster_addrs;
 use axum::{

@@ -21,7 +21,7 @@
     }
   },
   "notes": [
-    "Release Readiness Summary already covers Runbook Validation (Dry Run Gate), Protocol Contract Drift Gate, Perf Baseline Regression Gate, DAST Evidence Gate, Backup Restore Policy Gate, Coverage Threshold Gate, and Rust Build and Test Gate.",
+    "Release Readiness Summary already covers Repo Hygiene Gate, Runbook Validation (Dry Run Gate), Protocol Contract Drift Gate, Perf Baseline Regression Gate, DAST Evidence Gate, Backup Restore Policy Gate, Coverage Threshold Gate, and Rust Build and Test Gate.",
     "Coverage no-regression gates remain PR quality checks; absolute release-candidate thresholds are represented by Coverage Threshold Gate."
   ]
 }

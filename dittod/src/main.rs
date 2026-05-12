@@ -1,5 +1,6 @@
 #![recursion_limit = "256"]
 
+mod admin_audit;
 mod backup;
 mod config;
 mod gossip;
@@ -73,8 +74,12 @@ fn validate_backup_encryption_policy(config: &Config, insecure: bool) -> Result<
         );
     };
 
-    let key_bytes = hex::decode(key.trim())
-        .map_err(|e| anyhow::anyhow!("Strict security: backup.encryption_key is not valid hex: {}", e))?;
+    let key_bytes = hex::decode(key.trim()).map_err(|e| {
+        anyhow::anyhow!(
+            "Strict security: backup.encryption_key is not valid hex: {}",
+            e
+        )
+    })?;
     if key_bytes.len() != 32 {
         anyhow::bail!(
             "Strict security: backup.encryption_key must be 32 bytes (64 hex chars), got {} bytes.",

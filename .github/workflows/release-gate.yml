@@ -8,6 +8,16 @@ on:
   workflow_dispatch:
 
 jobs:
+  repo-hygiene:
+    name: Repo Hygiene Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate repo hygiene
+        run: python scripts/validate-repo-hygiene.py
+
   runbook-dry:
     name: Runbook Validation (Dry Run Gate)
     runs-on: ubuntu-latest
@@ -124,7 +134,7 @@ jobs:
 
   rust-gate:
     name: Rust Build and Test Gate
-    needs: [runbook-dry, protocol-contract, perf-gate, dast-evidence, backup-restore-policy, coverage-threshold]
+    needs: [repo-hygiene, runbook-dry, protocol-contract, perf-gate, dast-evidence, backup-restore-policy, coverage-threshold]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -158,7 +168,7 @@ jobs:
 
   release-readiness:
     name: Release Readiness Summary
-    needs: [runbook-dry, protocol-contract, perf-gate, dast-evidence, backup-restore-policy, coverage-threshold, rust-gate]
+    needs: [repo-hygiene, runbook-dry, protocol-contract, perf-gate, dast-evidence, backup-restore-policy, coverage-threshold, rust-gate]
     if: always() && !cancelled()
     runs-on: ubuntu-latest
     steps:
@@ -166,6 +176,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test "${{ needs.repo-hygiene.result }}" = "success"
           test "${{ needs.runbook-dry.result }}" = "success"
           test "${{ needs.protocol-contract.result }}" = "success"
           test "${{ needs.perf-gate.result }}" = "success"
@@ -179,6 +190,7 @@ jobs:
           {
             echo "## Release Readiness Summary"
             echo ""
+            echo "- repo-hygiene: ${{ needs.repo-hygiene.result }}"
             echo "- runbook-dry: ${{ needs.runbook-dry.result }}"
             echo "- protocol-contract: ${{ needs.protocol-contract.result }}"
             echo "- perf-gate: ${{ needs.perf-gate.result }}"

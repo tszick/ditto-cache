@@ -1455,7 +1455,12 @@ mod tests {
     }
 
     fn test_jwt_like_value() -> String {
-        ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "signature123"].join(".")
+        [
+            "eyJhbGciOiJIUzI1NiJ9",
+            "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+            "signature123",
+        ]
+        .join(".")
     }
 
     #[test]
