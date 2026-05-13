@@ -4,6 +4,7 @@ use crate::{
 };
 use std::sync::{Arc, Mutex};
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum ApplyResult {
     Applied,
     Rejected(String),
@@ -450,4 +451,232 @@ fn parse_bool(value: &str) -> bool {
 fn warn_invalid(value: &str, name: &str) -> ApplyResult {
     tracing::warn!("SetProperty {}: invalid value '{}'", name, value);
     ApplyResult::Applied
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply, is_known, ApplyResult};
+    use crate::{
+        config::{Config, WriteQuorumMode},
+        store::KvStore,
+    };
+    use std::sync::{Arc, Mutex};
+
+    fn test_state() -> (Mutex<Config>, Arc<KvStore>) {
+        let cfg = Config::default();
+        let store = Arc::new(KvStore::new(
+            cfg.cache.max_memory_mb,
+            cfg.cache.default_ttl_secs,
+            cfg.cache.value_size_limit_bytes,
+            cfg.cache.max_keys,
+            cfg.compression.enabled,
+            cfg.compression.threshold_bytes,
+        ));
+        (Mutex::new(cfg), store)
+    }
+
+    #[test]
+    fn known_property_registry_covers_runtime_properties() {
+        for name in [
+            "max-memory",
+            "default-ttl",
+            "compression-threshold",
+            "write-quorum-mode",
+            "persistence-enabled",
+            "tenancy-default-namespace",
+            "rate-limit-requests-per-sec",
+            "hot-key-adaptive-success-threshold",
+            "circuit-breaker-half-open-max-requests",
+        ] {
+            assert!(is_known(name), "{name} should be registered");
+        }
+
+        assert!(!is_known("active"));
+        assert!(!is_known("client-port"));
+        let (config, store) = test_state();
+        assert_eq!(
+            apply("not-a-runtime-property", "true", &config, &store),
+            ApplyResult::Unknown
+        );
+    }
+
+    #[test]
+    fn applies_cache_store_and_compression_properties() {
+        let (config, store) = test_state();
+
+        assert_eq!(
+            apply("max-memory", "7mb", &config, &store),
+            ApplyResult::Applied
+        );
+        assert_eq!(
+            apply("default-ttl", "15", &config, &store),
+            ApplyResult::Applied
+        );
+        assert_eq!(
+            apply("value-size-limit", "99", &config, &store),
+            ApplyResult::Applied
+        );
+        assert_eq!(
+            apply("max-keys", "11", &config, &store),
+            ApplyResult::Applied
+        );
+        assert_eq!(
+            apply("compression-enabled", "false", &config, &store),
+            ApplyResult::Applied
+        );
+        assert_eq!(
+            apply("compression-threshold", "8192", &config, &store),
+            ApplyResult::Applied
+        );
+
+        let cfg = config.lock().unwrap();
+        assert_eq!(cfg.cache.max_memory_mb, 7);
+        assert_eq!(cfg.cache.default_ttl_secs, 15);
+        assert_eq!(cfg.cache.value_size_limit_bytes, 99);
+        assert_eq!(cfg.cache.max_keys, 11);
+        assert!(!cfg.compression.enabled);
+        assert_eq!(cfg.compression.threshold_bytes, 8192);
+
+        let stats = store.stats();
+        assert_eq!(stats.memory_max_bytes, 7 * 1024 * 1024);
+        assert_eq!(stats.value_size_limit_bytes, 99);
+        assert_eq!(stats.max_keys_limit, 11);
+        assert!(!stats.compression_enabled);
+        assert_eq!(stats.compression_threshold_bytes, 8192);
+    }
+
+    #[test]
+    fn invalid_values_keep_existing_runtime_state() {
+        let (config, store) = test_state();
+        config.lock().unwrap().replication.write_timeout_ms = 123;
+        config.lock().unwrap().tenancy.default_namespace = "tenant-a".into();
+
+        assert_eq!(
+            apply("write-timeout-ms", "0", &config, &store),
+            ApplyResult::Applied
+        );
+        assert_eq!(
+            apply("write-timeout-ms", "not-a-number", &config, &store),
+            ApplyResult::Applied
+        );
+        assert_eq!(
+            apply("tenancy-default-namespace", "", &config, &store),
+            ApplyResult::Applied
+        );
+        assert_eq!(
+            apply(
+                "tenancy-default-namespace",
+                "bad::namespace",
+                &config,
+                &store
+            ),
+            ApplyResult::Applied
+        );
+
+        let cfg = config.lock().unwrap();
+        assert_eq!(cfg.replication.write_timeout_ms, 123);
+        assert_eq!(cfg.tenancy.default_namespace, "tenant-a");
+    }
+
+    #[test]
+    fn rejected_compression_threshold_preserves_config_and_store() {
+        let (config, store) = test_state();
+        assert_eq!(
+            apply("compression-threshold", "8192", &config, &store),
+            ApplyResult::Applied
+        );
+
+        let result = apply("compression-threshold", "4096", &config, &store);
+        assert!(
+            matches!(result, ApplyResult::Rejected(message) if message.contains("threshold can only be increased"))
+        );
+        assert_eq!(config.lock().unwrap().compression.threshold_bytes, 8192);
+        assert_eq!(store.stats().compression_threshold_bytes, 8192);
+    }
+
+    #[test]
+    fn applies_replication_persistence_tenancy_and_resilience_properties() {
+        let (config, store) = test_state();
+
+        for (name, value) in [
+            ("write-timeout-ms", "42"),
+            ("write-quorum-mode", "majority"),
+            ("version-check-interval", "1000"),
+            ("read-repair-on-miss-enabled", "true"),
+            ("read-repair-min-interval-ms", "25"),
+            ("read-repair-max-per-minute", "9"),
+            ("anti-entropy-enabled", "true"),
+            ("anti-entropy-interval-ms", "200"),
+            ("anti-entropy-min-repair-interval-ms", "50"),
+            ("anti-entropy-lag-threshold", "3"),
+            ("anti-entropy-key-sample-size", "17"),
+            ("anti-entropy-full-reconcile-every", "4"),
+            ("anti-entropy-full-reconcile-max-keys", "500"),
+            ("anti-entropy-budget-max-checks-per-run", "19"),
+            ("anti-entropy-budget-max-duration-ms", "250"),
+            ("mixed-version-probe-enabled", "false"),
+            ("mixed-version-probe-interval-ms", "3000"),
+            ("persistence-enabled", "true"),
+            ("tenancy-enabled", "true"),
+            ("tenancy-default-namespace", "prod"),
+            ("tenancy-max-keys-per-namespace", "100"),
+            ("rate-limit-enabled", "true"),
+            ("rate-limit-requests-per-sec", "20"),
+            ("rate-limit-burst", "40"),
+            ("hot-key-enabled", "true"),
+            ("hot-key-max-waiters", "8"),
+            ("hot-key-follower-wait-timeout-ms", "75"),
+            ("hot-key-stale-ttl-ms", "90"),
+            ("hot-key-stale-max-entries", "10"),
+            ("hot-key-adaptive-waiters-enabled", "true"),
+            ("hot-key-adaptive-min-waiters", "2"),
+            ("hot-key-adaptive-success-threshold", "6"),
+            ("hot-key-adaptive-state-max-keys", "30"),
+            ("circuit-breaker-enabled", "true"),
+            ("circuit-breaker-failure-threshold", "5"),
+            ("circuit-breaker-open-ms", "600"),
+            ("circuit-breaker-half-open-max-requests", "3"),
+        ] {
+            assert_eq!(apply(name, value, &config, &store), ApplyResult::Applied);
+        }
+
+        let cfg = config.lock().unwrap();
+        assert_eq!(cfg.replication.write_timeout_ms, 42);
+        assert_eq!(cfg.replication.write_quorum_mode, WriteQuorumMode::Majority);
+        assert_eq!(cfg.replication.version_check_interval_ms, 1000);
+        assert!(cfg.replication.read_repair_on_miss_enabled);
+        assert_eq!(cfg.replication.read_repair_min_interval_ms, 25);
+        assert_eq!(cfg.replication.read_repair_max_per_minute, 9);
+        assert!(cfg.replication.anti_entropy_enabled);
+        assert_eq!(cfg.replication.anti_entropy_interval_ms, 200);
+        assert_eq!(cfg.replication.anti_entropy_min_repair_interval_ms, 50);
+        assert_eq!(cfg.replication.anti_entropy_lag_threshold, 3);
+        assert_eq!(cfg.replication.anti_entropy_key_sample_size, 17);
+        assert_eq!(cfg.replication.anti_entropy_full_reconcile_every, 4);
+        assert_eq!(cfg.replication.anti_entropy_full_reconcile_max_keys, 500);
+        assert_eq!(cfg.replication.anti_entropy_budget_max_checks_per_run, 19);
+        assert_eq!(cfg.replication.anti_entropy_budget_max_duration_ms, 250);
+        assert!(!cfg.replication.mixed_version_probe_enabled);
+        assert_eq!(cfg.replication.mixed_version_probe_interval_ms, 3000);
+        assert!(cfg.persistence.runtime_enabled);
+        assert!(cfg.tenancy.enabled);
+        assert_eq!(cfg.tenancy.default_namespace, "prod");
+        assert_eq!(cfg.tenancy.max_keys_per_namespace, 100);
+        assert!(cfg.rate_limit.enabled);
+        assert_eq!(cfg.rate_limit.requests_per_sec, 20);
+        assert_eq!(cfg.rate_limit.burst, 40);
+        assert!(cfg.hot_key.enabled);
+        assert_eq!(cfg.hot_key.max_waiters, 8);
+        assert_eq!(cfg.hot_key.follower_wait_timeout_ms, 75);
+        assert_eq!(cfg.hot_key.stale_ttl_ms, 90);
+        assert_eq!(cfg.hot_key.stale_max_entries, 10);
+        assert!(cfg.hot_key.adaptive_waiters_enabled);
+        assert_eq!(cfg.hot_key.adaptive_min_waiters, 2);
+        assert_eq!(cfg.hot_key.adaptive_success_threshold, 6);
+        assert_eq!(cfg.hot_key.adaptive_state_max_keys, 30);
+        assert!(cfg.circuit_breaker.enabled);
+        assert_eq!(cfg.circuit_breaker.failure_threshold, 5);
+        assert_eq!(cfg.circuit_breaker.open_ms, 600);
+        assert_eq!(cfg.circuit_breaker.half_open_max_requests, 3);
+    }
 }

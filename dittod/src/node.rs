@@ -13,6 +13,7 @@ use ditto_protocol::{
     HotKeyUsage, NamespaceLatencySummary, NamespaceQuotaUsage, NodeStats, NodeStatus,
 };
 use std::{
+    cmp::Reverse,
     collections::HashMap,
     net::SocketAddr,
     sync::{
@@ -733,7 +734,7 @@ impl NodeHandle {
                 latency_p99_estimate_ms: Self::estimated_latency_percentile_ms(runtime.buckets, 99),
             })
             .collect();
-        rows.sort_by(|a, b| b.request_total.cmp(&a.request_total));
+        rows.sort_by_key(|row| Reverse(row.request_total));
         rows.truncate(limit);
         rows
     }
@@ -749,7 +750,7 @@ impl NodeHandle {
                 request_total: *request_total,
             })
             .collect();
-        rows.sort_by(|a, b| b.request_total.cmp(&a.request_total));
+        rows.sort_by_key(|row| Reverse(row.request_total));
         rows.truncate(limit);
         rows
     }
@@ -3619,11 +3620,10 @@ impl NodeHandle {
         let mut usage: Vec<NamespaceQuotaUsage> = counts
             .into_iter()
             .map(|(namespace, key_count)| {
-                let usage_pct = if quota_limit == 0 {
-                    0
-                } else {
-                    key_count.saturating_mul(100) / quota_limit
-                };
+                let usage_pct = key_count
+                    .saturating_mul(100)
+                    .checked_div(quota_limit)
+                    .unwrap_or(0);
                 let remaining_keys = quota_limit.saturating_sub(key_count);
                 NamespaceQuotaUsage {
                     namespace,
@@ -3819,12 +3819,11 @@ impl NodeHandle {
         let snapshot_restore_policy_block_total = self
             .snapshot_restore_policy_block_total
             .load(Ordering::Relaxed);
-        let snapshot_restore_success_ratio_pct = if snapshot_restore_attempt_total == 0 {
-            100
-        } else {
-            ((snapshot_restore_success_total.saturating_mul(100)) / snapshot_restore_attempt_total)
-                .min(100)
-        };
+        let snapshot_restore_success_ratio_pct = snapshot_restore_success_total
+            .saturating_mul(100)
+            .checked_div(snapshot_restore_attempt_total)
+            .unwrap_or(100)
+            .min(100);
         let circuit_breaker_state = if circuit_breaker_enabled {
             self.circuit.lock().unwrap().state.as_str().to_string()
         } else {
