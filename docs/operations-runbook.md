@@ -7,6 +7,123 @@ Validation entrypoints:
 - CI dry-run entrypoint: `.github/workflows/preprod-runbook-validation.yml` -> `./scripts/preprod-runbook-validate.ps1 -DryRun`
 - Manual real-run entrypoint: same workflow with `real_run=true` on a self-hosted Windows runner
 
+## 0) Deployment Readiness Checklist
+
+Use this checklist before promoting a release candidate to any shared
+environment. A deployment is ready only when the code gates, runtime security
+posture, backup/restore evidence, and rollback path are all known.
+
+### Preflight gates
+
+Run from `ditto-cache`:
+
+```bash
+cargo fmt --check
+cargo check -p dittod
+cargo clippy -p dittod -- -D warnings
+cargo test --workspace
+python scripts/validate-repo-hygiene.py
+python scripts/validate-backup-restore-policy.py
+python scripts/validate-dast-evidence.py
+python scripts/validate-coverage-thresholds.py
+```
+
+Release gate expectations:
+
+- `.github/workflows/release-gate.yml` must be green for the candidate commit.
+- `.github/workflows/preprod-runbook-validation.yml` must pass in dry-run mode on PRs.
+- A real-run preprod validation must pass before production promotion when the
+  release changes clustering, persistence, restore, security posture, runtime
+  properties, or client-facing protocol behavior.
+- `DITTO_INSECURE=true` must not be present in non-dev environments.
+
+### Runtime security posture
+
+Before sending traffic to a deployed node, verify:
+
+```bash
+dittoctl node doctor all
+dittoctl node describe all
+dittoctl node status all
+```
+
+Required production posture:
+
+- `strict-security-enforced=true`
+- `insecure-runtime-enabled=false`
+- `tcp-production-safe=true`
+- mTLS enabled on cluster/admin traffic
+- HTTP/management auth enabled
+- backup encryption configured when backup, restore, export, or import gates are enabled
+
+### Rollout sequence
+
+1. Capture a baseline:
+   - `dittoctl cluster get status`
+   - `dittoctl node status all`
+   - `dittoctl node describe all`
+2. Confirm current backup/restore gates:
+   - `persistence_platform_allowed`
+   - `persistence_runtime_enabled`
+   - `persistence_backup_enabled`
+   - `persistence_import_enabled`
+3. If persistence backup is enabled, trigger and record a fresh backup before rollout:
+   - `dittoctl node backup <target>`
+4. Roll one node at a time.
+5. After each node restart, wait for:
+   - node status `Active`,
+   - stable primary election,
+   - advancing `committed_index`,
+   - no unexpected restore failure counters.
+6. Run `dittoctl node doctor all` after the canary node and after full rollout.
+
+### Runtime property changes
+
+Runtime property changes are supported through `dittoctl node set ...`, but
+they should be treated as operational changes:
+
+- apply one property at a time,
+- prefer one node first when the setting affects traffic handling,
+- record the before/after value from `dittoctl node describe`,
+- watch latency, error, rate-limit, circuit-breaker, hot-key, read-repair, and
+  anti-entropy counters for at least 5-10 minutes.
+
+Properties that affect bind addresses and ports are persisted but require a
+restart. Do not mix these with live tuning changes in the same rollout step.
+
+### Rollback path
+
+Rollback is acceptable only when all of the following are true:
+
+- the previous binary/config artifact is available,
+- protocol compatibility is known for the rollback window,
+- backup/restore policy gates are unchanged or explicitly revalidated,
+- the cluster can retain quorum during the rollback sequence.
+
+Rollback sequence:
+
+1. Stop traffic to the canary or affected node where possible.
+2. Set the node inactive if it is still participating:
+   - `dittoctl node set active <target> false`
+3. Restore the previous binary/config.
+4. Start the node and wait for recovery.
+5. Run:
+   - `dittoctl node status <target>`
+   - `dittoctl node doctor <target>`
+6. Continue node-by-node only after the previous node is healthy.
+
+### Go/no-go evidence
+
+Attach or record the following for production promotion:
+
+- release gate run URL,
+- preprod real-run validation result,
+- `dittoctl node doctor all` output,
+- `dittoctl node status all` output,
+- backup/restore policy validation result,
+- security scan evidence validation result,
+- any approved exceptions with owner and expiry.
+
 ## 1) Fast Health Triage
 
 Run:

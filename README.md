@@ -504,7 +504,7 @@ docker start ditto-node-3             # auto-syncs when restarted
 | [docs/architecture.md](docs/architecture.md) | Architecture, protocols, write/read flows, deployment sizing |
 | [docs/dittoctl-reference.md](docs/dittoctl-reference.md) | Supplementary CLI reference |
 | [docs/chaos-playbook.md](docs/chaos-playbook.md) | Chaos/fault validation scenarios (partition + delay + restart) |
-| [docs/operations-runbook.md](docs/operations-runbook.md) | Incident response and tenant quota operations |
+| [docs/operations-runbook.md](docs/operations-runbook.md) | Deployment readiness, incident response, rollback, and tenant quota operations |
 
 ---
 
