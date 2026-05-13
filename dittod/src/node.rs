@@ -1686,7 +1686,7 @@ impl NodeHandle {
     /// Handle an inbound cluster-protocol message.
     ///
     /// Returns `Some(response)` for messages that require a reply
-    /// (e.g. `Prepare` → `PrepareAck`), or `None` for fire-and-forget messages.
+    /// (e.g. `Prepare` -> `PrepareAck`), or `None` for fire-and-forget messages.
     pub async fn handle_cluster(self: Arc<Self>, msg: ClusterMessage) -> Option<ClusterMessage> {
         match msg {
             ClusterMessage::Prepare {
@@ -2548,7 +2548,7 @@ impl NodeHandle {
 
             AdminRequest::SetProperty { name, value } => {
                 match name.as_str() {
-                    // ── active / status ──────────────────────────────────────
+                    // active / status
                     "active" | "status" => {
                         let val = matches!(
                             value.trim().to_ascii_lowercase().as_str(),
@@ -2557,16 +2557,19 @@ impl NodeHandle {
                         if val {
                             // Reactivating: do NOT accept client requests yet.
                             // run_resync will sync from primary first, then set active=true.
-                            tracing::info!("Node reactivating — spawning re-sync pass (active until sync completes).");
+                            tracing::info!("Node reactivating - spawning re-sync pass (active until sync completes).");
                             tokio::spawn(Arc::clone(&self).run_resync());
                         } else {
                             self.active.store(false, Ordering::Relaxed);
-                            self.active_set.lock().await.set_local_status(NodeStatus::Inactive);
-                            tracing::info!("Node status → Inactive");
+                            self.active_set
+                                .lock()
+                                .await
+                                .set_local_status(NodeStatus::Inactive);
+                            tracing::info!("Node status -> Inactive");
                         }
                     }
 
-                    // ── primary (force-elect) ─────────────────────────────────
+                    // primary (force-elect)
                     "primary" => {
                         let val = value.trim().eq_ignore_ascii_case("true");
                         if val {
@@ -2590,7 +2593,7 @@ impl NodeHandle {
                         }
                     }
 
-                    // ── bind addresses (node must already be Inactive) ────────
+                    // bind addresses (node must already be Inactive)
                     "bind-addr" | "cluster-bind-addr" => {
                         let status = self.active_set.lock().await.local_status();
                         if status != NodeStatus::Inactive {
@@ -2605,14 +2608,14 @@ impl NodeHandle {
                         let v = value.trim().to_string();
                         let mut cfg = self.config.lock().unwrap();
                         match name.as_str() {
-                            "bind-addr"         => cfg.node.bind_addr         = v.clone(),
-                            _                   => cfg.node.cluster_bind_addr = v.clone(),
+                            "bind-addr" => cfg.node.bind_addr = v.clone(),
+                            _ => cfg.node.cluster_bind_addr = v.clone(),
                         }
                         let _ = cfg.save(&self.config_path);
-                        tracing::info!("{} → {} (saved; restart node to apply)", name, v);
+                        tracing::info!("{} -> {} (saved; restart node to apply)", name, v);
                     }
 
-                    // ── ports (node must already be Inactive) ─────────────────
+                    // ports (node must already be Inactive)
                     "client-port" | "http-port" | "cluster-port" | "gossip-port" => {
                         let status = self.active_set.lock().await.local_status();
                         if status != NodeStatus::Inactive {
@@ -2627,450 +2630,39 @@ impl NodeHandle {
                             Ok(port) => {
                                 let mut cfg = self.config.lock().unwrap();
                                 match name.as_str() {
-                                    "client-port"  => cfg.node.client_port  = port,
-                                    "http-port"    => cfg.node.http_port    = port,
+                                    "client-port" => cfg.node.client_port = port,
+                                    "http-port" => cfg.node.http_port = port,
                                     "cluster-port" => cfg.node.cluster_port = port,
-                                    _              => cfg.node.gossip_port  = port,
+                                    _ => cfg.node.gossip_port = port,
                                 }
                                 let _ = cfg.save(&self.config_path);
                                 tracing::info!(
-                                    "{} → {} (saved; restart node to apply)",
-                                    name, port
+                                    "{} -> {} (saved; restart node to apply)",
+                                    name,
+                                    port
                                 );
                             }
-                            Err(_) => tracing::warn!("SetProperty {}: invalid port '{}'" , name, value),
+                            Err(_) => {
+                                tracing::warn!("SetProperty {}: invalid port '{}'", name, value)
+                            }
                         }
                     }
 
-                    // ── max-memory ────────────────────────────────────────────
-                    "max-memory" => {
-                        let trimmed = value.trim().to_ascii_lowercase();
-                        let digits  = trimmed.trim_end_matches("mb").trim();
-                        match digits.parse::<u64>() {
-                            Ok(mb) => {
-                                self.store.set_max_memory_mb(mb);
-                                self.config.lock().unwrap().cache.max_memory_mb = mb;
-                                tracing::info!("max-memory → {}mb", mb);
+                    // runtime properties
+                    runtime_name if crate::runtime_property::is_known(runtime_name) => {
+                        match crate::runtime_property::apply(
+                            runtime_name,
+                            &value,
+                            &self.config,
+                            &self.store,
+                        ) {
+                            crate::runtime_property::ApplyResult::Applied => {}
+                            crate::runtime_property::ApplyResult::Rejected(message) => {
+                                return AdminResponse::Error { message };
                             }
-                            Err(_) => tracing::warn!("SetProperty max-memory: invalid value '{}'", value),
-                        }
-                    }
-
-                    // ── default-ttl ────────────────────────────────────────────
-                    "default-ttl" => {
-                        match value.trim().parse::<u64>() {
-                            Ok(secs) => {
-                                self.store.set_default_ttl_secs(secs);
-                                self.config.lock().unwrap().cache.default_ttl_secs = secs;
-                                tracing::info!("default-ttl → {}s", secs);
+                            crate::runtime_property::ApplyResult::Unknown => {
+                                tracing::warn!("SetProperty: unknown property '{}'", runtime_name);
                             }
-                            Err(_) => tracing::warn!("SetProperty default-ttl: invalid value '{}'", value),
-                        }
-                    }
-
-                    // ── value-size-limit ──────────────────────────────────────
-                    "value-size-limit" => {
-                        match value.trim().parse::<u64>() {
-                            Ok(bytes) => {
-                                self.store.set_value_size_limit(bytes);
-                                self.config.lock().unwrap().cache.value_size_limit_bytes = bytes;
-                                tracing::info!("value-size-limit → {} bytes", bytes);
-                            }
-                            Err(_) => tracing::warn!("SetProperty value-size-limit: invalid value '{}'", value),
-                        }
-                    }
-
-                    // ── max-keys ──────────────────────────────────────────────
-                    "max-keys" => {
-                        match value.trim().parse::<usize>() {
-                            Ok(n) => {
-                                self.store.set_max_keys(n);
-                                self.config.lock().unwrap().cache.max_keys = n;
-                                tracing::info!("max-keys → {}", n);
-                            }
-                            Err(_) => tracing::warn!("SetProperty max-keys: invalid value '{}'", value),
-                        }
-                    }
-
-                    // ── compression-enabled ───────────────────────────────────
-                    "compression-enabled" => {
-                        let val = value.trim().eq_ignore_ascii_case("true");
-                        self.store.set_compression_enabled(val);
-                        self.config.lock().unwrap().compression.enabled = val;
-                        tracing::info!("compression-enabled → {}", val);
-                    }
-
-                    // ── compression-threshold ─────────────────────────────────
-                    "compression-threshold" => {
-                        match value.trim().parse::<u64>() {
-                            Ok(bytes) => {
-                                match self.store.set_compression_threshold(bytes) {
-                                    Ok(new_val) => {
-                                        self.config.lock().unwrap().compression.threshold_bytes = new_val;
-                                        tracing::info!("compression-threshold → {} bytes", new_val);
-                                    }
-                                    Err(msg) => {
-                                        tracing::warn!("SetProperty compression-threshold: {}", msg);
-                                        return AdminResponse::Error { message: msg.to_string() };
-                                    }
-                                }
-                            }
-                            Err(_) => tracing::warn!("SetProperty compression-threshold: invalid value '{}'", value),
-                        }
-                    }
-
-                    "write-timeout-ms" => {
-                        match value.trim().parse::<u64>() {
-                            Ok(ms) if ms > 0 => {
-                                self.config.lock().unwrap().replication.write_timeout_ms = ms;
-                                tracing::info!("write-timeout-ms -> {}", ms);
-                            }
-                            _ => tracing::warn!(
-                                "SetProperty write-timeout-ms: invalid value '{}'",
-                                value
-                            ),
-                        }
-                    }
-
-                    "write-quorum-mode" => {
-                        let normalized = value.trim().to_ascii_lowercase();
-                        let mode = match normalized.as_str() {
-                            "all-active" => Some(WriteQuorumMode::AllActive),
-                            "majority" => Some(WriteQuorumMode::Majority),
-                            _ => None,
-                        };
-                        if let Some(mode) = mode {
-                            self.config.lock().unwrap().replication.write_quorum_mode = mode;
-                            tracing::info!("write-quorum-mode -> {}", mode.as_str());
-                        } else {
-                            tracing::warn!(
-                                "SetProperty write-quorum-mode: invalid value '{}'",
-                                value
-                            );
-                        }
-                    }
-
-                    // ── version-check-interval ────────────────────────────────
-                    "version-check-interval" => {
-                        match value.trim().parse::<u64>() {
-                            Ok(ms) => {
-                                self.config.lock().unwrap().replication.version_check_interval_ms = ms;
-                                tracing::info!("version-check-interval → {}ms", ms);
-                            }
-                            Err(_) => tracing::warn!("SetProperty version-check-interval: invalid value '{}'", value),
-                        }
-                    }
-                    "read-repair-on-miss-enabled" => {
-                        let val = value.trim().eq_ignore_ascii_case("true");
-                        self.config.lock().unwrap().replication.read_repair_on_miss_enabled = val;
-                        tracing::info!("read-repair-on-miss-enabled -> {}", val);
-                    }
-                    "read-repair-min-interval-ms" => {
-                        match value.trim().parse::<u64>() {
-                            Ok(ms) if ms > 0 => {
-                                self.config.lock().unwrap().replication.read_repair_min_interval_ms = ms;
-                                tracing::info!("read-repair-min-interval-ms -> {}", ms);
-                            }
-                            _ => tracing::warn!(
-                                "SetProperty read-repair-min-interval-ms: invalid value '{}'",
-                                value
-                            ),
-                        }
-                    }
-                    "read-repair-max-per-minute" => {
-                        match value.trim().parse::<u64>() {
-                            Ok(v) => {
-                                self.config.lock().unwrap().replication.read_repair_max_per_minute = v;
-                                tracing::info!("read-repair-max-per-minute -> {}", v);
-                            }
-                            _ => tracing::warn!(
-                                "SetProperty read-repair-max-per-minute: invalid value '{}'",
-                                value
-                            ),
-                        }
-                    }
-
-                    // ── persistence runtime gate ───────────────────────────────
-                    "anti-entropy-enabled" => {
-                        let val = value.trim().eq_ignore_ascii_case("true");
-                        self.config.lock().unwrap().replication.anti_entropy_enabled = val;
-                        tracing::info!("anti-entropy-enabled -> {}", val);
-                    }
-                    "anti-entropy-interval-ms" => match value.trim().parse::<u64>() {
-                        Ok(ms) if ms > 0 => {
-                            self.config.lock().unwrap().replication.anti_entropy_interval_ms = ms;
-                            tracing::info!("anti-entropy-interval-ms -> {}", ms);
-                        }
-                        _ => tracing::warn!(
-                            "SetProperty anti-entropy-interval-ms: invalid value '{}'",
-                            value
-                        ),
-                    },
-                    "anti-entropy-min-repair-interval-ms" => match value.trim().parse::<u64>() {
-                        Ok(ms) if ms > 0 => {
-                            self.config
-                                .lock()
-                                .unwrap()
-                                .replication
-                                .anti_entropy_min_repair_interval_ms = ms;
-                            tracing::info!("anti-entropy-min-repair-interval-ms -> {}", ms);
-                        }
-                        _ => tracing::warn!(
-                            "SetProperty anti-entropy-min-repair-interval-ms: invalid value '{}'",
-                            value
-                        ),
-                    },
-                    "anti-entropy-lag-threshold" => match value.trim().parse::<u64>() {
-                        Ok(v) if v > 0 => {
-                            self.config.lock().unwrap().replication.anti_entropy_lag_threshold = v;
-                            tracing::info!("anti-entropy-lag-threshold -> {}", v);
-                        }
-                        _ => tracing::warn!(
-                            "SetProperty anti-entropy-lag-threshold: invalid value '{}'",
-                            value
-                        ),
-                    },
-                    "anti-entropy-key-sample-size" => match value.trim().parse::<usize>() {
-                        Ok(v) => {
-                            self.config.lock().unwrap().replication.anti_entropy_key_sample_size = v;
-                            tracing::info!("anti-entropy-key-sample-size -> {}", v);
-                        }
-                        _ => tracing::warn!(
-                            "SetProperty anti-entropy-key-sample-size: invalid value '{}'",
-                            value
-                        ),
-                    },
-                    "anti-entropy-full-reconcile-every" => match value.trim().parse::<u64>() {
-                        Ok(v) => {
-                            self.config.lock().unwrap().replication.anti_entropy_full_reconcile_every = v;
-                            tracing::info!("anti-entropy-full-reconcile-every -> {}", v);
-                        }
-                        _ => tracing::warn!(
-                            "SetProperty anti-entropy-full-reconcile-every: invalid value '{}'",
-                            value
-                        ),
-                    },
-                    "anti-entropy-full-reconcile-max-keys" => match value.trim().parse::<usize>()
-                    {
-                        Ok(v) => {
-                            self.config.lock().unwrap().replication.anti_entropy_full_reconcile_max_keys = v;
-                            tracing::info!("anti-entropy-full-reconcile-max-keys -> {}", v);
-                        }
-                        _ => tracing::warn!(
-                            "SetProperty anti-entropy-full-reconcile-max-keys: invalid value '{}'",
-                            value
-                        ),
-                    },
-                    "anti-entropy-budget-max-checks-per-run" => {
-                        match value.trim().parse::<usize>() {
-                            Ok(v) => {
-                                self.config.lock().unwrap().replication.anti_entropy_budget_max_checks_per_run = v;
-                                tracing::info!("anti-entropy-budget-max-checks-per-run -> {}", v);
-                            }
-                            _ => tracing::warn!(
-                                "SetProperty anti-entropy-budget-max-checks-per-run: invalid value '{}'",
-                                value
-                            ),
-                        }
-                    }
-                    "anti-entropy-budget-max-duration-ms" => match value.trim().parse::<u64>() {
-                        Ok(v) => {
-                            self.config.lock().unwrap().replication.anti_entropy_budget_max_duration_ms = v;
-                            tracing::info!("anti-entropy-budget-max-duration-ms -> {}", v);
-                        }
-                        _ => tracing::warn!(
-                            "SetProperty anti-entropy-budget-max-duration-ms: invalid value '{}'",
-                            value
-                        ),
-                    },
-                    "mixed-version-probe-enabled" => {
-                        let val = value.trim().eq_ignore_ascii_case("true");
-                        self.config.lock().unwrap().replication.mixed_version_probe_enabled = val;
-                        tracing::info!("mixed-version-probe-enabled -> {}", val);
-                    }
-                    "mixed-version-probe-interval-ms" => match value.trim().parse::<u64>() {
-                        Ok(ms) if ms > 0 => {
-                            self.config.lock().unwrap().replication.mixed_version_probe_interval_ms = ms;
-                            tracing::info!("mixed-version-probe-interval-ms -> {}", ms);
-                        }
-                        _ => tracing::warn!(
-                            "SetProperty mixed-version-probe-interval-ms: invalid value '{}'",
-                            value
-                        ),
-                    },
-                    "persistence-runtime-enabled" | "persistence-enabled" => {
-                        let val = value.trim().eq_ignore_ascii_case("true");
-                        self.config.lock().unwrap().persistence.runtime_enabled = val;
-                        tracing::info!("persistence-runtime-enabled → {}", val);
-                    }
-
-                    "tenancy-enabled" => {
-                        let val = value.trim().eq_ignore_ascii_case("true");
-                        self.config.lock().unwrap().tenancy.enabled = val;
-                        tracing::info!("tenancy-enabled -> {}", val);
-                    }
-                    "tenancy-default-namespace" => {
-                        let v = value.trim();
-                        if v.is_empty() || v.contains("::") {
-                            tracing::warn!(
-                                "SetProperty tenancy-default-namespace: invalid value '{}'",
-                                value
-                            );
-                        } else {
-                            self.config.lock().unwrap().tenancy.default_namespace = v.to_string();
-                            tracing::info!("tenancy-default-namespace -> {}", v);
-                        }
-                    }
-                    "tenancy-max-keys-per-namespace" => match value.trim().parse::<usize>() {
-                        Ok(v) => {
-                            self.config.lock().unwrap().tenancy.max_keys_per_namespace = v;
-                            tracing::info!("tenancy-max-keys-per-namespace -> {}", v);
-                        }
-                        _ => tracing::warn!(
-                            "SetProperty tenancy-max-keys-per-namespace: invalid value '{}'",
-                            value
-                        ),
-                    },
-
-                    // rate limiter
-                    "rate-limit-enabled" => {
-                        let val = value.trim().eq_ignore_ascii_case("true");
-                        self.config.lock().unwrap().rate_limit.enabled = val;
-                        tracing::info!("rate-limit-enabled → {}", val);
-                    }
-                    "rate-limit-requests-per-sec" => {
-                        match value.trim().parse::<u64>() {
-                            Ok(v) if v > 0 => {
-                                self.config.lock().unwrap().rate_limit.requests_per_sec = v;
-                                tracing::info!("rate-limit-requests-per-sec → {}", v);
-                            }
-                            _ => tracing::warn!("SetProperty rate-limit-requests-per-sec: invalid value '{}'", value),
-                        }
-                    }
-                    "rate-limit-burst" => {
-                        match value.trim().parse::<u64>() {
-                            Ok(v) if v > 0 => {
-                                self.config.lock().unwrap().rate_limit.burst = v;
-                                tracing::info!("rate-limit-burst → {}", v);
-                            }
-                            _ => tracing::warn!("SetProperty rate-limit-burst: invalid value '{}'", value),
-                        }
-                    }
-
-                    "hot-key-enabled" => {
-                        let val = value.trim().eq_ignore_ascii_case("true");
-                        self.config.lock().unwrap().hot_key.enabled = val;
-                        tracing::info!("hot-key-enabled -> {}", val);
-                    }
-                    "hot-key-max-waiters" => {
-                        match value.trim().parse::<usize>() {
-                            Ok(v) if v > 0 => {
-                                self.config.lock().unwrap().hot_key.max_waiters = v;
-                                tracing::info!("hot-key-max-waiters -> {}", v);
-                            }
-                            _ => tracing::warn!("SetProperty hot-key-max-waiters: invalid value '{}'", value),
-                        }
-                    }
-                    "hot-key-follower-wait-timeout-ms" => {
-                        match value.trim().parse::<u64>() {
-                            Ok(v) if v > 0 => {
-                                self.config.lock().unwrap().hot_key.follower_wait_timeout_ms = v;
-                                tracing::info!("hot-key-follower-wait-timeout-ms -> {}", v);
-                            }
-                            _ => tracing::warn!("SetProperty hot-key-follower-wait-timeout-ms: invalid value '{}'", value),
-                        }
-                    }
-                    "hot-key-stale-ttl-ms" => {
-                        match value.trim().parse::<u64>() {
-                            Ok(v) => {
-                                self.config.lock().unwrap().hot_key.stale_ttl_ms = v;
-                                tracing::info!("hot-key-stale-ttl-ms -> {}", v);
-                            }
-                            _ => tracing::warn!("SetProperty hot-key-stale-ttl-ms: invalid value '{}'", value),
-                        }
-                    }
-                    "hot-key-stale-max-entries" => {
-                        match value.trim().parse::<usize>() {
-                            Ok(v) if v > 0 => {
-                                self.config.lock().unwrap().hot_key.stale_max_entries = v;
-                                tracing::info!("hot-key-stale-max-entries -> {}", v);
-                            }
-                            _ => tracing::warn!("SetProperty hot-key-stale-max-entries: invalid value '{}'", value),
-                        }
-                    }
-                    "hot-key-adaptive-waiters-enabled" => {
-                        let val = value.trim().eq_ignore_ascii_case("true");
-                        self.config.lock().unwrap().hot_key.adaptive_waiters_enabled = val;
-                        tracing::info!("hot-key-adaptive-waiters-enabled -> {}", val);
-                    }
-                    "hot-key-adaptive-min-waiters" => {
-                        match value.trim().parse::<usize>() {
-                            Ok(v) if v > 0 => {
-                                self.config.lock().unwrap().hot_key.adaptive_min_waiters = v;
-                                tracing::info!("hot-key-adaptive-min-waiters -> {}", v);
-                            }
-                            _ => tracing::warn!(
-                                "SetProperty hot-key-adaptive-min-waiters: invalid value '{}'",
-                                value
-                            ),
-                        }
-                    }
-                    "hot-key-adaptive-success-threshold" => {
-                        match value.trim().parse::<u32>() {
-                            Ok(v) if v > 0 => {
-                                self.config.lock().unwrap().hot_key.adaptive_success_threshold = v;
-                                tracing::info!("hot-key-adaptive-success-threshold -> {}", v);
-                            }
-                            _ => tracing::warn!(
-                                "SetProperty hot-key-adaptive-success-threshold: invalid value '{}'",
-                                value
-                            ),
-                        }
-                    }
-                    "hot-key-adaptive-state-max-keys" => {
-                        match value.trim().parse::<usize>() {
-                            Ok(v) if v > 0 => {
-                                self.config.lock().unwrap().hot_key.adaptive_state_max_keys = v;
-                                tracing::info!("hot-key-adaptive-state-max-keys -> {}", v);
-                            }
-                            _ => tracing::warn!(
-                                "SetProperty hot-key-adaptive-state-max-keys: invalid value '{}'",
-                                value
-                            ),
-                        }
-                    }
-
-                    // circuit breaker
-                    "circuit-breaker-enabled" => {
-                        let val = value.trim().eq_ignore_ascii_case("true");
-                        self.config.lock().unwrap().circuit_breaker.enabled = val;
-                        tracing::info!("circuit-breaker-enabled → {}", val);
-                    }
-                    "circuit-breaker-failure-threshold" => {
-                        match value.trim().parse::<u64>() {
-                            Ok(v) if v > 0 => {
-                                self.config.lock().unwrap().circuit_breaker.failure_threshold = v;
-                                tracing::info!("circuit-breaker-failure-threshold → {}", v);
-                            }
-                            _ => tracing::warn!("SetProperty circuit-breaker-failure-threshold: invalid value '{}'", value),
-                        }
-                    }
-                    "circuit-breaker-open-ms" => {
-                        match value.trim().parse::<u64>() {
-                            Ok(v) if v > 0 => {
-                                self.config.lock().unwrap().circuit_breaker.open_ms = v;
-                                tracing::info!("circuit-breaker-open-ms → {}", v);
-                            }
-                            _ => tracing::warn!("SetProperty circuit-breaker-open-ms: invalid value '{}'", value),
-                        }
-                    }
-                    "circuit-breaker-half-open-max-requests" => {
-                        match value.trim().parse::<u64>() {
-                            Ok(v) if v > 0 => {
-                                self.config.lock().unwrap().circuit_breaker.half_open_max_requests = v;
-                                tracing::info!("circuit-breaker-half-open-max-requests → {}", v);
-                            }
-                            _ => tracing::warn!("SetProperty circuit-breaker-half-open-max-requests: invalid value '{}'", value),
                         }
                     }
 
@@ -3082,7 +2674,7 @@ impl NodeHandle {
     }
 
     // -----------------------------------------------------------------------
-    // Node recovery (Syncing → Active)
+    // Node recovery (Syncing -> Active)
     // -----------------------------------------------------------------------
 
     /// Run the startup recovery pass.
@@ -3259,10 +2851,10 @@ impl NodeHandle {
         }
     }
 
-    // Runtime re-sync (Inactive → Active transition)
+    // Runtime re-sync (Inactive -> Active transition)
     // -----------------------------------------------------------------------
 
-    /// Re-sync from peers after a runtime Inactive → Active transition.
+    /// Re-sync from peers after a runtime Inactive -> Active transition.
     ///
     /// Re-sync from the primary after a runtime Inactive to Active transition,
     /// after a backup, or when the version-check detects lag.

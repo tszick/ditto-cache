@@ -7,6 +7,7 @@ mod gossip;
 mod network;
 mod node;
 mod replication;
+mod runtime_property;
 mod store;
 
 use anyhow::{Context, Result};
@@ -16,12 +17,6 @@ use node::NodeHandle;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
-
-fn parse_bool_env(var: &str) -> Option<bool> {
-    std::env::var(var)
-        .ok()
-        .map(|v| v.trim().eq_ignore_ascii_case("true"))
-}
 
 fn apply_replication_guardrails(config: &mut Config) {
     let interval_ms = config.replication.gossip_interval_ms.max(1);
@@ -825,7 +820,7 @@ fn rotate_old_logs(dir: &str, retain_days: u64) {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_env_overrides_with, apply_replication_guardrails, parse_bool_env, rotate_old_logs,
+        apply_env_overrides_with, apply_replication_guardrails, rotate_old_logs,
         tcp_client_auth_required, validate_backup_encryption_policy,
     };
     use crate::config::{Config, WriteQuorumMode};
@@ -875,23 +870,6 @@ mod tests {
         high.replication.gossip_dead_ms = 90_000;
         apply_replication_guardrails(&mut high);
         assert_eq!(high.replication.gossip_dead_ms, 90_000);
-    }
-
-    #[test]
-    fn parse_bool_env_is_case_insensitive_and_missing_safe() {
-        let true_var = format!("DITTO_TEST_BOOL_TRUE_{}", std::process::id());
-        let false_var = format!("DITTO_TEST_BOOL_FALSE_{}", std::process::id());
-        let missing_var = format!("DITTO_TEST_BOOL_MISSING_{}", std::process::id());
-        std::env::set_var(&true_var, " TrUe ");
-        std::env::set_var(&false_var, "yes");
-        std::env::remove_var(&missing_var);
-
-        assert_eq!(parse_bool_env(&true_var), Some(true));
-        assert_eq!(parse_bool_env(&false_var), Some(false));
-        assert_eq!(parse_bool_env(&missing_var), None);
-
-        std::env::remove_var(&true_var);
-        std::env::remove_var(&false_var);
     }
 
     #[test]
