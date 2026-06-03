@@ -73,6 +73,7 @@ async fn main() -> Result<()> {
     }
 
     let mut cfg = load_ctl_config(cli.config.as_deref())?;
+    cfg.mgmt.resolve_credentials()?;
 
     let mut builder =
         reqwest::Client::builder().timeout(std::time::Duration::from_millis(cfg.mgmt.timeout_ms));

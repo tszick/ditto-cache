@@ -50,6 +50,12 @@ fn apply_env_overrides(cfg: &mut MgmtConfig) -> Result<()> {
     if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_SECRET") {
         cfg.admin.bearer_introspection_client_secret = Some(v);
     }
+    if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_SECRET_ENV") {
+        cfg.admin.bearer_introspection_client_secret_env = Some(v);
+    }
+    if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_SECRET_FILE") {
+        cfg.admin.bearer_introspection_client_secret_file = Some(v);
+    }
     if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_BEARER_REQUIRED_SCOPE") {
         cfg.admin.bearer_required_scope = Some(v);
     }
@@ -67,6 +73,12 @@ fn apply_env_overrides(cfg: &mut MgmtConfig) -> Result<()> {
     }
     if let Ok(v) = std::env::var("DITTO_MGMT_HTTP_AUTH_PASSWORD") {
         cfg.http_client_auth.password = Some(v);
+    }
+    if let Ok(v) = std::env::var("DITTO_MGMT_HTTP_AUTH_PASSWORD_ENV") {
+        cfg.http_client_auth.password_env = Some(v);
+    }
+    if let Ok(v) = std::env::var("DITTO_MGMT_HTTP_AUTH_PASSWORD_FILE") {
+        cfg.http_client_auth.password_file = Some(v);
     }
     if let Ok(v) = std::env::var("DITTO_MGMT_BIND") {
         cfg.server.bind = v;
@@ -118,6 +130,8 @@ async fn main() -> Result<()> {
     };
 
     apply_env_overrides(&mut cfg)?;
+    cfg.admin.resolve_bearer_introspection_client_secret()?;
+    cfg.http_client_auth.resolve_password()?;
     validate_strict_security(&cfg)?;
 
     let tls = tls::build_connector(&cfg.tls)?;
@@ -180,12 +194,16 @@ mod tests {
             "DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_URL",
             "DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_ID",
             "DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_SECRET",
+            "DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_SECRET_ENV",
+            "DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_SECRET_FILE",
             "DITTO_MGMT_ADMIN_BEARER_REQUIRED_SCOPE",
             "DITTO_MGMT_ADMIN_BEARER_REQUIRED_AUDIENCE",
             "DITTO_MGMT_ADMIN_BASIC_ROLE",
             "DITTO_MGMT_ADMIN_BEARER_ROLE",
             "DITTO_MGMT_HTTP_AUTH_USER",
             "DITTO_MGMT_HTTP_AUTH_PASSWORD",
+            "DITTO_MGMT_HTTP_AUTH_PASSWORD_ENV",
+            "DITTO_MGMT_HTTP_AUTH_PASSWORD_FILE",
             "DITTO_MGMT_BIND",
         ] {
             std::env::remove_var(key);
@@ -209,12 +227,25 @@ mod tests {
             "DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_SECRET",
             "secret",
         );
+        std::env::set_var(
+            "DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_SECRET_ENV",
+            "OIDC_CLIENT_SECRET",
+        );
+        std::env::set_var(
+            "DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_SECRET_FILE",
+            "/run/secrets/oidc-client-secret",
+        );
         std::env::set_var("DITTO_MGMT_ADMIN_BEARER_REQUIRED_SCOPE", "ditto.mgmt");
         std::env::set_var("DITTO_MGMT_ADMIN_BEARER_REQUIRED_AUDIENCE", "ditto-mgmt");
         std::env::set_var("DITTO_MGMT_ADMIN_BASIC_ROLE", "operator");
         std::env::set_var("DITTO_MGMT_ADMIN_BEARER_ROLE", "read-only");
         std::env::set_var("DITTO_MGMT_HTTP_AUTH_USER", "node-user");
         std::env::set_var("DITTO_MGMT_HTTP_AUTH_PASSWORD", "node-pass");
+        std::env::set_var("DITTO_MGMT_HTTP_AUTH_PASSWORD_ENV", "NODE_HTTP_PASSWORD");
+        std::env::set_var(
+            "DITTO_MGMT_HTTP_AUTH_PASSWORD_FILE",
+            "/run/secrets/node-http-password",
+        );
         std::env::set_var("DITTO_MGMT_BIND", "127.0.0.1");
 
         let mut cfg = MgmtConfig::default();
@@ -238,6 +269,14 @@ mod tests {
             Some("secret")
         );
         assert_eq!(
+            cfg.admin.bearer_introspection_client_secret_env.as_deref(),
+            Some("OIDC_CLIENT_SECRET")
+        );
+        assert_eq!(
+            cfg.admin.bearer_introspection_client_secret_file.as_deref(),
+            Some("/run/secrets/oidc-client-secret")
+        );
+        assert_eq!(
             cfg.admin.bearer_required_scope.as_deref(),
             Some("ditto.mgmt")
         );
@@ -249,6 +288,14 @@ mod tests {
         assert_eq!(cfg.admin.bearer_role, config::AdminRole::ReadOnly);
         assert_eq!(cfg.http_client_auth.username.as_deref(), Some("node-user"));
         assert_eq!(cfg.http_client_auth.password.as_deref(), Some("node-pass"));
+        assert_eq!(
+            cfg.http_client_auth.password_env.as_deref(),
+            Some("NODE_HTTP_PASSWORD")
+        );
+        assert_eq!(
+            cfg.http_client_auth.password_file.as_deref(),
+            Some("/run/secrets/node-http-password")
+        );
         assert_eq!(cfg.server.bind, "127.0.0.1");
 
         clear_env_overrides();

@@ -8,6 +8,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use base64::Engine;
 use bytes::Bytes;
 use ditto_protocol::{ClientRequest, ClientResponse, ErrorCode};
 use serde::Deserialize;
@@ -189,6 +190,7 @@ async fn handle_get(
         ClientResponse::Value { value, version, .. } => {
             let body = serde_json::json!({
                 "value":   String::from_utf8_lossy(&value),
+                "value_base64": base64::engine::general_purpose::STANDARD.encode(&value),
                 "version": version,
             });
             Json(body).into_response()
@@ -211,7 +213,8 @@ struct SetQuery {
 #[derive(Deserialize)]
 struct BatchSetItem {
     key: String,
-    value: String,
+    value: Option<String>,
+    value_base64: Option<String>,
     ttl_secs: Option<u64>,
 }
 
@@ -225,11 +228,11 @@ async fn handle_set(
     Path(key): Path<String>,
     Query(q): Query<SetQuery>,
     State(node): State<Arc<NodeHandle>>,
-    body: String,
+    body: Bytes,
 ) -> Response {
     let req = ClientRequest::Set {
         key,
-        value: Bytes::from(body.into_bytes()),
+        value: body,
         ttl_secs: q.ttl,
         namespace: namespace_from_headers(&headers),
     };
@@ -269,9 +272,21 @@ async fn handle_batch_set(
     let mut errors = Vec::new();
 
     for (idx, item) in body.items.into_iter().enumerate() {
+        let value = match batch_item_value(&item) {
+            Ok(value) => value,
+            Err(message) => {
+                errors.push(serde_json::json!({
+                    "index": idx,
+                    "key": item.key,
+                    "error": "InvalidValueEncoding",
+                    "message": message
+                }));
+                continue;
+            }
+        };
         let req = ClientRequest::Set {
             key: item.key.clone(),
-            value: Bytes::from(item.value.into_bytes()),
+            value,
             ttl_secs: item.ttl_secs,
             namespace: namespace_from_headers(&headers),
         };
@@ -304,6 +319,19 @@ async fn handle_batch_set(
         "errors": errors
     }))
     .into_response()
+}
+
+fn batch_item_value(item: &BatchSetItem) -> Result<Bytes, String> {
+    if let Some(value_base64) = item.value_base64.as_deref() {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(value_base64.trim())
+            .map_err(|e| format!("value_base64 is not valid base64: {e}"))?;
+        return Ok(Bytes::from(bytes));
+    }
+    item.value
+        .as_ref()
+        .map(|value| Bytes::from(value.clone().into_bytes()))
+        .ok_or_else(|| "either value or value_base64 must be provided".to_string())
 }
 
 async fn handle_delete(
@@ -672,14 +700,39 @@ mod tests {
         headers: &[(&str, String)],
         body: Option<serde_json::Value>,
     ) -> HttpTestResponse {
-        let mut stream = TcpStream::connect(addr).await.unwrap();
         let body = body.map(|v| v.to_string()).unwrap_or_default();
+        http_raw(
+            addr,
+            method,
+            path,
+            headers,
+            body.as_bytes(),
+            if body.is_empty() {
+                None
+            } else {
+                Some("application/json")
+            },
+        )
+        .await
+    }
+
+    async fn http_raw(
+        addr: &str,
+        method: &str,
+        path: &str,
+        headers: &[(&str, String)],
+        body: &[u8],
+        content_type: Option<&str>,
+    ) -> HttpTestResponse {
+        let mut stream = TcpStream::connect(addr).await.unwrap();
         let mut request = format!(
             "{method} {path} HTTP/1.1\r\nhost: {addr}\r\nconnection: close\r\ncontent-length: {}\r\n",
             body.len()
         );
-        if !body.is_empty() {
-            request.push_str("content-type: application/json\r\n");
+        if let Some(content_type) = content_type {
+            request.push_str("content-type: ");
+            request.push_str(content_type);
+            request.push_str("\r\n");
         }
         for (name, value) in headers {
             request.push_str(name);
@@ -688,9 +741,9 @@ mod tests {
             request.push_str("\r\n");
         }
         request.push_str("\r\n");
-        request.push_str(&body);
 
         stream.write_all(request.as_bytes()).await.unwrap();
+        stream.write_all(body).await.unwrap();
 
         let mut response = Vec::new();
         stream.read_to_end(&mut response).await.unwrap();
@@ -745,6 +798,25 @@ mod tests {
         assert_eq!(get.status, 200);
         assert_eq!(get.body["value"], "\"value-a\"");
 
+        let binary_value = [0, 159, 146, 150, 255];
+        let binary = http_raw(
+            &addr,
+            "PUT",
+            "/key/raw-bytes",
+            &[],
+            &binary_value,
+            Some("application/octet-stream"),
+        )
+        .await;
+        assert_eq!(binary.status, 200);
+
+        let binary_get = http_json(&addr, "GET", "/key/raw-bytes", &[], None).await;
+        assert_eq!(binary_get.status, 200);
+        assert_eq!(
+            binary_get.body["value_base64"],
+            base64::engine::general_purpose::STANDARD.encode(binary_value)
+        );
+
         let empty_batch = http_json(
             &addr,
             "POST",
@@ -782,13 +854,25 @@ mod tests {
             Some(serde_json::json!({
                 "items": [
                     { "key": "beta", "value": "value-b", "ttl_secs": null },
-                    { "key": "gamma", "value": "value-c", "ttl_secs": 60 }
+                    { "key": "gamma", "value": "value-c", "ttl_secs": 60 },
+                    {
+                        "key": "delta",
+                        "value_base64": base64::engine::general_purpose::STANDARD.encode(binary_value),
+                        "ttl_secs": null
+                    }
                 ]
             })),
         )
         .await;
-        assert_eq!(batch.body["received"], 2);
-        assert_eq!(batch.body["succeeded"], 2);
+        assert_eq!(batch.body["received"], 3);
+        assert_eq!(batch.body["succeeded"], 3);
+
+        let batch_binary_get = http_json(&addr, "GET", "/key/delta", &[], None).await;
+        assert_eq!(batch_binary_get.status, 200);
+        assert_eq!(
+            batch_binary_get.body["value_base64"],
+            base64::engine::general_purpose::STANDARD.encode(binary_value)
+        );
 
         let ttl = http_json(
             &addr,
@@ -810,7 +894,7 @@ mod tests {
         )
         .await;
         assert_eq!(deleted.status, 200);
-        assert_eq!(deleted.body["deleted"], 3);
+        assert_eq!(deleted.body["deleted"], 5);
 
         let missing = http_json(&addr, "GET", "/key/alpha", &[], None).await;
         assert_eq!(missing.status, 404);

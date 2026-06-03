@@ -287,6 +287,12 @@ where
     if let Some(v) = get("DITTO_BACKUP_ENCRYPTION_KEY") {
         config.backup.encryption_key = Some(v);
     }
+    if let Some(v) = get("DITTO_BACKUP_ENCRYPTION_KEY_ENV") {
+        config.backup.encryption_key_env = Some(v);
+    }
+    if let Some(v) = get("DITTO_BACKUP_ENCRYPTION_KEY_FILE") {
+        config.backup.encryption_key_file = Some(v);
+    }
     if let Some(v) = get("DITTO_BACKUP_MAX_SNAPSHOT_BYTES") {
         if let Ok(n) = v.parse::<u64>() {
             config.backup.max_snapshot_bytes = n;
@@ -515,6 +521,7 @@ async fn main() -> Result<()> {
 
     // Apply environment variable overrides (used by Docker / CI).
     apply_env_overrides(&mut config);
+    config.backup.resolve_encryption_key()?;
     apply_replication_guardrails(&mut config);
 
     // DITTO_INSECURE=true bypasses strict security checks (dev/test only).
@@ -904,6 +911,11 @@ mod tests {
             ("DITTO_HTTP_AUTH_USER", "admin"),
             ("DITTO_HTTP_AUTH_PASSWORD_HASH", "hash"),
             ("DITTO_BACKUP_ENCRYPTION_KEY", "enc-key"),
+            ("DITTO_BACKUP_ENCRYPTION_KEY_ENV", "BACKUP_KEY"),
+            (
+                "DITTO_BACKUP_ENCRYPTION_KEY_FILE",
+                "/run/secrets/backup-key",
+            ),
             ("DITTO_BACKUP_MAX_SNAPSHOT_BYTES", "4096"),
             ("DITTO_BACKUP_MAX_RESTORE_ENTRIES", "31"),
             ("SNAPSHOT_RESTORE_ON_START", "true"),
@@ -970,6 +982,11 @@ mod tests {
         assert_eq!(cfg.http_auth.username.as_deref(), Some("admin"));
         assert_eq!(cfg.http_auth.password_hash.as_deref(), Some("hash"));
         assert_eq!(cfg.backup.encryption_key.as_deref(), Some("enc-key"));
+        assert_eq!(cfg.backup.encryption_key_env.as_deref(), Some("BACKUP_KEY"));
+        assert_eq!(
+            cfg.backup.encryption_key_file.as_deref(),
+            Some("/run/secrets/backup-key")
+        );
         assert_eq!(cfg.backup.max_snapshot_bytes, 4096);
         assert_eq!(cfg.backup.max_restore_entries, 31);
         assert!(cfg.backup.restore_on_start);

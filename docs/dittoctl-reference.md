@@ -21,9 +21,15 @@ Example:
 url = "https://localhost:7781"
 timeout_ms = 3000
 username = "admin"
-password = "<mgmt-password>"
+# Prefer one of these so kvctl.toml does not contain a plaintext secret:
+password_env = "DITTOCTL_MGMT_PASSWORD"
+# password_file = "/run/secrets/dittoctl-mgmt-password"
+# Legacy/local-dev only:
+# password = "<mgmt-password>"
 # Or, for Bearer mode:
-# bearer_token = "<sso-access-token>"
+# bearer_token_env = "DITTOCTL_MGMT_BEARER_TOKEN"
+# bearer_token_file = "/run/secrets/dittoctl-mgmt-token"
+# bearer_token = "<sso-access-token>" # legacy/local-dev only
 insecure_skip_verify = true
 
 [output]
@@ -31,8 +37,9 @@ format = "binary"
 ```
 
 Notes:
-- `username` / `password` are optional and used for `ditto-mgmt` HTTP Basic Auth.
-- `bearer_token` is optional and used for `ditto-mgmt` Bearer Auth.
+- `username` plus `password_env`, `password_file`, or legacy `password` are optional and used for `ditto-mgmt` HTTP Basic Auth.
+- `bearer_token_env`, `bearer_token_file`, or legacy `bearer_token` are optional and used for `ditto-mgmt` Bearer Auth.
+- Prefer `*_env` or `*_file` so the config file does not carry long-lived plaintext secrets.
 - Do not configure Basic credentials and `bearer_token` together.
 - `insecure_skip_verify = true` is intended for self-signed local/dev TLS only.
 

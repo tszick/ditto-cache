@@ -18,7 +18,7 @@ uuid         = { version = "1", features = ["v4", "v5", "serde"] }
 tracing          = "0.1"
 tracing-appender = "0.2"
 anyhow       = "1"
-thiserror    = "1"
+thiserror    = "2"
 toml           = "0.8"
 tokio-rustls   = "0.26"
 rustls         = { version = "0.23", features = ["ring"] }

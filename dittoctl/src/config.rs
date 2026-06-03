@@ -23,12 +23,24 @@ pub struct MgmtConfig {
     /// Optional HTTP Basic Auth username for ditto-mgmt.
     #[serde(default)]
     pub username: Option<String>,
-    /// Optional HTTP Basic Auth password for ditto-mgmt.
+    /// Legacy direct plaintext Basic Auth password. Prefer `password_env` or `password_file`.
     #[serde(default)]
     pub password: Option<String>,
-    /// Optional Bearer token for ditto-mgmt.
+    /// Name of an environment variable containing the Basic Auth password.
+    #[serde(default)]
+    pub password_env: Option<String>,
+    /// Path to a secret file containing the Basic Auth password.
+    #[serde(default)]
+    pub password_file: Option<String>,
+    /// Legacy direct plaintext Bearer token. Prefer `bearer_token_env` or `bearer_token_file`.
     #[serde(default)]
     pub bearer_token: Option<String>,
+    /// Name of an environment variable containing the Bearer token.
+    #[serde(default)]
+    pub bearer_token_env: Option<String>,
+    /// Path to a secret file containing the Bearer token.
+    #[serde(default)]
+    pub bearer_token_file: Option<String>,
     /// Accept invalid/self-signed TLS certs for local/dev management endpoints.
     #[serde(default)]
     pub insecure_skip_verify: bool,
@@ -48,7 +60,11 @@ impl Default for CtlConfig {
                 timeout_ms: 3000,
                 username: None,
                 password: None,
+                password_env: None,
+                password_file: None,
                 bearer_token: None,
+                bearer_token_env: None,
+                bearer_token_file: None,
                 insecure_skip_verify: false,
             },
             output: OutputConfig {
@@ -86,6 +102,91 @@ impl CtlConfig {
         fs::write(path, raw)?;
         Ok(())
     }
+}
+
+impl MgmtConfig {
+    pub fn resolve_credentials(&mut self) -> Result<()> {
+        if self.password.is_none() {
+            self.password = self.resolve_password_with(
+                |name| std::env::var(name).ok(),
+                |path| fs::read_to_string(path),
+            )?;
+        }
+        if self.bearer_token.is_none() {
+            self.bearer_token = self.resolve_bearer_token_with(
+                |name| std::env::var(name).ok(),
+                |path| fs::read_to_string(path),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn resolve_password_with<F, R>(&self, get_env: F, read_file: R) -> Result<Option<String>>
+    where
+        F: Fn(&str) -> Option<String>,
+        R: Fn(&str) -> std::io::Result<String>,
+    {
+        resolve_secret_source_with(
+            "mgmt.password",
+            self.password_env.as_deref(),
+            self.password_file.as_deref(),
+            get_env,
+            read_file,
+        )
+    }
+
+    fn resolve_bearer_token_with<F, R>(&self, get_env: F, read_file: R) -> Result<Option<String>>
+    where
+        F: Fn(&str) -> Option<String>,
+        R: Fn(&str) -> std::io::Result<String>,
+    {
+        resolve_secret_source_with(
+            "mgmt.bearer_token",
+            self.bearer_token_env.as_deref(),
+            self.bearer_token_file.as_deref(),
+            get_env,
+            read_file,
+        )
+    }
+}
+
+fn resolve_secret_source_with<F, R>(
+    label: &str,
+    env_source: Option<&str>,
+    file_source: Option<&str>,
+    get_env: F,
+    read_file: R,
+) -> Result<Option<String>>
+where
+    F: Fn(&str) -> Option<String>,
+    R: Fn(&str) -> std::io::Result<String>,
+{
+    if let Some(env_name) = env_source.map(str::trim) {
+        if env_name.is_empty() {
+            anyhow::bail!("{label}_env must not be empty");
+        }
+        let secret = get_env(env_name).with_context(|| {
+            format!("environment variable {env_name} from {label}_env is not set")
+        })?;
+        if secret.is_empty() {
+            anyhow::bail!("environment variable {env_name} from {label}_env is empty");
+        }
+        return Ok(Some(secret));
+    }
+
+    if let Some(path) = file_source.map(str::trim) {
+        if path.is_empty() {
+            anyhow::bail!("{label}_file must not be empty");
+        }
+        let secret = read_file(path).with_context(|| format!("reading {label}_file {path}"))?;
+        let secret = secret.trim_end_matches(['\r', '\n']).to_string();
+        if secret.is_empty() {
+            anyhow::bail!("{label}_file {path} is empty");
+        }
+        return Ok(Some(secret));
+    }
+
+    Ok(None)
 }
 
 fn config_path() -> PathBuf {
@@ -132,7 +233,11 @@ mod tests {
                 timeout_ms: 1500,
                 username: Some("alice".into()),
                 password: Some("secret".into()),
+                password_env: None,
+                password_file: None,
                 bearer_token: None,
+                bearer_token_env: None,
+                bearer_token_file: None,
                 insecure_skip_verify: true,
             },
             output: OutputConfig {
@@ -164,7 +269,11 @@ mod tests {
                 timeout_ms: 1500,
                 username: None,
                 password: None,
+                password_env: None,
+                password_file: None,
                 bearer_token: Some("sso-access-token".into()),
+                bearer_token_env: None,
+                bearer_token_file: None,
                 insecure_skip_verify: false,
             },
             output: OutputConfig {
@@ -185,6 +294,79 @@ mod tests {
         if let Some(root) = path.ancestors().nth(2) {
             fs::remove_dir_all(root).ok();
         }
+    }
+
+    #[test]
+    fn mgmt_credentials_resolve_from_env_or_file_without_plaintext_toml() {
+        let password_cfg = MgmtConfig {
+            password_env: Some("DITTOCTL_MGMT_PASSWORD".into()),
+            ..CtlConfig::default().mgmt
+        };
+        assert_eq!(
+            password_cfg
+                .resolve_password_with(
+                    |name| (name == "DITTOCTL_MGMT_PASSWORD").then(|| "from-env".into()),
+                    |_| unreachable!(),
+                )
+                .unwrap()
+                .as_deref(),
+            Some("from-env")
+        );
+
+        let bearer_cfg = MgmtConfig {
+            bearer_token_file: Some("/run/secrets/dittoctl-token".into()),
+            ..CtlConfig::default().mgmt
+        };
+        assert_eq!(
+            bearer_cfg
+                .resolve_bearer_token_with(
+                    |_| unreachable!(),
+                    |path| {
+                        assert_eq!(path, "/run/secrets/dittoctl-token");
+                        Ok("from-file\r\n".into())
+                    },
+                )
+                .unwrap()
+                .as_deref(),
+            Some("from-file")
+        );
+    }
+
+    #[test]
+    fn mgmt_credentials_keep_direct_values_for_legacy_configs() {
+        let mut cfg = MgmtConfig {
+            password: Some("direct-password".into()),
+            password_env: Some("DITTOCTL_MGMT_PASSWORD".into()),
+            bearer_token: Some("direct-token".into()),
+            bearer_token_file: Some("/run/secrets/dittoctl-token".into()),
+            ..CtlConfig::default().mgmt
+        };
+
+        cfg.resolve_credentials().unwrap();
+
+        assert_eq!(cfg.password.as_deref(), Some("direct-password"));
+        assert_eq!(cfg.bearer_token.as_deref(), Some("direct-token"));
+    }
+
+    #[test]
+    fn mgmt_credentials_reject_missing_or_empty_secret_sources() {
+        let missing_env = MgmtConfig {
+            password_env: Some("MISSING_DITTOCTL_MGMT_PASSWORD".into()),
+            ..CtlConfig::default().mgmt
+        };
+        let err = missing_env
+            .resolve_password_with(|_| None, |_| unreachable!())
+            .unwrap_err();
+        assert!(err.to_string().contains("is not set"));
+
+        let empty_file = MgmtConfig {
+            bearer_token_file: Some("/run/secrets/empty-dittoctl-token".into()),
+            ..CtlConfig::default().mgmt
+        };
+        let err = empty_file
+            .resolve_bearer_token_with(|_| unreachable!(), |_| Ok("\n".into()))
+            .unwrap_err();
+        assert!(err.to_string().contains("is empty"));
     }
 
     #[test]

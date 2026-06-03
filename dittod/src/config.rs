@@ -170,6 +170,12 @@ pub struct BackupConfig {
     /// When absent, backups are written as plain JSON (no encryption).
     #[serde(default)]
     pub encryption_key: Option<String>,
+    /// Name of an environment variable containing the backup encryption key.
+    #[serde(default)]
+    pub encryption_key_env: Option<String>,
+    /// Path to a secret file containing the backup encryption key.
+    #[serde(default)]
+    pub encryption_key_file: Option<String>,
     /// Maximum snapshot file size accepted during restore. 0 = unlimited.
     #[serde(default = "default_backup_max_snapshot_bytes")]
     pub max_snapshot_bytes: u64,
@@ -188,10 +194,78 @@ impl Default for BackupConfig {
             retain_days: default_retain_days(),
             restore_on_start: false,
             encryption_key: None,
+            encryption_key_env: None,
+            encryption_key_file: None,
             max_snapshot_bytes: default_backup_max_snapshot_bytes(),
             max_restore_entries: default_backup_max_restore_entries(),
         }
     }
+}
+
+impl BackupConfig {
+    pub fn resolve_encryption_key(&mut self) -> Result<()> {
+        if self.encryption_key.is_some() {
+            return Ok(());
+        }
+        self.encryption_key = self.resolve_encryption_key_with(
+            |name| std::env::var(name).ok(),
+            |path| fs::read_to_string(path),
+        )?;
+        Ok(())
+    }
+
+    fn resolve_encryption_key_with<F, R>(&self, get_env: F, read_file: R) -> Result<Option<String>>
+    where
+        F: Fn(&str) -> Option<String>,
+        R: Fn(&str) -> std::io::Result<String>,
+    {
+        resolve_secret_source_with(
+            "backup.encryption_key",
+            self.encryption_key_env.as_deref(),
+            self.encryption_key_file.as_deref(),
+            get_env,
+            read_file,
+        )
+    }
+}
+
+fn resolve_secret_source_with<F, R>(
+    label: &str,
+    env_source: Option<&str>,
+    file_source: Option<&str>,
+    get_env: F,
+    read_file: R,
+) -> Result<Option<String>>
+where
+    F: Fn(&str) -> Option<String>,
+    R: Fn(&str) -> std::io::Result<String>,
+{
+    if let Some(env_name) = env_source.map(str::trim) {
+        if env_name.is_empty() {
+            anyhow::bail!("{label}_env must not be empty");
+        }
+        let secret = get_env(env_name).with_context(|| {
+            format!("environment variable {env_name} from {label}_env is not set")
+        })?;
+        if secret.is_empty() {
+            anyhow::bail!("environment variable {env_name} from {label}_env is empty");
+        }
+        return Ok(Some(secret));
+    }
+
+    if let Some(path) = file_source.map(str::trim) {
+        if path.is_empty() {
+            anyhow::bail!("{label}_file must not be empty");
+        }
+        let secret = read_file(path).with_context(|| format!("reading {label}_file {path}"))?;
+        let secret = secret.trim_end_matches(['\r', '\n']).to_string();
+        if secret.is_empty() {
+            anyhow::bail!("{label}_file {path} is empty");
+        }
+        return Ok(Some(secret));
+    }
+
+    Ok(None)
 }
 
 /// Persistence policy gate:
@@ -681,5 +755,67 @@ impl Default for Config {
             hot_key: HotKeyConfig::default(),
             log: LogConfig::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BackupConfig;
+
+    #[test]
+    fn backup_encryption_key_resolves_from_env_or_file_without_plaintext_toml() {
+        let env_cfg = BackupConfig {
+            encryption_key_env: Some("BACKUP_KEY".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            env_cfg
+                .resolve_encryption_key_with(
+                    |name| (name == "BACKUP_KEY").then(|| "from-env".into()),
+                    |_| unreachable!(),
+                )
+                .unwrap()
+                .as_deref(),
+            Some("from-env")
+        );
+
+        let file_cfg = BackupConfig {
+            encryption_key_file: Some("/run/secrets/backup-key".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            file_cfg
+                .resolve_encryption_key_with(
+                    |_| None,
+                    |path| {
+                        assert_eq!(path, "/run/secrets/backup-key");
+                        Ok("from-file\n".into())
+                    },
+                )
+                .unwrap()
+                .as_deref(),
+            Some("from-file")
+        );
+    }
+
+    #[test]
+    fn backup_encryption_key_rejects_missing_or_empty_secret_sources() {
+        let missing_env = BackupConfig {
+            encryption_key_env: Some("MISSING_BACKUP_KEY".into()),
+            ..Default::default()
+        };
+        let err = missing_env
+            .resolve_encryption_key_with(|_| None, |_| unreachable!())
+            .unwrap_err();
+        assert!(err.to_string().contains("is not set"));
+
+        let empty_file = BackupConfig {
+            encryption_key_file: Some("/run/secrets/empty".into()),
+            ..Default::default()
+        };
+        let err = empty_file
+            .resolve_encryption_key_with(|_| None, |_| Ok("\n".into()))
+            .unwrap_err();
+        assert!(err.to_string().contains("is empty"));
     }
 }

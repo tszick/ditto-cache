@@ -91,6 +91,12 @@ pub struct AdminConfig {
     /// Optional client secret for introspection endpoint authentication.
     #[serde(default)]
     pub bearer_introspection_client_secret: Option<String>,
+    /// Name of an environment variable containing the introspection client secret.
+    #[serde(default)]
+    pub bearer_introspection_client_secret_env: Option<String>,
+    /// Path to a secret file containing the introspection client secret.
+    #[serde(default)]
+    pub bearer_introspection_client_secret_file: Option<String>,
     /// Optional scope required in the introspection response.
     #[serde(default)]
     pub bearer_required_scope: Option<String>,
@@ -110,6 +116,36 @@ impl AdminConfig {
         self.password_hash.is_some()
             || self.bearer_token_sha256.is_some()
             || self.bearer_introspection_url.is_some()
+    }
+
+    pub fn resolve_bearer_introspection_client_secret(&mut self) -> Result<()> {
+        if self.bearer_introspection_client_secret.is_some() {
+            return Ok(());
+        }
+        self.bearer_introspection_client_secret = self
+            .resolve_bearer_introspection_client_secret_with(
+                |name| std::env::var(name).ok(),
+                |path| fs::read_to_string(path),
+            )?;
+        Ok(())
+    }
+
+    fn resolve_bearer_introspection_client_secret_with<F, R>(
+        &self,
+        get_env: F,
+        read_file: R,
+    ) -> Result<Option<String>>
+    where
+        F: Fn(&str) -> Option<String>,
+        R: Fn(&str) -> std::io::Result<String>,
+    {
+        resolve_secret_source_with(
+            "admin.bearer_introspection_client_secret",
+            self.bearer_introspection_client_secret_env.as_deref(),
+            self.bearer_introspection_client_secret_file.as_deref(),
+            get_env,
+            read_file,
+        )
     }
 }
 
@@ -153,14 +189,87 @@ fn default_admin_role() -> AdminRole {
 /// requests to dittod's HTTP REST port (7778).
 ///
 /// Required only when `[http_auth]` is enabled on the dittod nodes.
-/// Note: `password` is stored in **plain text** here because it must be
-/// sent as-is in the `Authorization: Basic` header.
+/// Prefer `password_env` or `password_file` so the TOML config does not carry a
+/// plaintext secret. `password` remains supported for local/dev compatibility.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HttpClientAuthConfig {
     #[serde(default)]
     pub username: Option<String>,
+    /// Legacy direct plaintext password. Prefer `password_env` or `password_file`.
     #[serde(default)]
     pub password: Option<String>,
+    /// Name of an environment variable containing the node HTTP password.
+    #[serde(default)]
+    pub password_env: Option<String>,
+    /// Path to a secret file containing the node HTTP password.
+    #[serde(default)]
+    pub password_file: Option<String>,
+}
+
+impl HttpClientAuthConfig {
+    pub fn resolve_password(&mut self) -> Result<()> {
+        if self.password.is_some() {
+            return Ok(());
+        }
+        self.password = self.resolve_password_with(
+            |name| std::env::var(name).ok(),
+            |path| fs::read_to_string(path),
+        )?;
+        Ok(())
+    }
+
+    fn resolve_password_with<F, R>(&self, get_env: F, read_file: R) -> Result<Option<String>>
+    where
+        F: Fn(&str) -> Option<String>,
+        R: Fn(&str) -> std::io::Result<String>,
+    {
+        resolve_secret_source_with(
+            "http_client_auth.password",
+            self.password_env.as_deref(),
+            self.password_file.as_deref(),
+            get_env,
+            read_file,
+        )
+    }
+}
+
+fn resolve_secret_source_with<F, R>(
+    label: &str,
+    env_source: Option<&str>,
+    file_source: Option<&str>,
+    get_env: F,
+    read_file: R,
+) -> Result<Option<String>>
+where
+    F: Fn(&str) -> Option<String>,
+    R: Fn(&str) -> std::io::Result<String>,
+{
+    if let Some(env_name) = env_source.map(str::trim) {
+        if env_name.is_empty() {
+            anyhow::bail!("{label}_env must not be empty");
+        }
+        let secret = get_env(env_name).with_context(|| {
+            format!("environment variable {env_name} from {label}_env is not set")
+        })?;
+        if secret.is_empty() {
+            anyhow::bail!("environment variable {env_name} from {label}_env is empty");
+        }
+        return Ok(Some(secret));
+    }
+
+    if let Some(path) = file_source.map(str::trim) {
+        if path.is_empty() {
+            anyhow::bail!("{label}_file must not be empty");
+        }
+        let secret = read_file(path).with_context(|| format!("reading {label}_file {path}"))?;
+        let secret = secret.trim_end_matches(['\r', '\n']).to_string();
+        if secret.is_empty() {
+            anyhow::bail!("{label}_file {path} is empty");
+        }
+        return Ok(Some(secret));
+    }
+
+    Ok(None)
 }
 
 /// Controls how cached values are exposed by the management API.
@@ -277,10 +386,15 @@ mod tests {
         assert!(cfg.admin.password_hash.is_none());
         assert!(cfg.admin.bearer_token_sha256.is_none());
         assert!(cfg.admin.bearer_introspection_url.is_none());
+        assert!(cfg.admin.bearer_introspection_client_secret.is_none());
+        assert!(cfg.admin.bearer_introspection_client_secret_env.is_none());
+        assert!(cfg.admin.bearer_introspection_client_secret_file.is_none());
         assert_eq!(cfg.admin.basic_role, AdminRole::Admin);
         assert_eq!(cfg.admin.bearer_role, AdminRole::Admin);
         assert!(cfg.http_client_auth.username.is_none());
         assert!(cfg.http_client_auth.password.is_none());
+        assert!(cfg.http_client_auth.password_env.is_none());
+        assert!(cfg.http_client_auth.password_file.is_none());
         assert!(cfg.cache_values.mask_values_by_default);
         assert!(!cfg.cache_values.allow_value_reveal);
         assert!(!cfg.cache_values.allow_sensitive_value_reveal);
@@ -310,8 +424,129 @@ mod tests {
         assert!(!cfg.tls.enabled);
         assert!(cfg.admin.password_hash.is_none());
         assert!(!cfg.admin.auth_configured());
+        assert!(cfg.admin.bearer_introspection_client_secret.is_none());
+        assert!(cfg.admin.bearer_introspection_client_secret_env.is_none());
+        assert!(cfg.admin.bearer_introspection_client_secret_file.is_none());
         assert!(cfg.http_client_auth.password.is_none());
+        assert!(cfg.http_client_auth.password_env.is_none());
+        assert!(cfg.http_client_auth.password_file.is_none());
         assert!(cfg.cache_values.mask_values_by_default);
+    }
+
+    #[test]
+    fn admin_bearer_introspection_secret_resolves_from_env_or_file_without_plaintext_toml() {
+        let env_cfg = AdminConfig {
+            bearer_introspection_client_secret_env: Some("OIDC_CLIENT_SECRET".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            env_cfg
+                .resolve_bearer_introspection_client_secret_with(
+                    |name| (name == "OIDC_CLIENT_SECRET").then(|| "from-env".into()),
+                    |_| unreachable!(),
+                )
+                .unwrap()
+                .as_deref(),
+            Some("from-env")
+        );
+
+        let file_cfg = AdminConfig {
+            bearer_introspection_client_secret_file: Some("/run/secrets/oidc-client-secret".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            file_cfg
+                .resolve_bearer_introspection_client_secret_with(
+                    |_| None,
+                    |path| {
+                        assert_eq!(path, "/run/secrets/oidc-client-secret");
+                        Ok("from-file\n".into())
+                    },
+                )
+                .unwrap()
+                .as_deref(),
+            Some("from-file")
+        );
+    }
+
+    #[test]
+    fn admin_bearer_introspection_secret_rejects_missing_or_empty_sources() {
+        let missing_env = AdminConfig {
+            bearer_introspection_client_secret_env: Some("MISSING_OIDC_CLIENT_SECRET".into()),
+            ..Default::default()
+        };
+        let err = missing_env
+            .resolve_bearer_introspection_client_secret_with(|_| None, |_| unreachable!())
+            .unwrap_err();
+        assert!(err.to_string().contains("is not set"));
+
+        let empty_file = AdminConfig {
+            bearer_introspection_client_secret_file: Some("/run/secrets/empty".into()),
+            ..Default::default()
+        };
+        let err = empty_file
+            .resolve_bearer_introspection_client_secret_with(|_| None, |_| Ok("\n".into()))
+            .unwrap_err();
+        assert!(err.to_string().contains("is empty"));
+    }
+
+    #[test]
+    fn http_client_auth_resolves_password_from_env_or_file_without_plaintext_toml() {
+        let env_cfg = HttpClientAuthConfig {
+            username: Some("ditto".into()),
+            password_env: Some("NODE_HTTP_PASSWORD".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            env_cfg
+                .resolve_password_with(
+                    |name| (name == "NODE_HTTP_PASSWORD").then(|| "from-env".into()),
+                    |_| unreachable!(),
+                )
+                .unwrap()
+                .as_deref(),
+            Some("from-env")
+        );
+
+        let file_cfg = HttpClientAuthConfig {
+            username: Some("ditto".into()),
+            password_file: Some("/run/secrets/node-http-password".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            file_cfg
+                .resolve_password_with(
+                    |_| None,
+                    |path| {
+                        assert_eq!(path, "/run/secrets/node-http-password");
+                        Ok("from-file\n".into())
+                    },
+                )
+                .unwrap()
+                .as_deref(),
+            Some("from-file")
+        );
+    }
+
+    #[test]
+    fn http_client_auth_rejects_missing_or_empty_secret_sources() {
+        let missing_env = HttpClientAuthConfig {
+            password_env: Some("MISSING_NODE_HTTP_PASSWORD".into()),
+            ..Default::default()
+        };
+        let err = missing_env
+            .resolve_password_with(|_| None, |_| unreachable!())
+            .unwrap_err();
+        assert!(err.to_string().contains("is not set"));
+
+        let empty_file = HttpClientAuthConfig {
+            password_file: Some("/run/secrets/empty".into()),
+            ..Default::default()
+        };
+        let err = empty_file
+            .resolve_password_with(|_| None, |_| Ok("\n".into()))
+            .unwrap_err();
+        assert!(err.to_string().contains("is empty"));
     }
 
     #[test]

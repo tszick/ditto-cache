@@ -65,6 +65,10 @@ basic_role = "admin" # read-only | operator | admin
 # Optional SSO/Bearer mode instead of, or alongside, Basic:
 # bearer_introspection_url = "https://sso.example/oauth2/introspect"
 # bearer_introspection_client_id = "ditto-mgmt"
+# Prefer one of these so mgmt.toml does not contain a plaintext client secret:
+# bearer_introspection_client_secret_env = "DITTO_OIDC_CLIENT_SECRET"
+# bearer_introspection_client_secret_file = "/run/secrets/ditto-oidc-client-secret"
+# Legacy/local-dev only:
 # bearer_introspection_client_secret = "<client-secret>"
 # bearer_required_scope = "ditto.mgmt"
 # bearer_required_audience = "ditto-mgmt"
@@ -72,11 +76,16 @@ basic_role = "admin" # read-only | operator | admin
 
 [http_client_auth]
 username = "ditto"
-password = "<node-http-password>"
+# Prefer one of these so mgmt.toml does not contain a plaintext secret:
+password_env = "DITTO_NODE_HTTP_PASSWORD"
+# password_file = "/run/secrets/ditto-node-http-password"
+# Legacy/local-dev only:
+# password = "<node-http-password>"
 ```
 
 Notes:
 - `[http_client_auth]` is only needed when node HTTP auth is enabled and you want mgmt proxy endpoints to work.
+- Prefer `password_env` or `password_file`; direct `password` remains supported for local/dev compatibility only.
 - Password hash is bcrypt.
 
 ## Generate password hash
@@ -104,12 +113,16 @@ instead. Node HTTP auth still uses `[http_auth].password_hash`.
 - `DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_URL` -> `admin.bearer_introspection_url`
 - `DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_ID` -> `admin.bearer_introspection_client_id`
 - `DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_SECRET` -> `admin.bearer_introspection_client_secret`
+- `DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_SECRET_ENV` -> `admin.bearer_introspection_client_secret_env`
+- `DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_SECRET_FILE` -> `admin.bearer_introspection_client_secret_file`
 - `DITTO_MGMT_ADMIN_BEARER_REQUIRED_SCOPE` -> `admin.bearer_required_scope`
 - `DITTO_MGMT_ADMIN_BEARER_REQUIRED_AUDIENCE` -> `admin.bearer_required_audience`
 - `DITTO_MGMT_ADMIN_BASIC_ROLE` -> `admin.basic_role`
 - `DITTO_MGMT_ADMIN_BEARER_ROLE` -> `admin.bearer_role`
 - `DITTO_MGMT_HTTP_AUTH_USER` -> `http_client_auth.username`
 - `DITTO_MGMT_HTTP_AUTH_PASSWORD` -> `http_client_auth.password`
+- `DITTO_MGMT_HTTP_AUTH_PASSWORD_ENV` -> `http_client_auth.password_env`
+- `DITTO_MGMT_HTTP_AUTH_PASSWORD_FILE` -> `http_client_auth.password_file`
 
 ## Management roles
 
@@ -135,9 +148,15 @@ Example:
 url = "https://localhost:7781"
 timeout_ms = 3000
 username = "admin"
-password = "<mgmt-password>"
+# Prefer one of these so kvctl.toml does not contain a plaintext secret:
+password_env = "DITTOCTL_MGMT_PASSWORD"
+# password_file = "/run/secrets/dittoctl-mgmt-password"
+# Legacy/local-dev only:
+# password = "<mgmt-password>"
 # Or, for Bearer mode:
-# bearer_token = "<sso-access-token>"
+# bearer_token_env = "DITTOCTL_MGMT_BEARER_TOKEN"
+# bearer_token_file = "/run/secrets/dittoctl-mgmt-token"
+# bearer_token = "<sso-access-token>" # legacy/local-dev only
 insecure_skip_verify = true
 
 [output]
@@ -145,8 +164,9 @@ format = "binary"
 ```
 
 Notes:
-- `username` / `password` are only needed when `ditto-mgmt` Basic Auth is enabled.
-- `bearer_token` is only needed when `ditto-mgmt` Bearer Auth is enabled.
+- `username` plus `password_env`, `password_file`, or legacy `password` are only needed when `ditto-mgmt` Basic Auth is enabled.
+- `bearer_token_env`, `bearer_token_file`, or legacy `bearer_token` are only needed when `ditto-mgmt` Bearer Auth is enabled.
+- Prefer `*_env` or `*_file`; direct secret fields remain supported for local/dev compatibility only.
 - Do not configure Basic credentials and `bearer_token` together in `dittoctl`.
 - `insecure_skip_verify = true` is acceptable for local/self-signed dev or preprod labs; keep it `false` for production trust chains.
 
@@ -268,7 +288,7 @@ dittoctl cache flush local
 `cache flush all` requires interactive confirmation.
 `node backup` is rejected when persistence backup is disabled by policy.
 `node restore-snapshot` is rejected when persistence import is disabled by policy.
-In strict production mode, enabling backup, export, import, scheduled backup, or startup restore also requires `backup.encryption_key` to be a 64-character hex AES-256-GCM key. Plaintext backups are local/dev-only and require `DITTO_INSECURE=true`.
+In strict production mode, enabling backup, export, import, scheduled backup, or startup restore also requires a 64-character hex AES-256-GCM key. Prefer `backup.encryption_key_env` or `backup.encryption_key_file`; direct `backup.encryption_key` and `DITTO_BACKUP_ENCRYPTION_KEY` remain supported for local/dev compatibility. Plaintext backups are local/dev-only and require `DITTO_INSECURE=true`.
 
 ## Security checklist
 
@@ -277,7 +297,7 @@ In strict production mode, enabling backup, export, import, scheduled backup, or
 - Set strong bcrypt password hashes for node HTTP auth and for mgmt Basic auth when enabled.
 - Prefer Bearer introspection for SSO-backed mgmt access; require a Ditto-specific scope or audience.
 - Use distinct credentials for mgmt admin and node HTTP auth.
-- Set `backup.encryption_key` before enabling any persistence backup/export/import gate.
+- Set `backup.encryption_key_env` or `backup.encryption_key_file` before enabling any persistence backup/export/import gate.
 - If using self-signed certs in dev, trust CA locally instead of disabling verification in production.
 
 ## Troubleshooting

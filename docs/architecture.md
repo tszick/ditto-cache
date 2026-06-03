@@ -161,12 +161,17 @@ Mgmt admin auth modes:
 - `read-only` cannot mutate state or reveal cache values. `operator` can perform
   operational cache/node actions, but restore, node property writes, and
   `reveal=true` cache value reads require `admin`.
+- OIDC introspection client secrets should be sourced through
+  `bearer_introspection_client_secret_env` or
+  `bearer_introspection_client_secret_file`, not direct plaintext TOML.
 
 Mgmt-to-node auth boundaries:
 
 - Admin RPC to nodes uses mTLS on `:7779`.
 - Mgmt cache proxy calls to node REST use `[http_client_auth]` service
-  credentials when node `[http_auth]` is enabled.
+  credentials when node `[http_auth]` is enabled. Production configs should
+  source that password through `password_env` or `password_file`, not direct
+  plaintext TOML.
 - The end-user Bearer token is not forwarded to nodes because node REST/TCP do
   not currently implement JWT/OIDC validation or RBAC.
 
