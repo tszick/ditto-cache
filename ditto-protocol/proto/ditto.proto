@@ -43,6 +43,9 @@ enum ErrorCode {
   ERROR_CODE_CIRCUIT_OPEN = 8;
   ERROR_CODE_NAMESPACE_QUOTA_EXCEEDED = 9;
   ERROR_CODE_AUTH_FAILED = 10;
+  ERROR_CODE_UNSUPPORTED_REQUEST = 11;
+  ERROR_CODE_TYPE_MISMATCH = 12;
+  ERROR_CODE_OVERFLOW = 13;
 }
 
 message NodeInfo {
@@ -64,6 +67,8 @@ message ClientRequest {
     KeyNamespace unwatch = 7;
     PatternNamespace delete_by_pattern = 8;
     SetTtlByPatternRequest set_ttl_by_pattern = 9;
+    SetRequest set_nx = 10;
+    IncrRequest incr = 11;
   }
 }
 
@@ -81,6 +86,8 @@ message ClientResponse {
     WatchEvent watch_event = 10;
     CountResponse pattern_deleted = 11;
     CountResponse pattern_ttl_updated = 12;
+    SetNxResponse set_nx = 13;
+    CounterResponse counter = 14;
   }
 }
 
@@ -172,6 +179,13 @@ message SetTtlByPatternRequest {
   OptionalString namespace = 3;
 }
 
+message IncrRequest {
+  string key = 1;
+  optional int64 delta = 2;
+  OptionalUint64 ttl_secs_on_create = 3;
+  OptionalString namespace = 4;
+}
+
 message ValueResponse {
   string key = 1;
   bytes value = 2;
@@ -180,6 +194,16 @@ message ValueResponse {
 
 message VersionResponse {
   uint64 version = 1;
+}
+
+message SetNxResponse {
+  bool created = 1;
+  uint64 version = 2;
+}
+
+message CounterResponse {
+  int64 value = 1;
+  uint64 version = 2;
 }
 
 message ErrorResponse {

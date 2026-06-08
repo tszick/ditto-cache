@@ -117,6 +117,23 @@ enum ClientRequestSource {
     Internal,
 }
 
+#[derive(Debug, Clone)]
+enum CoordinatedWriteRequest {
+    Set {
+        value: Bytes,
+        ttl_secs: Option<u64>,
+    },
+    Delete,
+    SetNx {
+        value: Bytes,
+        ttl_secs: Option<u64>,
+    },
+    Incr {
+        delta: i64,
+        ttl_secs_on_create: Option<u64>,
+    },
+}
+
 const NAMESPACE_LATENCY_TOP_LIMIT: usize = 5;
 const NAMESPACE_LATENCY_STATE_MAX: usize = 256;
 const HOT_KEY_TOP_LIMIT: usize = 10;
@@ -147,6 +164,7 @@ pub struct NodeHandle {
     pub config_path: String,
     pub store: Arc<KvStore>,
     pub write_log: Arc<AsyncMutex<WriteLog>>,
+    write_path_lock: Arc<AsyncMutex<()>>,
     pub active_set: Arc<AsyncMutex<ActiveSet>>,
     pub started_at: Instant,
     /// Runtime active/inactive toggle (set via SetProperty "active").
@@ -263,6 +281,7 @@ impl NodeHandle {
             config_path,
             store,
             write_log: Arc::new(AsyncMutex::new(WriteLog::new())),
+            write_path_lock: Arc::new(AsyncMutex::new(())),
             active_set: Arc::new(AsyncMutex::new(active_set)),
             started_at: Instant::now(),
             tls_connector,
@@ -406,7 +425,11 @@ impl NodeHandle {
 
     fn namespace_key_count(&self, namespace: &str) -> usize {
         let pattern = format!("{}::*", namespace);
-        self.store.keys(Some(&pattern)).len()
+        self.store
+            .keys(Some(&pattern))
+            .into_iter()
+            .filter(|key| self.store.get(key).is_some())
+            .count()
     }
 
     fn allow_by_rate_limit(&self) -> bool {
@@ -612,13 +635,20 @@ impl NodeHandle {
                     self.client_error_availability_total
                         .fetch_add(1, Ordering::Relaxed);
                 }
-                ErrorCode::KeyNotFound | ErrorCode::ValueTooLarge | ErrorCode::KeyLimitReached => {
+                ErrorCode::KeyNotFound
+                | ErrorCode::ValueTooLarge
+                | ErrorCode::KeyLimitReached
+                | ErrorCode::TypeMismatch
+                | ErrorCode::Overflow => {
                     self.client_error_validation_total
                         .fetch_add(1, Ordering::Relaxed);
                 }
                 ErrorCode::InternalError => {
                     self.client_error_internal_total
                         .fetch_add(1, Ordering::Relaxed);
+                }
+                ErrorCode::UnsupportedRequest => {
+                    self.client_error_other_total.fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
@@ -644,6 +674,8 @@ impl NodeHandle {
         match req {
             ClientRequest::Get { namespace, .. }
             | ClientRequest::Set { namespace, .. }
+            | ClientRequest::SetNx { namespace, .. }
+            | ClientRequest::Incr { namespace, .. }
             | ClientRequest::Delete { namespace, .. }
             | ClientRequest::Watch { namespace, .. }
             | ClientRequest::Unwatch { namespace, .. }
@@ -670,6 +702,8 @@ impl NodeHandle {
         let key = match req {
             ClientRequest::Get { key, .. }
             | ClientRequest::Set { key, .. }
+            | ClientRequest::SetNx { key, .. }
+            | ClientRequest::Incr { key, .. }
             | ClientRequest::Delete { key, .. }
             | ClientRequest::Watch { key, .. }
             | ClientRequest::Unwatch { key, .. } => Some(key.as_str()),
@@ -1253,59 +1287,51 @@ impl NodeHandle {
                 } => match self.namespace_context(namespace) {
                     Ok(ns) => {
                         let namespaced_key = self.namespaced_key(&ns, &key);
-                        if let Some(ref namespace_name) = ns {
-                            let max = self.config.lock().unwrap().tenancy.max_keys_per_namespace;
-                            if max > 0
-                                && self.store.get(&namespaced_key).is_none()
-                                && self.namespace_key_count(namespace_name) >= max
-                            {
-                                self.namespace_quota_reject_total
-                                    .fetch_add(1, Ordering::Relaxed);
-                                ClientResponse::Error {
-                                    code: ErrorCode::NamespaceQuotaExceeded,
-                                    message: format!(
-                                        "Namespace '{}' reached key limit ({})",
-                                        namespace_name, max
-                                    ),
-                                }
-                            } else {
-                                match self.store.check_limits(&namespaced_key, &value) {
-                                    Err(LimitError::ValueTooLarge) => ClientResponse::Error {
-                                        code: ErrorCode::ValueTooLarge,
-                                        message: format!(
-                                            "Value size {} bytes exceeds the configured limit",
-                                            value.len()
-                                        ),
-                                    },
-                                    Err(LimitError::KeyLimitReached) => ClientResponse::Error {
-                                        code: ErrorCode::KeyLimitReached,
-                                        message: "Cache is at the maximum key count limit".into(),
-                                    },
-                                    Ok(()) => {
-                                        self.coordinate_write(namespaced_key, Some(value), ttl_secs)
-                                            .await
-                                    }
-                                }
-                            }
-                        } else {
-                            match self.store.check_limits(&namespaced_key, &value) {
-                                Err(LimitError::ValueTooLarge) => ClientResponse::Error {
-                                    code: ErrorCode::ValueTooLarge,
-                                    message: format!(
-                                        "Value size {} bytes exceeds the configured limit",
-                                        value.len()
-                                    ),
-                                },
-                                Err(LimitError::KeyLimitReached) => ClientResponse::Error {
-                                    code: ErrorCode::KeyLimitReached,
-                                    message: "Cache is at the maximum key count limit".into(),
-                                },
-                                Ok(()) => {
-                                    self.coordinate_write(namespaced_key, Some(value), ttl_secs)
-                                        .await
-                                }
-                            }
-                        }
+                        self.coordinate_special_write(
+                            namespaced_key,
+                            ns,
+                            CoordinatedWriteRequest::Set { value, ttl_secs },
+                        )
+                        .await
+                    }
+                    Err(err) => err,
+                },
+
+                ClientRequest::SetNx {
+                    key,
+                    value,
+                    ttl_secs,
+                    namespace,
+                } => match self.namespace_context(namespace) {
+                    Ok(ns) => {
+                        let namespaced_key = self.namespaced_key(&ns, &key);
+                        self.coordinate_special_write(
+                            namespaced_key,
+                            ns,
+                            CoordinatedWriteRequest::SetNx { value, ttl_secs },
+                        )
+                        .await
+                    }
+                    Err(err) => err,
+                },
+
+                ClientRequest::Incr {
+                    key,
+                    delta,
+                    ttl_secs_on_create,
+                    namespace,
+                } => match self.namespace_context(namespace) {
+                    Ok(ns) => {
+                        let namespaced_key = self.namespaced_key(&ns, &key);
+                        self.coordinate_special_write(
+                            namespaced_key,
+                            ns,
+                            CoordinatedWriteRequest::Incr {
+                                delta,
+                                ttl_secs_on_create,
+                            },
+                        )
+                        .await
                     }
                     Err(err) => err,
                 },
@@ -1313,8 +1339,12 @@ impl NodeHandle {
                 ClientRequest::Delete { key, namespace } => {
                     match self.namespace_context(namespace) {
                         Ok(ns) => {
-                            self.coordinate_write(self.namespaced_key(&ns, &key), None, None)
-                                .await
+                            self.coordinate_special_write(
+                                self.namespaced_key(&ns, &key),
+                                ns,
+                                CoordinatedWriteRequest::Delete,
+                            )
+                            .await
                         }
                         Err(err) => err,
                     }
@@ -1414,18 +1444,103 @@ impl NodeHandle {
     // Write coordination (Active Set two-phase)
     // -----------------------------------------------------------------------
 
-    async fn coordinate_write(
-        &self,
+    fn request_from_coordinated_write(
         key: String,
-        value: Option<Bytes>,
-        ttl_secs: Option<u64>,
-    ) -> ClientResponse {
+        request: &CoordinatedWriteRequest,
+    ) -> ClientRequest {
+        match request {
+            CoordinatedWriteRequest::Set { value, ttl_secs } => ClientRequest::Set {
+                key,
+                value: value.clone(),
+                ttl_secs: *ttl_secs,
+                namespace: None,
+            },
+            CoordinatedWriteRequest::Delete => ClientRequest::Delete {
+                key,
+                namespace: None,
+            },
+            CoordinatedWriteRequest::SetNx { value, ttl_secs } => ClientRequest::SetNx {
+                key,
+                value: value.clone(),
+                ttl_secs: *ttl_secs,
+                namespace: None,
+            },
+            CoordinatedWriteRequest::Incr {
+                delta,
+                ttl_secs_on_create,
+            } => ClientRequest::Incr {
+                key,
+                delta: *delta,
+                ttl_secs_on_create: *ttl_secs_on_create,
+                namespace: None,
+            },
+        }
+    }
+
+    fn namespace_quota_response(&self, namespace_name: &str, max: usize) -> ClientResponse {
+        self.namespace_quota_reject_total
+            .fetch_add(1, Ordering::Relaxed);
+        ClientResponse::Error {
+            code: ErrorCode::NamespaceQuotaExceeded,
+            message: format!("Namespace '{}' reached key limit ({})", namespace_name, max),
+        }
+    }
+
+    fn limit_error_response(&self, value_len: usize, error: LimitError) -> ClientResponse {
+        match error {
+            LimitError::ValueTooLarge => ClientResponse::Error {
+                code: ErrorCode::ValueTooLarge,
+                message: format!("Value size {} bytes exceeds the configured limit", value_len),
+            },
+            LimitError::KeyLimitReached => ClientResponse::Error {
+                code: ErrorCode::KeyLimitReached,
+                message: "Cache is at the maximum key count limit".into(),
+            },
+        }
+    }
+
+    fn parse_counter_value(value: &Bytes) -> Result<i64, ()> {
+        let text = std::str::from_utf8(value).map_err(|_| ())?;
+        if text.is_empty() {
+            return Err(());
+        }
+
+        let digits = if let Some(rest) = text.strip_prefix('-') {
+            if rest.is_empty() {
+                return Err(());
+            }
+            rest
+        } else {
+            text
+        };
+
+        if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(());
+        }
+
+        text.parse::<i64>().map_err(|_| ())
+    }
+
+    fn should_reject_namespace_create(&self, namespace: Option<&str>) -> Option<ClientResponse> {
+        let namespace_name = namespace?;
+        let max = self.config.lock().unwrap().tenancy.max_keys_per_namespace;
+        if max > 0 && self.namespace_key_count(namespace_name) >= max {
+            Some(self.namespace_quota_response(namespace_name, max))
+        } else {
+            None
+        }
+    }
+
+    fn should_reject_store_limits(&self, key: &str, value: &Bytes) -> Option<ClientResponse> {
+        self.store
+            .check_limits(key, value)
+            .err()
+            .map(|err| self.limit_error_response(value.len(), err))
+    }
+
+    async fn forward_if_not_primary(&self, request: ClientRequest) -> Option<ClientResponse> {
         if !self.active_set.lock().await.is_primary() {
-            let resp = self
-                .forward_to_primary(key.clone(), value.clone(), ttl_secs)
-                .await;
-            // forward_to_primary marks the old primary as Inactive when it refuses.
-            // Re-check whether we became primary; if so, fall through to the write path.
+            let resp = self.forward_request_to_primary(request).await;
             if !matches!(
                 &resp,
                 ClientResponse::Error {
@@ -1434,12 +1549,154 @@ impl NodeHandle {
                 }
             ) || !self.active_set.lock().await.is_primary()
             {
-                return resp;
+                return Some(resp);
             }
-            // We are now the primary after the stale primary stepped down; fall through.
             info!("Took over as primary after stale primary refused write; retrying write locally");
         }
+        None
+    }
 
+    async fn coordinate_special_write(
+        &self,
+        key: String,
+        namespace: Option<String>,
+        request: CoordinatedWriteRequest,
+    ) -> ClientResponse {
+        let forward_request = Self::request_from_coordinated_write(key.clone(), &request);
+        if let Some(resp) = self.forward_if_not_primary(forward_request.clone()).await {
+            return resp;
+        }
+
+        let _guard = self.write_path_lock.lock().await;
+
+        if let Some(resp) = self.forward_if_not_primary(forward_request).await {
+            return resp;
+        }
+
+        let current = self.store.get(&key);
+        match request {
+            CoordinatedWriteRequest::Set { value, ttl_secs } => {
+                let creates_key = current.is_none();
+                if creates_key {
+                    if let Some(resp) = self.should_reject_namespace_create(namespace.as_deref()) {
+                        return resp;
+                    }
+                }
+                if let Some(resp) = self.should_reject_store_limits(&key, &value) {
+                    return resp;
+                }
+
+                match self
+                    .replicate_write_unlocked(key, Some(value), ttl_secs)
+                    .await
+                {
+                    Ok(version) => ClientResponse::Ok { version },
+                    Err(resp) => resp,
+                }
+            }
+            CoordinatedWriteRequest::Delete => match self.replicate_write_unlocked(key, None, None).await
+            {
+                Ok(_) => ClientResponse::Deleted,
+                Err(resp) => resp,
+            },
+            CoordinatedWriteRequest::SetNx { value, ttl_secs } => {
+                if let Some(existing) = current {
+                    return ClientResponse::SetNx {
+                        created: false,
+                        version: existing.version,
+                    };
+                }
+                if let Some(resp) = self.should_reject_namespace_create(namespace.as_deref()) {
+                    return resp;
+                }
+                if let Some(resp) = self.should_reject_store_limits(&key, &value) {
+                    return resp;
+                }
+
+                match self
+                    .replicate_write_unlocked(key, Some(value), ttl_secs)
+                    .await
+                {
+                    Ok(version) => ClientResponse::SetNx {
+                        created: true,
+                        version,
+                    },
+                    Err(resp) => resp,
+                }
+            }
+            CoordinatedWriteRequest::Incr {
+                delta,
+                ttl_secs_on_create,
+            } => {
+                let (next_value, ttl_secs, creates_key) = match current {
+                    Some(existing) => {
+                        let base = match Self::parse_counter_value(&existing.value) {
+                            Ok(value) => value,
+                            Err(_) => {
+                                return ClientResponse::Error {
+                                    code: ErrorCode::TypeMismatch,
+                                    message: "Stored value is not a valid int64 counter".into(),
+                                };
+                            }
+                        };
+                        let next_value = match base.checked_add(delta) {
+                            Some(value) => value,
+                            None => {
+                                return ClientResponse::Error {
+                                    code: ErrorCode::Overflow,
+                                    message: "Counter result exceeds int64 range".into(),
+                                };
+                            }
+                        };
+                        (next_value, existing.ttl_remaining_secs(), false)
+                    }
+                    None => (delta, ttl_secs_on_create, true),
+                };
+
+                if creates_key {
+                    if let Some(resp) = self.should_reject_namespace_create(namespace.as_deref()) {
+                        return resp;
+                    }
+                }
+
+                let encoded = Bytes::from(next_value.to_string().into_bytes());
+                if let Some(resp) = self.should_reject_store_limits(&key, &encoded) {
+                    return resp;
+                }
+
+                match self
+                    .replicate_write_unlocked(key, Some(encoded), ttl_secs)
+                    .await
+                {
+                    Ok(version) => ClientResponse::Counter {
+                        value: next_value,
+                        version,
+                    },
+                    Err(resp) => resp,
+                }
+            }
+        }
+    }
+
+    async fn coordinate_write(
+        &self,
+        key: String,
+        value: Option<Bytes>,
+        ttl_secs: Option<u64>,
+    ) -> ClientResponse {
+        let request = match value {
+            Some(value) => CoordinatedWriteRequest::Set { value, ttl_secs },
+            None => CoordinatedWriteRequest::Delete,
+        };
+        self.coordinate_special_write(key, None, request).await
+    }
+
+    async fn replicate_write_unlocked(
+        &self,
+        key: String,
+        value: Option<Bytes>,
+        ttl_secs: Option<u64>,
+    ) -> Result<u64, ClientResponse> {
         // --- PREPARE phase ---
         let log_index = {
             let mut log = self.write_log.lock().await;
@@ -1475,10 +1732,10 @@ impl NodeHandle {
 
         if prepare_acks < required_peer_acks {
             warn!("PREPARE timed out for log_index={}", log_index);
-            return ClientResponse::Error {
+            return Err(ClientResponse::Error {
                 code: ErrorCode::WriteTimeout,
                 message: format!("Write timed out at PREPARE (index {})", log_index),
-            };
+            });
         }
 
         // Apply locally.
@@ -1493,10 +1750,7 @@ impl NodeHandle {
         self.write_log.lock().await.commit(log_index);
         self.active_set.lock().await.set_local_applied(log_index);
 
-        match value {
-            Some(_) => ClientResponse::Ok { version },
-            None => ClientResponse::Deleted,
-        }
+        Ok(version)
     }
 
     async fn forward_request_to_primary(&self, request: ClientRequest) -> ClientResponse {
@@ -1567,28 +1821,6 @@ impl NodeHandle {
         }
 
         resp
-    }
-
-    async fn forward_to_primary(
-        &self,
-        key: String,
-        value: Option<Bytes>,
-        ttl_secs: Option<u64>,
-    ) -> ClientResponse {
-        let req = if let Some(v) = value {
-            ClientRequest::Set {
-                key,
-                value: v,
-                ttl_secs,
-                namespace: None,
-            }
-        } else {
-            ClientRequest::Delete {
-                key,
-                namespace: None,
-            }
-        };
-        self.forward_request_to_primary(req).await
     }
 
     fn apply_locally(
@@ -5489,6 +5721,146 @@ mod tests {
         assert!(matches!(
             deleted,
             ClientResponse::PatternDeleted { deleted: 2 }
+        ));
+    }
+
+    #[tokio::test]
+    async fn set_nx_creates_once_and_keeps_existing_value() {
+        let node = test_node(Config::default());
+
+        let first = node
+            .handle_client(ClientRequest::SetNx {
+                key: "lease".into(),
+                value: Bytes::from_static(b"holder-a"),
+                ttl_secs: Some(30),
+                namespace: None,
+            })
+            .await;
+        let first_version = match first {
+            ClientResponse::SetNx {
+                created: true,
+                version,
+            } => version,
+            other => panic!("unexpected first setnx response: {other:?}"),
+        };
+
+        let second = node
+            .handle_client(ClientRequest::SetNx {
+                key: "lease".into(),
+                value: Bytes::from_static(b"holder-b"),
+                ttl_secs: Some(30),
+                namespace: None,
+            })
+            .await;
+        match second {
+            ClientResponse::SetNx {
+                created: false,
+                version,
+            } => assert_eq!(version, first_version),
+            other => panic!("unexpected second setnx response: {other:?}"),
+        }
+
+        let stored = node
+            .handle_client(ClientRequest::Get {
+                key: "lease".into(),
+                namespace: None,
+            })
+            .await;
+        match stored {
+            ClientResponse::Value { value, version, .. } => {
+                assert_eq!(value, Bytes::from_static(b"holder-a"));
+                assert_eq!(version, first_version);
+            }
+            other => panic!("unexpected get response after setnx: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn incr_updates_counter_and_rejects_bad_values() {
+        let node = test_node(Config::default());
+
+        let created = node
+            .handle_client(ClientRequest::Incr {
+                key: "counter".into(),
+                delta: 2,
+                ttl_secs_on_create: Some(30),
+                namespace: None,
+            })
+            .await;
+        match created {
+            ClientResponse::Counter { value, version } => {
+                assert_eq!(value, 2);
+                assert_eq!(version, 1);
+            }
+            other => panic!("unexpected incr create response: {other:?}"),
+        }
+
+        let updated = node
+            .handle_client(ClientRequest::Incr {
+                key: "counter".into(),
+                delta: -1,
+                ttl_secs_on_create: Some(60),
+                namespace: None,
+            })
+            .await;
+        match updated {
+            ClientResponse::Counter { value, version } => {
+                assert_eq!(value, 1);
+                assert_eq!(version, 2);
+            }
+            other => panic!("unexpected incr update response: {other:?}"),
+        }
+
+        let invalid_value = node
+            .handle_client(ClientRequest::Set {
+                key: "not-int".into(),
+                value: Bytes::from_static(b"abc"),
+                ttl_secs: None,
+                namespace: None,
+            })
+            .await;
+        assert!(matches!(invalid_value, ClientResponse::Ok { .. }));
+
+        let mismatch = node
+            .handle_client(ClientRequest::Incr {
+                key: "not-int".into(),
+                delta: 1,
+                ttl_secs_on_create: None,
+                namespace: None,
+            })
+            .await;
+        assert!(matches!(
+            mismatch,
+            ClientResponse::Error {
+                code: ErrorCode::TypeMismatch,
+                ..
+            }
+        ));
+
+        let max_value = node
+            .handle_client(ClientRequest::Set {
+                key: "max-int".into(),
+                value: Bytes::from(i64::MAX.to_string().into_bytes()),
+                ttl_secs: None,
+                namespace: None,
+            })
+            .await;
+        assert!(matches!(max_value, ClientResponse::Ok { .. }));
+
+        let overflow = node
+            .handle_client(ClientRequest::Incr {
+                key: "max-int".into(),
+                delta: 1,
+                ttl_secs_on_create: None,
+                namespace: None,
+            })
+            .await;
+        assert!(matches!(
+            overflow,
+            ClientResponse::Error {
+                code: ErrorCode::Overflow,
+                ..
+            }
         ));
     }
 }

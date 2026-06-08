@@ -77,8 +77,12 @@ fn build_app(node: Arc<NodeHandle>) -> Router {
     Router::new()
         .route(
             "/key/{key}",
-            get(handle_get).put(handle_set).delete(handle_delete),
+            get(handle_get)
+                .put(handle_set)
+                .post(handle_post_key)
+                .delete(handle_delete),
         )
+        .route("/key/{key}/incr", post(handle_incr))
         .route("/keys/delete-by-pattern", post(handle_delete_by_pattern))
         .route("/keys/batch", post(handle_batch_set))
         .route("/keys/ttl-by-pattern", post(handle_set_ttl_by_pattern))
@@ -211,6 +215,36 @@ struct SetQuery {
 }
 
 #[derive(Deserialize)]
+struct PostKeyQuery {
+    nx: Option<String>,
+    ttl: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum IncrDeltaValue {
+    Number(i64),
+    String(String),
+}
+
+impl IncrDeltaValue {
+    fn into_i64(self) -> Result<i64, String> {
+        match self {
+            Self::Number(value) => Ok(value),
+            Self::String(value) => value
+                .parse::<i64>()
+                .map_err(|_| "delta must be a signed int64".to_string()),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct IncrBody {
+    delta: Option<IncrDeltaValue>,
+    ttl_secs_on_create: Option<u64>,
+}
+
+#[derive(Deserialize)]
 struct BatchSetItem {
     key: String,
     value: Option<String>,
@@ -240,6 +274,79 @@ async fn handle_set(
         ClientResponse::Ok { version } => {
             Json(serde_json::json!({ "version": version })).into_response()
         }
+        ClientResponse::Error { code, message } => error_response(code, message),
+        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+async fn handle_post_key(
+    headers: HeaderMap,
+    Path(key): Path<String>,
+    Query(q): Query<PostKeyQuery>,
+    State(node): State<Arc<NodeHandle>>,
+    body: Bytes,
+) -> Response {
+    if !query_flag_enabled(q.nx.as_deref()) {
+        return error_response(
+            ErrorCode::UnsupportedRequest,
+            "POST /key/{key} requires nx=1".into(),
+        );
+    }
+
+    let req = ClientRequest::SetNx {
+        key,
+        value: body,
+        ttl_secs: q.ttl,
+        namespace: namespace_from_headers(&headers),
+    };
+    match node.handle_client_http(req).await {
+        ClientResponse::SetNx { created, version } => {
+            let status = if created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            };
+            (
+                status,
+                Json(serde_json::json!({
+                    "created": created,
+                    "version": version.to_string(),
+                })),
+            )
+                .into_response()
+        }
+        ClientResponse::Error { code, message } => error_response(code, message),
+        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+async fn handle_incr(
+    headers: HeaderMap,
+    Path(key): Path<String>,
+    State(node): State<Arc<NodeHandle>>,
+    Json(body): Json<IncrBody>,
+) -> Response {
+    let delta = match body.delta {
+        Some(delta) => match delta.into_i64() {
+            Ok(value) => value,
+            Err(message) => {
+                return error_response(ErrorCode::TypeMismatch, message);
+            }
+        },
+        None => 1,
+    };
+    let req = ClientRequest::Incr {
+        key,
+        delta,
+        ttl_secs_on_create: body.ttl_secs_on_create,
+        namespace: namespace_from_headers(&headers),
+    };
+    match node.handle_client_http(req).await {
+        ClientResponse::Counter { value, version } => Json(serde_json::json!({
+            "value": value.to_string(),
+            "version": version.to_string(),
+        }))
+        .into_response(),
         ClientResponse::Error { code, message } => error_response(code, message),
         _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
@@ -545,6 +652,11 @@ fn error_response(code: ErrorCode, message: String) -> Response {
     (status, Json(body)).into_response()
 }
 
+fn query_flag_enabled(value: Option<&str>) -> bool {
+    matches!(value, Some("1"))
+        || value.is_some_and(|flag| flag.eq_ignore_ascii_case("true"))
+}
+
 fn status_for_error(code: &ErrorCode) -> StatusCode {
     match code {
         ErrorCode::NodeInactive => StatusCode::SERVICE_UNAVAILABLE,
@@ -554,6 +666,8 @@ fn status_for_error(code: &ErrorCode) -> StatusCode {
         ErrorCode::WriteTimeout => StatusCode::GATEWAY_TIMEOUT,
         ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
         ErrorCode::NamespaceQuotaExceeded => StatusCode::TOO_MANY_REQUESTS,
+        ErrorCode::UnsupportedRequest => StatusCode::NOT_IMPLEMENTED,
+        ErrorCode::TypeMismatch | ErrorCode::Overflow => StatusCode::CONFLICT,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }

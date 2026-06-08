@@ -90,6 +90,18 @@ pub enum ClientRequest {
         pattern: String,
         namespace: Option<String>,
     },
+    SetNx {
+        key: String,
+        value: Bytes,
+        ttl_secs: Option<u64>,
+        namespace: Option<String>,
+    },
+    Incr {
+        key: String,
+        delta: i64,
+        ttl_secs_on_create: Option<u64>,
+        namespace: Option<String>,
+    },
     /// Update TTL for all keys matching a glob-style pattern.
     /// `ttl_secs = None` removes TTL for matched keys.
     SetTtlByPattern {
@@ -149,6 +161,14 @@ pub enum ClientResponse {
     PatternTtlUpdated {
         updated: usize,
     },
+    SetNx {
+        created: bool,
+        version: u64,
+    },
+    Counter {
+        value: i64,
+        version: u64,
+    },
 }
 
 impl WireMessage for ClientResponse {
@@ -186,6 +206,12 @@ pub enum ErrorCode {
     NamespaceQuotaExceeded,
     /// Invalid or missing authentication.
     AuthFailed,
+    /// Request opcode is not implemented by this server version.
+    UnsupportedRequest,
+    /// Operation requires a different stored value type.
+    TypeMismatch,
+    /// Integer operation overflowed or underflowed.
+    Overflow,
 }
 
 // ---------------------------------------------------------------------------
@@ -685,6 +711,9 @@ impl From<ErrorCode> for pb::ErrorCode {
             ErrorCode::CircuitOpen => Self::CircuitOpen,
             ErrorCode::NamespaceQuotaExceeded => Self::NamespaceQuotaExceeded,
             ErrorCode::AuthFailed => Self::AuthFailed,
+            ErrorCode::UnsupportedRequest => Self::UnsupportedRequest,
+            ErrorCode::TypeMismatch => Self::TypeMismatch,
+            ErrorCode::Overflow => Self::Overflow,
         }
     }
 }
@@ -705,6 +734,9 @@ impl TryFrom<i32> for ErrorCode {
             pb::ErrorCode::CircuitOpen => Ok(Self::CircuitOpen),
             pb::ErrorCode::NamespaceQuotaExceeded => Ok(Self::NamespaceQuotaExceeded),
             pb::ErrorCode::AuthFailed => Ok(Self::AuthFailed),
+            pb::ErrorCode::UnsupportedRequest => Ok(Self::UnsupportedRequest),
+            pb::ErrorCode::TypeMismatch => Ok(Self::TypeMismatch),
+            pb::ErrorCode::Overflow => Ok(Self::Overflow),
         }
     }
 }
@@ -800,6 +832,28 @@ impl From<ClientRequest> for pb::ClientRequest {
                     namespace: opt_string(namespace),
                 })
             }
+            ClientRequest::SetNx {
+                key,
+                value,
+                ttl_secs,
+                namespace,
+            } => Request::SetNx(pb::SetRequest {
+                key,
+                value: value.to_vec(),
+                ttl_secs: opt_u64(ttl_secs),
+                namespace: opt_string(namespace),
+            }),
+            ClientRequest::Incr {
+                key,
+                delta,
+                ttl_secs_on_create,
+                namespace,
+            } => Request::Incr(pb::IncrRequest {
+                key,
+                delta: Some(delta),
+                ttl_secs_on_create: opt_u64(ttl_secs_on_create),
+                namespace: opt_string(namespace),
+            }),
             ClientRequest::SetTtlByPattern {
                 pattern,
                 ttl_secs,
@@ -851,6 +905,18 @@ impl TryFrom<pb::ClientRequest> for ClientRequest {
             },
             Request::DeleteByPattern(v) => Self::DeleteByPattern {
                 pattern: v.pattern,
+                namespace: from_opt_string(v.namespace),
+            },
+            Request::SetNx(v) => Self::SetNx {
+                key: v.key,
+                value: Bytes::from(v.value),
+                ttl_secs: from_opt_u64(v.ttl_secs),
+                namespace: from_opt_string(v.namespace),
+            },
+            Request::Incr(v) => Self::Incr {
+                key: v.key,
+                delta: v.delta.unwrap_or(1),
+                ttl_secs_on_create: from_opt_u64(v.ttl_secs_on_create),
                 namespace: from_opt_string(v.namespace),
             },
             Request::SetTtlByPattern(v) => Self::SetTtlByPattern {
@@ -905,6 +971,12 @@ impl From<ClientResponse> for pb::ClientResponse {
                     count: updated as u64,
                 })
             }
+            ClientResponse::SetNx { created, version } => {
+                Response::SetNx(pb::SetNxResponse { created, version })
+            }
+            ClientResponse::Counter { value, version } => {
+                Response::Counter(pb::CounterResponse { value, version })
+            }
         };
         Self {
             response: Some(response),
@@ -947,6 +1019,14 @@ impl TryFrom<pb::ClientResponse> for ClientResponse {
             },
             Response::PatternTtlUpdated(v) => Self::PatternTtlUpdated {
                 updated: usize::try_from(v.count)?,
+            },
+            Response::SetNx(v) => Self::SetNx {
+                created: v.created,
+                version: v.version,
+            },
+            Response::Counter(v) => Self::Counter {
+                value: v.value,
+                version: v.version,
             },
         })
     }
@@ -1712,6 +1792,18 @@ mod tests {
                 pattern: "tenant:*".into(),
                 namespace: Some("tenant-a".into()),
             },
+            ClientRequest::SetNx {
+                key: "lock".into(),
+                value: Bytes::from_static(b"holder-a"),
+                ttl_secs: Some(30),
+                namespace: Some("tenant-a".into()),
+            },
+            ClientRequest::Incr {
+                key: "counter".into(),
+                delta: -2,
+                ttl_secs_on_create: Some(15),
+                namespace: None,
+            },
             ClientRequest::SetTtlByPattern {
                 pattern: "tenant:*".into(),
                 ttl_secs: None,
@@ -1800,6 +1892,34 @@ mod tests {
                     },
                 ) => assert_eq!((a, an), (b, bn)),
                 (
+                    ClientRequest::SetNx {
+                        key: a,
+                        value: av,
+                        ttl_secs: at,
+                        namespace: an,
+                    },
+                    ClientRequest::SetNx {
+                        key: b,
+                        value: bv,
+                        ttl_secs: bt,
+                        namespace: bn,
+                    },
+                ) => assert_eq!((a, av, at, an), (b, bv, bt, bn)),
+                (
+                    ClientRequest::Incr {
+                        key: a,
+                        delta: ad,
+                        ttl_secs_on_create: at,
+                        namespace: an,
+                    },
+                    ClientRequest::Incr {
+                        key: b,
+                        delta: bd,
+                        ttl_secs_on_create: bt,
+                        namespace: bn,
+                    },
+                ) => assert_eq!((a, ad, at, an), (b, bd, bt, bn)),
+                (
                     ClientRequest::SetTtlByPattern {
                         pattern: a,
                         ttl_secs: at,
@@ -1847,6 +1967,14 @@ mod tests {
             },
             ClientResponse::PatternDeleted { deleted: 6 },
             ClientResponse::PatternTtlUpdated { updated: 7 },
+            ClientResponse::SetNx {
+                created: true,
+                version: 8,
+            },
+            ClientResponse::Counter {
+                value: -9,
+                version: 10,
+            },
         ];
 
         for response in cases {
@@ -1904,6 +2032,26 @@ mod tests {
                     ClientResponse::PatternTtlUpdated { updated: a },
                     ClientResponse::PatternTtlUpdated { updated: b },
                 ) => assert_eq!(a, b),
+                (
+                    ClientResponse::SetNx {
+                        created: ac,
+                        version: av,
+                    },
+                    ClientResponse::SetNx {
+                        created: bc,
+                        version: bv,
+                    },
+                ) => assert_eq!((ac, av), (bc, bv)),
+                (
+                    ClientResponse::Counter {
+                        value: av,
+                        version: aver,
+                    },
+                    ClientResponse::Counter {
+                        value: bv,
+                        version: bver,
+                    },
+                ) => assert_eq!((av, aver), (bv, bver)),
                 (a, b) => panic!("roundtrip changed response: {a:?} -> {b:?}"),
             }
         }
