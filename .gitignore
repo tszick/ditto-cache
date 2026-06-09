@@ -1,5 +1,6 @@
 # Rust build artifacts
 /target/
+ditto-mgmt/target/
 **/*.rs.bk
 build-out
 **/__pycache__/

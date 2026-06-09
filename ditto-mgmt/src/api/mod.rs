@@ -39,11 +39,11 @@ const CONTENT_SECURITY_POLICY: &str = concat!(
     "object-src 'none'; ",
     "frame-ancestors 'none'; ",
     "form-action 'self'; ",
-    "connect-src 'self' https://cdn.jsdelivr.net; ",
+    "connect-src 'self'; ",
     "img-src 'self' data:; ",
-    "font-src 'self' https://cdn.jsdelivr.net data:; ",
-    "style-src 'self' https://cdn.jsdelivr.net 'sha256-zout71JFYhls/gibmwN63ihb96tmhzhpWukdBnZh+Yc='; ",
-    "script-src 'self' https://cdn.jsdelivr.net 'sha256-DalhQAcWf8gFr0EPEf+nU8O0ufgjGPVW0TnkraCMESE='"
+    "font-src 'self' data:; ",
+    "style-src 'self' 'sha256-zout71JFYhls/gibmwN63ihb96tmhzhpWukdBnZh+Yc='; ",
+    "script-src 'self' 'sha256-DalhQAcWf8gFr0EPEf+nU8O0ufgjGPVW0TnkraCMESE='"
 );
 
 /// Shared application state injected into every Axum handler via [`axum::extract::State`].
@@ -133,6 +133,7 @@ pub fn build_router(state: SharedState) -> Router {
         // Web UI
         .route("/", get(crate::web::serve_index))
         .route("/ditto-logo.png", get(crate::web::serve_logo))
+        .route("/assets/{*path}", get(crate::web::serve_asset))
         // Admin auth across all routes (no-op when [admin] auth is not configured).
         .layer(middleware::from_fn_with_state(
             Arc::clone(&state),
