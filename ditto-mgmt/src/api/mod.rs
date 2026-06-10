@@ -43,7 +43,7 @@ const CONTENT_SECURITY_POLICY: &str = concat!(
     "img-src 'self' data:; ",
     "font-src 'self' data:; ",
     "style-src 'self' 'sha256-zout71JFYhls/gibmwN63ihb96tmhzhpWukdBnZh+Yc='; ",
-    "script-src 'self' 'sha256-DalhQAcWf8gFr0EPEf+nU8O0ufgjGPVW0TnkraCMESE='"
+    "script-src 'self'"
 );
 
 /// Shared application state injected into every Axum handler via [`axum::extract::State`].
@@ -268,15 +268,18 @@ mod tests {
     }
 
     #[test]
-    fn content_security_policy_hashes_match_embedded_web_ui() {
+    fn content_security_policy_hash_matches_embedded_web_ui_style() {
         let html = include_str!("../web/index.html");
         let style = tag_body(html, "<style>", "</style>");
-        let script = tag_body(html, "<script>", "</script>");
         let style_hash = csp_hash(style);
-        let script_hash = csp_hash(script);
 
         assert!(CONTENT_SECURITY_POLICY.contains(&format!("'sha256-{style_hash}'")));
-        assert!(CONTENT_SECURITY_POLICY.contains(&format!("'sha256-{script_hash}'")));
+    }
+
+    #[test]
+    fn content_security_policy_disallows_inline_scripts() {
+        assert!(CONTENT_SECURITY_POLICY.contains("script-src 'self'"));
+        assert!(!CONTENT_SECURITY_POLICY.contains("script-src 'self' 'sha256-"));
     }
 
     fn tag_body<'a>(input: &'a str, start: &str, end: &str) -> &'a str {

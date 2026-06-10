@@ -9,6 +9,7 @@ const DITTO_LOGO: &[u8] = include_bytes!("ditto.png");
 const BOOTSTRAP_CSS: &[u8] = include_bytes!("assets/bootstrap.min.css");
 const BOOTSTRAP_ICONS_CSS: &[u8] = include_bytes!("assets/bootstrap-icons.min.css");
 const BOOTSTRAP_JS: &[u8] = include_bytes!("assets/bootstrap.bundle.min.js");
+const APP_JS: &[u8] = include_bytes!("assets/app.js");
 const BOOTSTRAP_ICONS_WOFF: &[u8] = include_bytes!("assets/fonts/bootstrap-icons.woff");
 const BOOTSTRAP_ICONS_WOFF2: &[u8] = include_bytes!("assets/fonts/bootstrap-icons.woff2");
 
@@ -45,6 +46,7 @@ pub async fn serve_asset(Path(path): Path<String>) -> Response {
         "bootstrap.bundle.min.js" => {
             serve_bytes("application/javascript; charset=utf-8", BOOTSTRAP_JS)
         }
+        "app.js" => serve_bytes("application/javascript; charset=utf-8", APP_JS),
         "fonts/bootstrap-icons.woff" => serve_bytes("font/woff", BOOTSTRAP_ICONS_WOFF),
         "fonts/bootstrap-icons.woff2" => serve_bytes("font/woff2", BOOTSTRAP_ICONS_WOFF2),
         _ => (StatusCode::NOT_FOUND, "asset not found").into_response(),
@@ -109,6 +111,21 @@ mod tests {
             .await
             .expect("read asset bytes");
         assert!(body.starts_with(b"@charset \"UTF-8\";"));
+    }
+
+    #[tokio::test]
+    async fn serve_asset_returns_externalized_ui_script() {
+        let response = serve_asset(Path("app.js".to_string())).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/javascript; charset=utf-8"
+        );
+
+        let body = to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("read asset bytes");
+        assert!(body.starts_with(b"// ---------------------------------------------------------------------------"));
     }
 
     #[tokio::test]
