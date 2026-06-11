@@ -1,4 +1,4 @@
-﻿name: Pre-Prod Runbook Validation
+name: Pre-Prod Runbook Validation
 
 on:
   push:
@@ -30,7 +30,7 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || inputs.real_run != true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Validate runbook scenarios in dry-run mode
         shell: pwsh
@@ -42,7 +42,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.real_run == true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Validate runbook scenarios against live dev cluster
         shell: powershell
