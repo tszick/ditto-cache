@@ -1,4 +1,4 @@
-﻿name: Performance Gate
+name: Performance Gate
 
 on:
   push:
@@ -13,7 +13,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
