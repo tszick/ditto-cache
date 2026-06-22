@@ -30,7 +30,7 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || inputs.real_run != true
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Validate runbook scenarios in dry-run mode
         shell: pwsh
@@ -42,7 +42,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.real_run == true
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Validate runbook scenarios against live dev cluster
         shell: powershell
