@@ -29,4 +29,4 @@ reqwest        = { version = "0.12", default-features = false, features = ["json
 base64         = "0.22"
 sha2           = "0.11"
 axum-server    = { version = "0.8", features = ["tls-rustls-no-provider"] }
-aes-gcm        = "0.10"
+aes-gcm        = "0.11"
