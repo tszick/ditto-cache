@@ -351,10 +351,11 @@ fn encrypt_data(key_hex: &str, plaintext: &[u8]) -> anyhow::Result<Vec<u8>> {
 
     let mut nonce_bytes = [0u8; NONCE_LEN];
     rand::rng().fill(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::try_from(&nonce_bytes[..])
+        .map_err(|_| anyhow::anyhow!("AES-256-GCM nonce init failed"))?;
 
     let ciphertext = cipher
-        .encrypt(nonce, plaintext)
+        .encrypt(&nonce, plaintext)
         .map_err(|e| anyhow::anyhow!("AES-256-GCM encryption failed: {}", e))?;
 
     let mut out = Vec::with_capacity(MAGIC.len() + 1 + NONCE_LEN + ciphertext.len());
@@ -393,9 +394,10 @@ pub fn decrypt_data(key_hex: &str, data: &[u8]) -> anyhow::Result<Vec<u8>> {
     let cipher = Aes256Gcm::new_from_slice(&key_bytes)
         .map_err(|e| anyhow::anyhow!("AES-256-GCM key init failed: {}", e))?;
 
-    let nonce = Nonce::from_slice(&data[5..5 + NONCE_LEN]);
+    let nonce = Nonce::try_from(&data[5..5 + NONCE_LEN])
+        .map_err(|_| anyhow::anyhow!("AES-256-GCM nonce init failed"))?;
     let plaintext = cipher
-        .decrypt(nonce, &data[header_len..])
+        .decrypt(&nonce, &data[header_len..])
         .map_err(|_| anyhow::anyhow!("AES-256-GCM decryption failed: wrong key or corrupt data"))?;
 
     Ok(plaintext)

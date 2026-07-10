@@ -653,8 +653,7 @@ fn error_response(code: ErrorCode, message: String) -> Response {
 }
 
 fn query_flag_enabled(value: Option<&str>) -> bool {
-    matches!(value, Some("1"))
-        || value.is_some_and(|flag| flag.eq_ignore_ascii_case("true"))
+    matches!(value, Some("1")) || value.is_some_and(|flag| flag.eq_ignore_ascii_case("true"))
 }
 
 fn status_for_error(code: &ErrorCode) -> StatusCode {
