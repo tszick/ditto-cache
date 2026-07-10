@@ -12,6 +12,7 @@
 //! | POST | `/api/nodes/:target/restore-snapshot` | Restore latest snapshot |
 
 use crate::api::SharedState;
+use crate::app::nodes as app_nodes;
 use crate::node_client::{admin_rpc, resolve_target};
 use axum::{
     extract::{Path, State},
@@ -21,8 +22,10 @@ use axum::{
 };
 use ditto_protocol::{AdminRequest, AdminResponse};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use std::time::Instant;
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 pub struct NamespaceQuotaUsageView {
     pub namespace: String,
@@ -36,6 +39,7 @@ pub struct NamespaceQuotaUsageView {
 // NodeInfo — JSON representation of a node's health status
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 pub struct NodeInfo {
     pub addr: String,
@@ -129,6 +133,7 @@ pub struct NodeInfo {
     pub miss_count: Option<u64>,
 }
 
+#[cfg(test)]
 fn build_node_info(
     addr: std::net::SocketAddr,
     result: anyhow::Result<AdminResponse>,
@@ -341,9 +346,11 @@ fn build_node_info(
 
 #[derive(Serialize)]
 pub struct NodeListResponse {
-    pub nodes: Vec<NodeInfo>,
+    pub nodes: Vec<app_nodes::NodeInfo>,
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 pub async fn collect_nodes(state: SharedState) -> Vec<NodeInfo> {
     let addrs = state.cluster_addrs().await;
 
@@ -374,7 +381,7 @@ pub async fn collect_nodes(state: SharedState) -> Vec<NodeInfo> {
 /// Unreachable nodes appear in the response with `reachable: false`.
 pub async fn list_nodes(State(state): State<SharedState>) -> impl IntoResponse {
     Json(NodeListResponse {
-        nodes: collect_nodes(state).await,
+        nodes: app_nodes::collect_nodes(state).await,
     })
 }
 
@@ -389,26 +396,7 @@ pub async fn node_status(
     State(state): State<SharedState>,
     Path(target): Path<String>,
 ) -> impl IntoResponse {
-    let addrs = if target == "all" {
-        state.cluster_addrs().await
-    } else {
-        resolve_target(
-            &target,
-            state.cfg.connection.cluster_port,
-            &state.cfg.connection.seeds,
-        )
-        .await
-    };
-
-    let mut nodes = Vec::new();
-    for addr in addrs {
-        let t0 = Instant::now();
-        let resp = admin_rpc(addr, AdminRequest::GetStats, state.tls.as_ref()).await;
-        let ms = t0.elapsed().as_millis() as u64;
-        nodes.push(build_node_info(addr, resp, ms));
-    }
-
-    Json(nodes)
+    Json(app_nodes::collect_target_nodes(state, &target).await)
 }
 
 // ---------------------------------------------------------------------------

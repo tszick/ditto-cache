@@ -16,7 +16,12 @@
 //! | POST   | `/api/cache/:target/ttl`                  | Set TTL by key pattern | |
 
 use crate::api::SharedState;
-use crate::node_client::{admin_rpc, http_authority_for_target, resolve_target};
+use crate::app::cache as app_cache;
+use crate::policy::cache_value_redaction::{
+    build_cache_value_response, parse_node_get_value,
+};
+#[cfg(test)]
+use ditto_protocol::{AdminRequest, AdminResponse};
 use axum::{
     extract::{Path, Query, State},
     http::HeaderValue,
@@ -24,9 +29,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use ditto_protocol::{AdminRequest, AdminResponse};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use serde::Deserialize;
 
 /// Validate that a cache key contains only an allowlisted set of characters.
 /// This prevents malformed or control characters from affecting proxied URLs.
@@ -70,23 +73,6 @@ pub struct GetKeyQuery {
     pub reveal: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct CacheValueResponse {
-    key: String,
-    namespace: Option<String>,
-    length_bytes: usize,
-    sha256: String,
-    preview: String,
-    masked: bool,
-    reveal_allowed: bool,
-    reveal_blocked_reason: Option<String>,
-    upstream_version: Option<u64>,
-    sensitive: bool,
-    sensitive_reasons: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    value: Option<String>,
-}
-
 fn normalize_namespace(ns: Option<String>) -> Option<String> {
     ns.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
@@ -106,16 +92,6 @@ fn namespaced_pattern(namespace: &Option<String>, pattern: Option<String>) -> Op
     }
 }
 
-fn strip_namespace_prefix(namespace: &Option<String>, key: String) -> String {
-    match namespace {
-        Some(ns) => key
-            .strip_prefix(&format!("{}::", ns))
-            .unwrap_or(&key)
-            .to_string(),
-        None => key,
-    }
-}
-
 // ---------------------------------------------------------------------------
 // GET /api/cache/:target/stats
 // ---------------------------------------------------------------------------
@@ -125,43 +101,7 @@ pub async fn cache_stats(
     State(state): State<SharedState>,
     Path(target): Path<String>,
 ) -> impl IntoResponse {
-    let addrs = if target == "all" {
-        state.cluster_addrs().await
-    } else {
-        resolve_target(
-            &target,
-            state.cfg.connection.cluster_port,
-            &state.cfg.connection.seeds,
-        )
-        .await
-    };
-
-    let mut results = Vec::new();
-    for addr in addrs {
-        match admin_rpc(addr, AdminRequest::GetStats, state.tls.as_ref()).await {
-            Ok(AdminResponse::Stats(s)) => {
-                let hit_rate = if s.hit_count + s.miss_count > 0 {
-                    s.hit_count * 100 / (s.hit_count + s.miss_count)
-                } else {
-                    0
-                };
-                results.push(serde_json::json!({
-                    "addr":               addr.to_string(),
-                    "key_count":          s.key_count,
-                    "memory_used_bytes":  s.memory_used_bytes,
-                    "memory_max_bytes":   s.memory_max_bytes,
-                    "evictions":          s.evictions,
-                    "hit_count":          s.hit_count,
-                    "miss_count":         s.miss_count,
-                    "hit_rate_pct":       hit_rate,
-                }));
-            }
-            Err(e) => results
-                .push(serde_json::json!({ "addr": addr.to_string(), "error": e.to_string() })),
-            _ => {}
-        }
-    }
-    Json(results).into_response()
+    Json(app_cache::collect_cache_stats(state, &target).await).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -179,121 +119,9 @@ pub async fn flush_cache(
     Query(nsq): Query<NamespaceQuery>,
 ) -> impl IntoResponse {
     if let Some(namespace) = normalize_namespace(nsq.namespace) {
-        return flush_namespace(state, target, namespace).await;
+        return Json(app_cache::flush_namespace(state, &target, &namespace).await).into_response();
     }
-
-    let addrs = if target == "all" {
-        state.cluster_addrs().await
-    } else {
-        resolve_target(
-            &target,
-            state.cfg.connection.cluster_port,
-            &state.cfg.connection.seeds,
-        )
-        .await
-    };
-
-    let mut results = Vec::new();
-    for addr in addrs {
-        match admin_rpc(addr, AdminRequest::FlushCache, state.tls.as_ref()).await {
-            Ok(_)  => results.push(serde_json::json!({ "addr": addr.to_string(), "ok": true })),
-            Err(e) => results.push(serde_json::json!({ "addr": addr.to_string(), "ok": false, "error": e.to_string() })),
-        }
-    }
-    Json(results).into_response()
-}
-
-async fn flush_namespace(
-    state: SharedState,
-    target: String,
-    namespace: String,
-) -> axum::response::Response {
-    let addrs = if target == "all" {
-        state.cluster_addrs().await
-    } else {
-        resolve_target(
-            &target,
-            state.cfg.connection.cluster_port,
-            &state.cfg.connection.seeds,
-        )
-        .await
-    };
-
-    let mut results = Vec::new();
-    for addr in addrs {
-        let authority = if target == "all" {
-            cluster_addr_http_authority(addr)
-        } else {
-            http_authority_for_target(
-                &target,
-                state.cfg.connection.cluster_port,
-                &state.cfg.connection.seeds,
-            )
-            .or_else(|| cluster_addr_http_authority(addr))
-        };
-
-        let Some(authority) = authority else {
-            results.push(serde_json::json!({
-                "addr": addr.to_string(),
-                "ok": false,
-                "deleted": 0,
-                "namespace": namespace.clone(),
-                "error": "invalid HTTP target"
-            }));
-            continue;
-        };
-
-        let url = format!(
-            "{}://{}/keys/delete-by-pattern",
-            state.http_scheme(),
-            authority
-        );
-        match node_http_request(
-            state.http_client.post(&url),
-            &state,
-            Some(namespace.clone()),
-        )
-        .json(&serde_json::json!({ "pattern": "*" }))
-        .send()
-        .await
-        {
-            Ok(resp) if resp.status().is_success() => {
-                let body = resp.json::<serde_json::Value>().await.unwrap_or_default();
-                results.push(serde_json::json!({
-                    "addr": addr.to_string(),
-                    "ok": true,
-                    "deleted": body.get("deleted").and_then(|v| v.as_u64()).unwrap_or(0),
-                    "namespace": namespace.clone(),
-                    "error": null
-                }));
-            }
-            Ok(resp) => {
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                results.push(serde_json::json!({
-                    "addr": addr.to_string(),
-                    "ok": false,
-                    "deleted": 0,
-                    "namespace": namespace.clone(),
-                    "error": format!("HTTP {}: {}", status.as_u16(), body)
-                }));
-            }
-            Err(e) => results.push(serde_json::json!({
-                "addr": addr.to_string(),
-                "ok": false,
-                "deleted": 0,
-                "namespace": namespace.clone(),
-                "error": e.to_string()
-            })),
-        }
-    }
-    Json(results).into_response()
-}
-
-fn cluster_addr_http_authority(addr: std::net::SocketAddr) -> Option<String> {
-    addr.port()
-        .checked_sub(1)
-        .map(|http_port| format!("{}:{}", addr.ip(), http_port))
+    Json(app_cache::flush_cache(state, &target).await).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -317,41 +145,7 @@ pub async fn list_keys(
 ) -> impl IntoResponse {
     let namespace = normalize_namespace(nsq.namespace);
     let pattern = namespaced_pattern(&namespace, q.pattern.clone());
-    let addrs = if target == "all" {
-        state.cluster_addrs().await
-    } else {
-        resolve_target(
-            &target,
-            state.cfg.connection.cluster_port,
-            &state.cfg.connection.seeds,
-        )
-        .await
-    };
-
-    let mut results = Vec::new();
-    for addr in addrs {
-        match admin_rpc(
-            addr,
-            AdminRequest::ListKeys {
-                pattern: pattern.clone(),
-            },
-            state.tls.as_ref(),
-        )
-        .await
-        {
-            Ok(AdminResponse::Keys(keys)) => {
-                let keys: Vec<String> = keys
-                    .into_iter()
-                    .map(|k| strip_namespace_prefix(&namespace, k))
-                    .collect();
-                results.push(serde_json::json!({ "addr": addr.to_string(), "keys": keys }))
-            }
-            Err(e) => results
-                .push(serde_json::json!({ "addr": addr.to_string(), "error": e.to_string() })),
-            _ => {}
-        }
-    }
-    Json(results)
+    Json(app_cache::collect_list_keys(state, &target, pattern, &namespace).await)
 }
 
 // ---------------------------------------------------------------------------
@@ -377,11 +171,7 @@ pub async fn get_key(
     }
 
     let namespace = normalize_namespace(q.namespace);
-    let authority = match http_authority_for_target(
-        &target,
-        state.cfg.connection.cluster_port,
-        &state.cfg.connection.seeds,
-    ) {
+    let authority = match app_cache::resolve_cache_http_authority(&state, &target) {
         Some(a) => a,
         None => {
             return (
@@ -434,143 +224,6 @@ pub async fn get_key(
     }
 }
 
-fn build_cache_value_response(
-    key: &str,
-    namespace: Option<&str>,
-    value: &str,
-    reveal_requested: bool,
-    upstream_version: Option<u64>,
-    policy: &crate::config::CacheValuePolicy,
-) -> CacheValueResponse {
-    let sensitive_reasons = sensitive_reasons(key, value, policy);
-    let sensitive = !sensitive_reasons.is_empty();
-    let reveal_allowed =
-        policy.allow_value_reveal && (!sensitive || policy.allow_sensitive_value_reveal);
-    let reveal_blocked_reason = if reveal_requested && !policy.allow_value_reveal {
-        Some("value reveal is disabled by policy".to_string())
-    } else if reveal_requested && sensitive && !policy.allow_sensitive_value_reveal {
-        Some("sensitive value reveal is disabled by policy".to_string())
-    } else {
-        None
-    };
-    let should_reveal = reveal_requested && reveal_allowed;
-    let masked = policy.mask_values_by_default && !should_reveal;
-
-    CacheValueResponse {
-        key: key.to_string(),
-        namespace: namespace.map(str::to_string),
-        length_bytes: value.len(),
-        sha256: sha256_hex(value),
-        preview: masked_preview(value),
-        masked,
-        reveal_allowed,
-        reveal_blocked_reason,
-        upstream_version,
-        sensitive,
-        sensitive_reasons,
-        value: should_reveal.then(|| value.to_string()),
-    }
-}
-
-fn parse_node_get_value(body: &str) -> (Option<String>, Option<u64>) {
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(body) else {
-        return (None, None);
-    };
-    let value = json
-        .get("value")
-        .and_then(|value| value.as_str())
-        .map(str::to_string);
-    let version = json.get("version").and_then(|value| value.as_u64());
-    (value, version)
-}
-
-fn sha256_hex(value: &str) -> String {
-    let digest = Sha256::digest(value.as_bytes());
-    digest.iter().map(|b| format!("{:02x}", b)).collect()
-}
-
-fn masked_preview(value: &str) -> String {
-    let chars: Vec<char> = value.chars().collect();
-    if chars.is_empty() {
-        return "".into();
-    }
-    if chars.len() <= 8 {
-        return "***".into();
-    }
-    let start: String = chars.iter().take(4).collect();
-    let end: String = chars
-        .iter()
-        .rev()
-        .take(4)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    format!("{start}...***...{end}")
-}
-
-fn sensitive_reasons(
-    key: &str,
-    value: &str,
-    policy: &crate::config::CacheValuePolicy,
-) -> Vec<String> {
-    let mut reasons = Vec::new();
-    let key_lower = key.to_ascii_lowercase();
-    for pattern in &policy.sensitive_key_patterns {
-        let pattern = pattern.to_ascii_lowercase();
-        if !pattern.is_empty() && key_lower.contains(&pattern) {
-            reasons.push(format!("key matched '{pattern}'"));
-        }
-    }
-
-    let value_lower = value.to_ascii_lowercase();
-    for marker in [
-        "access_token",
-        "refresh_token",
-        "session_id",
-        "id_token",
-        "client_secret",
-        "password",
-        "api_key",
-        "authorization",
-        "bearer ",
-    ] {
-        if value_lower.contains(marker) {
-            reasons.push(format!("value contains '{marker}'"));
-        }
-    }
-    if looks_like_jwt(value) {
-        reasons.push("value looks like a JWT".into());
-    }
-    if looks_like_secret_token(value) {
-        reasons.push("value looks like a high-entropy token".into());
-    }
-    reasons.sort();
-    reasons.dedup();
-    reasons
-}
-
-fn looks_like_jwt(value: &str) -> bool {
-    let parts: Vec<&str> = value.trim().split('.').collect();
-    parts.len() == 3
-        && parts.iter().all(|p| {
-            p.len() >= 8
-                && p.chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        })
-}
-
-fn looks_like_secret_token(value: &str) -> bool {
-    let trimmed = value.trim();
-    if trimmed.len() < 32 || trimmed.len() > 4096 || trimmed.contains(char::is_whitespace) {
-        return false;
-    }
-    let token_chars = trimmed
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+' | '/' | '='))
-        .count();
-    token_chars == trimmed.chars().count()
-}
 
 // ---------------------------------------------------------------------------
 // PUT /api/cache/:target/keys/:key   body: { "value": "...", "ttl_secs": null }
@@ -601,54 +254,13 @@ pub async fn set_key(
     }
 
     let namespace = normalize_namespace(nsq.namespace);
-    let authority = match http_authority_for_target(
-        &target,
-        state.cfg.connection.cluster_port,
-        &state.cfg.connection.seeds,
-    ) {
-        Some(a) => a,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "invalid target" })),
-            )
-                .into_response()
-        }
-    };
-
-    let mut url = format!(
-        "{}://{}/key/{}",
-        state.http_scheme(),
-        authority,
-        encode_key_for_url(&key)
-    );
-    if let Some(ttl) = body.ttl_secs {
-        url.push_str(&format!("?ttl={}", ttl));
-    }
-
-    match node_http_request(state.http_client.put(&url), &state, namespace)
-        .body(body.value)
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => {
-            (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
-        }
-        Ok(resp) => {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            (
-                StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
-                Json(serde_json::json!({ "error": body })),
-            )
-                .into_response()
-        }
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({ "error": e.to_string() })),
-        )
-            .into_response(),
-    }
+    let (status, payload) =
+        app_cache::set_key(state, &target, &key, &body.value, body.ttl_secs, namespace).await;
+    (
+        StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+        Json(payload),
+    )
+        .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -671,50 +283,12 @@ pub async fn delete_key(
     }
 
     let namespace = normalize_namespace(nsq.namespace);
-    let authority = match http_authority_for_target(
-        &target,
-        state.cfg.connection.cluster_port,
-        &state.cfg.connection.seeds,
-    ) {
-        Some(a) => a,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "invalid target" })),
-            )
-                .into_response()
-        }
-    };
-
-    let url = format!(
-        "{}://{}/key/{}",
-        state.http_scheme(),
-        authority,
-        encode_key_for_url(&key)
-    );
-
-    match node_http_request(state.http_client.delete(&url), &state, namespace)
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => {
-            (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
-        }
-        Ok(resp) => {
-            let s = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            (
-                StatusCode::from_u16(s.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
-                Json(serde_json::json!({ "error": body })),
-            )
-                .into_response()
-        }
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({ "error": e.to_string() })),
-        )
-            .into_response(),
-    }
+    let (status, payload) = app_cache::delete_key(state, &target, &key, namespace).await;
+    (
+        StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+        Json(payload),
+    )
+        .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -724,14 +298,6 @@ pub async fn delete_key(
 #[derive(Deserialize)]
 pub struct SetCompressedBody {
     pub compressed: bool,
-}
-
-#[derive(Serialize)]
-struct CompressedResult {
-    addr: String,
-    ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
 }
 
 /// `POST /api/cache/:target/keys/:key/compressed` — Toggle LZ4 compression for a key.
@@ -753,60 +319,8 @@ pub async fn set_compressed(
 
     let namespace = normalize_namespace(nsq.namespace);
     let key = namespaced_key(&namespace, &key);
-    let addrs = if target == "all" {
-        state.cluster_addrs().await
-    } else {
-        resolve_target(
-            &target,
-            state.cfg.connection.cluster_port,
-            &state.cfg.connection.seeds,
-        )
-        .await
-    };
-
     let value = if body.compressed { "true" } else { "false" }.to_string();
-    let mut results: Vec<CompressedResult> = Vec::new();
-
-    for addr in addrs {
-        match admin_rpc(
-            addr,
-            AdminRequest::SetKeyProperty {
-                key: key.clone(),
-                name: "compressed".into(),
-                value: value.clone(),
-            },
-            state.tls.as_ref(),
-        )
-        .await
-        {
-            Ok(AdminResponse::KeyPropertyUpdated) => results.push(CompressedResult {
-                addr: addr.to_string(),
-                ok: true,
-                error: None,
-            }),
-            Ok(AdminResponse::NotFound) => results.push(CompressedResult {
-                addr: addr.to_string(),
-                ok: false,
-                error: Some("key not found".into()),
-            }),
-            Ok(AdminResponse::Error { message }) => results.push(CompressedResult {
-                addr: addr.to_string(),
-                ok: false,
-                error: Some(message),
-            }),
-            Err(e) => results.push(CompressedResult {
-                addr: addr.to_string(),
-                ok: false,
-                error: Some(e.to_string()),
-            }),
-            _ => results.push(CompressedResult {
-                addr: addr.to_string(),
-                ok: false,
-                error: Some("unexpected response".into()),
-            }),
-        }
-    }
-    Json(results).into_response()
+    Json(app_cache::set_compressed(state, &target, &key, &value).await).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -817,14 +331,6 @@ pub async fn set_compressed(
 pub struct SetTtlBody {
     pub pattern: String,
     pub ttl_secs: Option<u64>,
-}
-
-#[derive(Serialize)]
-struct TtlResult {
-    addr: String,
-    updated: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
 }
 
 /// `POST /api/cache/:target/ttl` — Set TTL for all keys matching a glob pattern.
@@ -841,47 +347,7 @@ pub async fn set_keys_ttl(
     let namespace = normalize_namespace(nsq.namespace);
     let pattern = namespaced_pattern(&namespace, Some(body.pattern.clone()))
         .unwrap_or_else(|| body.pattern.clone());
-    let addrs = if target == "all" {
-        state.cluster_addrs().await
-    } else {
-        resolve_target(
-            &target,
-            state.cfg.connection.cluster_port,
-            &state.cfg.connection.seeds,
-        )
-        .await
-    };
-
-    let mut results: Vec<TtlResult> = Vec::new();
-    for addr in addrs {
-        match admin_rpc(
-            addr,
-            AdminRequest::SetKeysTtl {
-                pattern: pattern.clone(),
-                ttl_secs: body.ttl_secs,
-            },
-            state.tls.as_ref(),
-        )
-        .await
-        {
-            Ok(AdminResponse::TtlUpdated { updated }) => results.push(TtlResult {
-                addr: addr.to_string(),
-                updated,
-                error: None,
-            }),
-            Err(e) => results.push(TtlResult {
-                addr: addr.to_string(),
-                updated: 0,
-                error: Some(e.to_string()),
-            }),
-            _ => results.push(TtlResult {
-                addr: addr.to_string(),
-                updated: 0,
-                error: Some("unexpected response".into()),
-            }),
-        }
-    }
-    Json(results)
+    Json(app_cache::set_keys_ttl(state, &target, &pattern, body.ttl_secs).await)
 }
 
 // ---------------------------------------------------------------------------
@@ -1069,11 +535,11 @@ mod tests {
             Some("user:*")
         );
         assert_eq!(
-            strip_namespace_prefix(&Some("tenant".into()), "tenant::alpha".into()),
+            app_cache::strip_namespace_prefix(&Some("tenant".into()), "tenant::alpha".into()),
             "alpha"
         );
         assert_eq!(
-            strip_namespace_prefix(&Some("tenant".into()), "other::alpha".into()),
+            app_cache::strip_namespace_prefix(&Some("tenant".into()), "other::alpha".into()),
             "other::alpha"
         );
     }

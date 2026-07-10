@@ -1,6 +1,7 @@
 //! Production-readiness endpoint for the management UI.
 
-use crate::api::{nodes, SharedState};
+use crate::api::SharedState;
+use crate::app::nodes;
 use crate::node_client::admin_rpc;
 use axum::{extract::State, response::IntoResponse, Json};
 use ditto_protocol::{AdminRequest, AdminResponse};

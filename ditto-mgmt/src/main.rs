@@ -12,107 +12,24 @@
 //! When no config file is given, defaults are loaded from
 //! `~/.config/ditto/mgmt.toml` (created automatically on first run).
 
+mod app;
 mod api;
 mod audit;
 mod auth;
+mod bootstrap;
 mod config;
 mod node_client;
+mod policy;
 mod tls;
 mod web;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use api::{build_router, AppState};
-use config::MgmtConfig;
+use bootstrap::{
+    apply_env_overrides, build_http_client, load_config_from_args, management_bind_addr,
+    validate_strict_security,
+};
 use std::sync::Arc;
-
-fn apply_env_overrides(cfg: &mut MgmtConfig) -> Result<()> {
-    if let Ok(v) = std::env::var("DITTO_MGMT_TLS_CERT") {
-        cfg.server.tls_cert = Some(v);
-    }
-    if let Ok(v) = std::env::var("DITTO_MGMT_TLS_KEY") {
-        cfg.server.tls_key = Some(v);
-    }
-    if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_USER") {
-        cfg.admin.username = Some(v);
-    }
-    if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_PASSWORD_HASH") {
-        cfg.admin.password_hash = Some(v);
-    }
-    if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_BEARER_TOKEN_SHA256") {
-        cfg.admin.bearer_token_sha256 = Some(v);
-    }
-    if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_URL") {
-        cfg.admin.bearer_introspection_url = Some(v);
-    }
-    if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_ID") {
-        cfg.admin.bearer_introspection_client_id = Some(v);
-    }
-    if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_SECRET") {
-        cfg.admin.bearer_introspection_client_secret = Some(v);
-    }
-    if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_SECRET_ENV") {
-        cfg.admin.bearer_introspection_client_secret_env = Some(v);
-    }
-    if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_BEARER_INTROSPECTION_CLIENT_SECRET_FILE") {
-        cfg.admin.bearer_introspection_client_secret_file = Some(v);
-    }
-    if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_BEARER_REQUIRED_SCOPE") {
-        cfg.admin.bearer_required_scope = Some(v);
-    }
-    if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_BEARER_REQUIRED_AUDIENCE") {
-        cfg.admin.bearer_required_audience = Some(v);
-    }
-    if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_BASIC_ROLE") {
-        cfg.admin.basic_role = v.parse()?;
-    }
-    if let Ok(v) = std::env::var("DITTO_MGMT_ADMIN_BEARER_ROLE") {
-        cfg.admin.bearer_role = v.parse()?;
-    }
-    if let Ok(v) = std::env::var("DITTO_MGMT_HTTP_AUTH_USER") {
-        cfg.http_client_auth.username = Some(v);
-    }
-    if let Ok(v) = std::env::var("DITTO_MGMT_HTTP_AUTH_PASSWORD") {
-        cfg.http_client_auth.password = Some(v);
-    }
-    if let Ok(v) = std::env::var("DITTO_MGMT_HTTP_AUTH_PASSWORD_ENV") {
-        cfg.http_client_auth.password_env = Some(v);
-    }
-    if let Ok(v) = std::env::var("DITTO_MGMT_HTTP_AUTH_PASSWORD_FILE") {
-        cfg.http_client_auth.password_file = Some(v);
-    }
-    if let Ok(v) = std::env::var("DITTO_MGMT_BIND") {
-        cfg.server.bind = v;
-    }
-    Ok(())
-}
-
-fn validate_strict_security(cfg: &MgmtConfig) -> Result<()> {
-    if !cfg.tls.enabled {
-        anyhow::bail!(
-            "Strict security: [tls].enabled must be true in ditto-mgmt. Refusing unsecured admin RPC to nodes."
-        );
-    }
-
-    if !cfg.admin.auth_configured() {
-        anyhow::bail!(
-            "Strict security: [admin] Basic or Bearer auth must be configured. Refusing unauthenticated management API."
-        );
-    }
-
-    if cfg.server.tls_cert.is_none() || cfg.server.tls_key.is_none() {
-        anyhow::bail!(
-            "Strict security: [server].tls_cert and [server].tls_key must be configured. Refusing plain HTTP management API."
-        );
-    }
-
-    Ok(())
-}
-
-fn management_bind_addr(cfg: &MgmtConfig) -> Result<String> {
-    let resolved_bind =
-        ditto_config::resolve_bind_addr(&cfg.server.bind).context("resolving server.bind")?;
-    Ok(format!("{}:{}", resolved_bind, cfg.server.port))
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -121,13 +38,7 @@ async fn main() -> Result<()> {
         .install_default()
         .expect("Failed to install rustls crypto provider");
 
-    let cfg_path = std::env::args().nth(1);
-    let mut cfg: MgmtConfig = if let Some(path) = cfg_path {
-        let raw = std::fs::read_to_string(&path)?;
-        toml::from_str(&raw)?
-    } else {
-        MgmtConfig::load()?
-    };
+    let mut cfg = load_config_from_args()?;
 
     apply_env_overrides(&mut cfg)?;
     cfg.admin.resolve_bearer_introspection_client_secret()?;
@@ -135,22 +46,7 @@ async fn main() -> Result<()> {
     validate_strict_security(&cfg)?;
 
     let tls = tls::build_connector(&cfg.tls)?;
-
-    // Build the reqwest client for proxying to dittod's HTTP port (7778).
-    // When TLS is enabled we add the CA cert so node certs are trusted.
-    let http_client = {
-        let mut builder = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_millis(cfg.connection.timeout_ms));
-        if cfg.tls.enabled && !cfg.tls.ca_cert.is_empty() {
-            match tls::load_reqwest_ca_cert(&cfg.tls.ca_cert) {
-                Ok(cert) => {
-                    builder = builder.add_root_certificate(cert);
-                }
-                Err(e) => eprintln!("warning: could not load CA cert for reqwest: {}", e),
-            }
-        }
-        builder.build()?
-    };
+    let http_client = build_http_client(&cfg)?;
 
     let bind = management_bind_addr(&cfg)?;
 
@@ -183,6 +79,7 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::MgmtConfig;
 
     fn clear_env_overrides() {
         for key in [
