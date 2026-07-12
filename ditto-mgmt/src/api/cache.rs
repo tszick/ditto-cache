@@ -17,49 +17,15 @@
 
 use crate::api::SharedState;
 use crate::app::cache as app_cache;
-use crate::policy::cache_value_redaction::{
-    build_cache_value_response, parse_node_get_value,
-};
 #[cfg(test)]
 use ditto_protocol::{AdminRequest, AdminResponse};
 use axum::{
     extract::{Path, Query, State},
-    http::HeaderValue,
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
 use serde::Deserialize;
-
-/// Validate that a cache key contains only an allowlisted set of characters.
-/// This prevents malformed or control characters from affecting proxied URLs.
-///
-/// The forward-slash (`/`) is intentionally excluded: allowing it would let a
-/// crafted key traverse path segments in the proxied URL (e.g. `../admin`).
-/// Keys that need a hierarchy separator should use `:` or `_` instead.
-fn is_valid_cache_key(key: &str) -> bool {
-    if key.is_empty() {
-        return false;
-    }
-    key.chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
-}
-
-/// Percent-encode a validated cache key for safe embedding in a URL path.
-/// Only the characters allowed by [`is_valid_cache_key`] need to be handled;
-/// colons are encoded so they cannot be misread as a port separator.
-fn encode_key_for_url(key: &str) -> String {
-    let mut out = String::with_capacity(key.len());
-    for b in key.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => out.push(b as char),
-            b => out.push_str(&format!("%{:02X}", b)),
-        }
-    }
-    out
-}
-
-const NAMESPACE_HEADER: &str = "x-ditto-namespace";
 
 #[derive(Deserialize, Default, Clone)]
 pub struct NamespaceQuery {
@@ -71,25 +37,6 @@ pub struct GetKeyQuery {
     pub namespace: Option<String>,
     #[serde(default)]
     pub reveal: bool,
-}
-
-fn normalize_namespace(ns: Option<String>) -> Option<String> {
-    ns.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
-}
-
-fn namespaced_key(namespace: &Option<String>, key: &str) -> String {
-    match namespace {
-        Some(ns) => format!("{}::{}", ns, key),
-        None => key.to_string(),
-    }
-}
-
-fn namespaced_pattern(namespace: &Option<String>, pattern: Option<String>) -> Option<String> {
-    match (namespace, pattern) {
-        (Some(ns), Some(p)) => Some(format!("{}::{}", ns, p)),
-        (Some(ns), None) => Some(format!("{}::*", ns)),
-        (None, p) => p,
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -118,7 +65,7 @@ pub async fn flush_cache(
     Path(target): Path<String>,
     Query(nsq): Query<NamespaceQuery>,
 ) -> impl IntoResponse {
-    if let Some(namespace) = normalize_namespace(nsq.namespace) {
+    if let Some(namespace) = app_cache::normalize_namespace(nsq.namespace) {
         return Json(app_cache::flush_namespace(state, &target, &namespace).await).into_response();
     }
     Json(app_cache::flush_cache(state, &target).await).into_response()
@@ -143,8 +90,8 @@ pub async fn list_keys(
     Query(q): Query<ListKeysQuery>,
     Query(nsq): Query<NamespaceQuery>,
 ) -> impl IntoResponse {
-    let namespace = normalize_namespace(nsq.namespace);
-    let pattern = namespaced_pattern(&namespace, q.pattern.clone());
+    let namespace = app_cache::normalize_namespace(nsq.namespace);
+    let pattern = app_cache::namespaced_pattern(&namespace, q.pattern.clone());
     Json(app_cache::collect_list_keys(state, &target, pattern, &namespace).await)
 }
 
@@ -162,7 +109,7 @@ pub async fn get_key(
     // Validate the key before it is embedded in the proxied URL.  set_key and
     // delete_key already perform this check; apply it here for consistency and
     // to prevent path-traversal / URL-injection (CodeQL rust/request-forgery #2).
-    if !is_valid_cache_key(&key) {
+    if !app_cache::is_valid_cache_key(&key) {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "invalid key" })),
@@ -170,58 +117,14 @@ pub async fn get_key(
             .into_response();
     }
 
-    let namespace = normalize_namespace(q.namespace);
-    let authority = match app_cache::resolve_cache_http_authority(&state, &target) {
-        Some(a) => a,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "invalid target" })),
-            )
-                .into_response()
-        }
-    };
-
-    let url = format!(
-        "{}://{}/key/{}",
-        state.http_scheme(),
-        authority,
-        encode_key_for_url(&key)
-    );
-
-    match node_http_request(state.http_client.get(&url), &state, namespace.clone())
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            if status.is_success() {
-                let (parsed_value, upstream_version) = parse_node_get_value(&body);
-                let value = parsed_value.as_deref().unwrap_or(&body);
-                let value = build_cache_value_response(
-                    &key,
-                    namespace.as_deref(),
-                    value,
-                    q.reveal,
-                    upstream_version,
-                    &state.cfg.cache_values,
-                );
-                (StatusCode::OK, Json(value)).into_response()
-            } else {
-                (
-                    StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
-                    Json(serde_json::json!({ "error": body })),
-                )
-                    .into_response()
-            }
-        }
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({ "error": e.to_string() })),
-        )
-            .into_response(),
-    }
+    let namespace = app_cache::normalize_namespace(q.namespace);
+    let (status, payload) =
+        app_cache::get_key_response(state, &target, &key, namespace, q.reveal).await;
+    (
+        StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+        Json(payload),
+    )
+        .into_response()
 }
 
 
@@ -245,7 +148,7 @@ pub async fn set_key(
     Query(nsq): Query<NamespaceQuery>,
     Json(body): Json<SetKeyBody>,
 ) -> impl IntoResponse {
-    if !is_valid_cache_key(&key) {
+    if !app_cache::is_valid_cache_key(&key) {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "invalid key" })),
@@ -253,7 +156,7 @@ pub async fn set_key(
             .into_response();
     }
 
-    let namespace = normalize_namespace(nsq.namespace);
+    let namespace = app_cache::normalize_namespace(nsq.namespace);
     let (status, payload) =
         app_cache::set_key(state, &target, &key, &body.value, body.ttl_secs, namespace).await;
     (
@@ -274,7 +177,7 @@ pub async fn delete_key(
     Path((target, key)): Path<(String, String)>,
     Query(nsq): Query<NamespaceQuery>,
 ) -> impl IntoResponse {
-    if !is_valid_cache_key(&key) {
+    if !app_cache::is_valid_cache_key(&key) {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "invalid key" })),
@@ -282,7 +185,7 @@ pub async fn delete_key(
             .into_response();
     }
 
-    let namespace = normalize_namespace(nsq.namespace);
+    let namespace = app_cache::normalize_namespace(nsq.namespace);
     let (status, payload) = app_cache::delete_key(state, &target, &key, namespace).await;
     (
         StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
@@ -309,7 +212,7 @@ pub async fn set_compressed(
     Query(nsq): Query<NamespaceQuery>,
     Json(body): Json<SetCompressedBody>,
 ) -> impl IntoResponse {
-    if !is_valid_cache_key(&key) {
+    if !app_cache::is_valid_cache_key(&key) {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "invalid key" })),
@@ -317,8 +220,8 @@ pub async fn set_compressed(
             .into_response();
     }
 
-    let namespace = normalize_namespace(nsq.namespace);
-    let key = namespaced_key(&namespace, &key);
+    let namespace = app_cache::normalize_namespace(nsq.namespace);
+    let key = app_cache::namespaced_key(&namespace, &key);
     let value = if body.compressed { "true" } else { "false" }.to_string();
     Json(app_cache::set_compressed(state, &target, &key, &value).await).into_response()
 }
@@ -344,42 +247,22 @@ pub async fn set_keys_ttl(
     Query(nsq): Query<NamespaceQuery>,
     Json(body): Json<SetTtlBody>,
 ) -> impl IntoResponse {
-    let namespace = normalize_namespace(nsq.namespace);
-    let pattern = namespaced_pattern(&namespace, Some(body.pattern.clone()))
+    let namespace = app_cache::normalize_namespace(nsq.namespace);
+    let pattern = app_cache::namespaced_pattern(&namespace, Some(body.pattern.clone()))
         .unwrap_or_else(|| body.pattern.clone());
     Json(app_cache::set_keys_ttl(state, &target, &pattern, body.ttl_secs).await)
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Apply HTTP Basic Auth credentials (from `[http_client_auth]` config) to a
-/// reqwest `RequestBuilder` when proxying requests to dittod's HTTP port (7778).
-/// When no credentials are configured, the builder is returned unchanged.
-fn node_http_request(
-    req: reqwest::RequestBuilder,
-    state: &crate::api::AppState,
-    namespace: Option<String>,
-) -> reqwest::RequestBuilder {
-    let req = match (
-        &state.cfg.http_client_auth.username,
-        &state.cfg.http_client_auth.password,
-    ) {
-        (Some(user), Some(pass)) => req.basic_auth(user, Some(pass)),
-        _ => req,
-    };
-    if let Some(ns) = namespace {
-        if let Ok(v) = HeaderValue::from_str(&ns) {
-            return req.header(NAMESPACE_HEADER, v);
-        }
-    }
-    req
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::cache::{
+        encode_key_for_url, is_valid_cache_key, namespaced_key, namespaced_pattern,
+        node_http_request, normalize_namespace,
+    };
+    use crate::policy::cache_value_redaction::{
+        build_cache_value_response, parse_node_get_value,
+    };
     use crate::{api::AppState, config::MgmtConfig};
     use axum::{
         body::to_bytes,
@@ -566,7 +449,7 @@ mod tests {
                 .unwrap(),
             "Basic bm9kZS11c2VyOm5vZGUtcGFzcw=="
         );
-        assert_eq!(request.headers().get(NAMESPACE_HEADER).unwrap(), "tenant");
+        assert_eq!(request.headers().get("x-ditto-namespace").unwrap(), "tenant");
 
         let no_auth_state = state_for_seed("127.0.0.1:7779".into(), 7779);
         let request = node_http_request(
@@ -582,7 +465,7 @@ mod tests {
             .headers()
             .get(reqwest::header::AUTHORIZATION)
             .is_none());
-        assert!(request.headers().get(NAMESPACE_HEADER).is_none());
+        assert!(request.headers().get("x-ditto-namespace").is_none());
     }
 
     #[tokio::test]

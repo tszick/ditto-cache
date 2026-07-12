@@ -1,7 +1,37 @@
 use crate::api::SharedState;
 use crate::node_client::{admin_rpc, http_authority_for_target, resolve_target};
+use crate::policy::cache_value_redaction::{
+    build_cache_value_response, parse_node_get_value,
+};
 use ditto_protocol::{AdminRequest, AdminResponse};
 use reqwest::header::HeaderValue;
+
+pub fn is_valid_cache_key(key: &str) -> bool {
+    if key.is_empty() {
+        return false;
+    }
+    key.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
+}
+
+pub fn normalize_namespace(ns: Option<String>) -> Option<String> {
+    ns.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+pub fn namespaced_key(namespace: &Option<String>, key: &str) -> String {
+    match namespace {
+        Some(ns) => format!("{}::{}", ns, key),
+        None => key.to_string(),
+    }
+}
+
+pub fn namespaced_pattern(namespace: &Option<String>, pattern: Option<String>) -> Option<String> {
+    match (namespace, pattern) {
+        (Some(ns), Some(p)) => Some(format!("{}::{}", ns, p)),
+        (Some(ns), None) => Some(format!("{}::*", ns)),
+        (None, p) => p,
+    }
+}
 
 pub async fn resolve_cache_target_addrs(
     state: &SharedState,
@@ -93,6 +123,61 @@ pub fn resolve_cache_http_authority(state: &SharedState, target: &str) -> Option
         state.cfg.connection.cluster_port,
         &state.cfg.connection.seeds,
     )
+}
+
+pub async fn get_key(
+    state: SharedState,
+    target: &str,
+    key: &str,
+    namespace: Option<String>,
+) -> (u16, String) {
+    let Some(authority) = resolve_cache_http_authority(&state, target) else {
+        return (400, "invalid target".to_string());
+    };
+
+    let url = format!(
+        "{}://{}/key/{}",
+        state.http_scheme(),
+        authority,
+        encode_key_for_url(key)
+    );
+
+    match node_http_request(state.http_client.get(&url), &state, namespace)
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            (status, body)
+        }
+        Err(e) => (502, e.to_string()),
+    }
+}
+
+pub async fn get_key_response(
+    state: SharedState,
+    target: &str,
+    key: &str,
+    namespace: Option<String>,
+    reveal: bool,
+) -> (u16, serde_json::Value) {
+    let (status, body) = get_key(state.clone(), target, key, namespace.clone()).await;
+    if status == 200 {
+        let (parsed_value, upstream_version) = parse_node_get_value(&body);
+        let value = parsed_value.as_deref().unwrap_or(&body);
+        let value = build_cache_value_response(
+            key,
+            namespace.as_deref(),
+            value,
+            reveal,
+            upstream_version,
+            &state.cfg.cache_values,
+        );
+        (200, serde_json::to_value(value).unwrap_or_else(|_| serde_json::json!({ "error": "serialization failure" })))
+    } else {
+        (status, serde_json::json!({ "error": body }))
+    }
 }
 
 pub async fn set_key(
@@ -350,7 +435,7 @@ fn cluster_addr_http_authority(addr: std::net::SocketAddr) -> Option<String> {
         .map(|http_port| format!("{}:{}", addr.ip(), http_port))
 }
 
-fn encode_key_for_url(key: &str) -> String {
+pub(crate) fn encode_key_for_url(key: &str) -> String {
     let mut out = String::with_capacity(key.len());
     for b in key.bytes() {
         match b {
@@ -361,7 +446,7 @@ fn encode_key_for_url(key: &str) -> String {
     out
 }
 
-fn node_http_request(
+pub(crate) fn node_http_request(
     req: reqwest::RequestBuilder,
     state: &crate::api::AppState,
     namespace: Option<String>,

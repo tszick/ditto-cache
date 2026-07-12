@@ -106,6 +106,38 @@ pub struct NodeInfo {
     pub miss_count: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct DescribeEntry {
+    pub addr: String,
+    pub properties: Vec<(String, String)>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NodeMutationResult {
+    pub addr: String,
+    pub ok: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BackupResultView {
+    pub addr: String,
+    pub ok: bool,
+    pub path: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RestoreResultView {
+    pub addr: String,
+    pub ok: bool,
+    pub path: Option<String>,
+    pub entries: Option<u64>,
+    pub duration_ms: Option<u64>,
+    pub error: Option<String>,
+}
+
 pub async fn collect_nodes(state: SharedState) -> Vec<NodeInfo> {
     let addrs = state.cluster_addrs().await;
     collect_node_infos(state, addrs).await
@@ -123,6 +155,199 @@ pub async fn collect_target_nodes(state: SharedState, target: &str) -> Vec<NodeI
         .await
     };
     collect_node_infos(state, addrs).await
+}
+
+pub async fn describe_nodes(state: SharedState, target: &str) -> Vec<DescribeEntry> {
+    let addrs = resolve_node_targets(&state, target).await;
+    let mut result = Vec::new();
+    for addr in addrs {
+        match admin_rpc(addr, AdminRequest::Describe, state.tls.as_ref()).await {
+            Ok(AdminResponse::Properties(props)) => result.push(DescribeEntry {
+                addr: addr.to_string(),
+                properties: props,
+                error: None,
+            }),
+            Err(e) => result.push(DescribeEntry {
+                addr: addr.to_string(),
+                properties: vec![],
+                error: Some(e.to_string()),
+            }),
+            _ => result.push(DescribeEntry {
+                addr: addr.to_string(),
+                properties: vec![],
+                error: Some("unexpected response".to_string()),
+            }),
+        }
+    }
+    result
+}
+
+pub async fn get_property_value(
+    state: SharedState,
+    target: &str,
+    name: &str,
+) -> (u16, serde_json::Value) {
+    let addrs = resolve_target(
+        target,
+        state.cfg.connection.cluster_port,
+        &state.cfg.connection.seeds,
+    )
+    .await;
+    if let Some(&addr) = addrs.first() {
+        match admin_rpc(
+            addr,
+            AdminRequest::GetProperty {
+                name: name.to_string(),
+            },
+            state.tls.as_ref(),
+        )
+        .await
+        {
+            Ok(AdminResponse::Properties(props)) => {
+                let value = props
+                    .into_iter()
+                    .find(|(k, _)| k == name)
+                    .map(|(_, v)| v);
+                return (200, serde_json::json!({ "value": value }));
+            }
+            Err(e) => return (502, serde_json::json!({ "error": e.to_string() })),
+            _ => {}
+        }
+    }
+    (404, serde_json::json!({ "error": "not found" }))
+}
+
+pub async fn set_property_value(
+    state: SharedState,
+    target: &str,
+    name: &str,
+    value: &str,
+) -> Vec<NodeMutationResult> {
+    let addrs = resolve_node_targets(&state, target).await;
+    let mut results = Vec::new();
+    for addr in addrs {
+        match admin_rpc(
+            addr,
+            AdminRequest::SetProperty {
+                name: name.to_string(),
+                value: value.to_string(),
+            },
+            state.tls.as_ref(),
+        )
+        .await
+        {
+            Ok(AdminResponse::Ok) => results.push(NodeMutationResult {
+                addr: addr.to_string(),
+                ok: true,
+                error: None,
+            }),
+            Err(e) => results.push(NodeMutationResult {
+                addr: addr.to_string(),
+                ok: false,
+                error: Some(e.to_string()),
+            }),
+            _ => results.push(NodeMutationResult {
+                addr: addr.to_string(),
+                ok: false,
+                error: Some("unexpected response".to_string()),
+            }),
+        }
+    }
+    results
+}
+
+pub async fn trigger_backup(state: SharedState, target: &str) -> Vec<BackupResultView> {
+    let addrs = resolve_node_targets(&state, target).await;
+    let mut results = Vec::new();
+    for addr in addrs {
+        match admin_rpc(addr, AdminRequest::BackupNow, state.tls.as_ref()).await {
+            Ok(AdminResponse::BackupResult { path, .. }) => results.push(BackupResultView {
+                addr: addr.to_string(),
+                ok: true,
+                path: Some(path),
+                error: None,
+            }),
+            Ok(AdminResponse::Error { message }) => results.push(BackupResultView {
+                addr: addr.to_string(),
+                ok: false,
+                path: None,
+                error: Some(message),
+            }),
+            Err(e) => results.push(BackupResultView {
+                addr: addr.to_string(),
+                ok: false,
+                path: None,
+                error: Some(e.to_string()),
+            }),
+            _ => results.push(BackupResultView {
+                addr: addr.to_string(),
+                ok: false,
+                path: None,
+                error: Some("unexpected response".to_string()),
+            }),
+        }
+    }
+    results
+}
+
+pub async fn restore_latest_snapshot(state: SharedState, target: &str) -> Vec<RestoreResultView> {
+    let addrs = resolve_node_targets(&state, target).await;
+    let mut results = Vec::new();
+    for addr in addrs {
+        match admin_rpc(
+            addr,
+            AdminRequest::RestoreLatestSnapshot,
+            state.tls.as_ref(),
+        )
+        .await
+        {
+            Ok(AdminResponse::RestoreResult {
+                path,
+                entries,
+                duration_ms,
+            }) => results.push(RestoreResultView {
+                addr: addr.to_string(),
+                ok: true,
+                path: Some(path),
+                entries: Some(entries),
+                duration_ms: Some(duration_ms),
+                error: None,
+            }),
+            Ok(AdminResponse::NotFound) => results.push(RestoreResultView {
+                addr: addr.to_string(),
+                ok: false,
+                path: None,
+                entries: None,
+                duration_ms: None,
+                error: Some("no snapshot found".to_string()),
+            }),
+            Ok(AdminResponse::Error { message }) => results.push(RestoreResultView {
+                addr: addr.to_string(),
+                ok: false,
+                path: None,
+                entries: None,
+                duration_ms: None,
+                error: Some(message),
+            }),
+            Err(e) => results.push(RestoreResultView {
+                addr: addr.to_string(),
+                ok: false,
+                path: None,
+                entries: None,
+                duration_ms: None,
+                error: Some(e.to_string()),
+            }),
+            _ => results.push(RestoreResultView {
+                addr: addr.to_string(),
+                ok: false,
+                path: None,
+                entries: None,
+                duration_ms: None,
+                error: Some("unexpected response".to_string()),
+            }),
+        }
+    }
+    results
 }
 
 async fn collect_node_infos(
@@ -150,7 +375,20 @@ async fn collect_node_infos(
     nodes
 }
 
-fn build_node_info(
+async fn resolve_node_targets(state: &SharedState, target: &str) -> Vec<std::net::SocketAddr> {
+    if target == "all" {
+        state.cluster_addrs().await
+    } else {
+        resolve_target(
+            target,
+            state.cfg.connection.cluster_port,
+            &state.cfg.connection.seeds,
+        )
+        .await
+    }
+}
+
+pub(crate) fn build_node_info(
     addr: std::net::SocketAddr,
     result: anyhow::Result<AdminResponse>,
     heartbeat_ms: u64,
