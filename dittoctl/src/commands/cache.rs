@@ -3,14 +3,26 @@ use crate::{
     config::CtlConfig,
 };
 use anyhow::Result;
-use clap::Subcommand;
+use clap::{Subcommand, ValueEnum};
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum CacheListWhat {
+    Keys,
+    Stats,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum CacheGetWhat {
+    Key,
+    Ttl,
+}
 
 #[derive(Debug, Subcommand)]
 pub enum CacheCommand {
     /// List keys or stats.
     List {
         /// "keys" | "stats"
-        what: String,
+        what: CacheListWhat,
         target: String,
         #[arg(long)]
         pattern: Option<String>,
@@ -20,7 +32,7 @@ pub enum CacheCommand {
     /// Get the value or TTL of a key.
     Get {
         /// "key" | "ttl"
-        what: String,
+        what: CacheGetWhat,
         target: String,
         key: String,
         #[arg(long)]
@@ -49,7 +61,7 @@ pub enum CacheCommand {
     SetCompressed {
         target: String,
         key: String,
-        value: String,
+        value: bool,
         #[arg(long)]
         namespace: Option<String>,
     },
@@ -78,6 +90,77 @@ fn append_namespace_query(url: &mut String, namespace: Option<String>) {
     }
 }
 
+fn cache_keys_url(base: &str, target: &str, pattern: Option<String>, namespace: Option<String>) -> String {
+    let mut url = format!("{}/api/cache/{}/keys", base, enc(target));
+    if let Some(pat) = pattern {
+        url.push_str(&format!("?pattern={}", enc(&pat)));
+    }
+    append_namespace_query(&mut url, namespace);
+    url
+}
+
+fn cache_key_url(base: &str, target: &str, key: &str, namespace: Option<String>) -> String {
+    let mut url = format!("{}/api/cache/{}/keys/{}", base, enc(target), enc(key));
+    append_namespace_query(&mut url, namespace);
+    url
+}
+
+fn cache_ttl_url(base: &str, target: &str, namespace: Option<String>) -> String {
+    let mut url = format!("{}/api/cache/{}/ttl", base, enc(target));
+    append_namespace_query(&mut url, namespace);
+    url
+}
+
+fn cache_compressed_url(base: &str, target: &str, key: &str, namespace: Option<String>) -> String {
+    let mut url = format!(
+        "{}/api/cache/{}/keys/{}/compressed",
+        base,
+        enc(target),
+        enc(key)
+    );
+    append_namespace_query(&mut url, namespace);
+    url
+}
+
+fn render_cache_stats(results: &[serde_json::Value]) {
+    for r in results {
+        println!("\n  Node: {}", r["addr"].as_str().unwrap_or("?"));
+        if let Some(err) = r["error"].as_str() {
+            println!("  Error: {}", err);
+            continue;
+        }
+        println!("  {:<22} {}", "keys", r["key_count"].as_u64().unwrap_or(0));
+        println!(
+            "  {:<22} {}/{} bytes",
+            "memory",
+            r["memory_used_bytes"].as_u64().unwrap_or(0),
+            r["memory_max_bytes"].as_u64().unwrap_or(0)
+        );
+        println!("  {:<22} {}", "evictions", r["evictions"].as_u64().unwrap_or(0));
+        println!("  {:<22} {}", "hits", r["hit_count"].as_u64().unwrap_or(0));
+        println!("  {:<22} {}", "misses", r["miss_count"].as_u64().unwrap_or(0));
+        println!("  {:<22} {}%", "hit-rate", r["hit_rate_pct"].as_u64().unwrap_or(0));
+    }
+}
+
+fn render_cache_keys(results: &[serde_json::Value]) {
+    for r in results {
+        println!("\n  Node: {}", r["addr"].as_str().unwrap_or("?"));
+        if let Some(keys) = r["keys"].as_array() {
+            if keys.is_empty() {
+                println!("  (empty)");
+            } else {
+                for k in keys {
+                    println!("  {}", k.as_str().unwrap_or("?"));
+                }
+                println!("  --- {} key(s)", keys.len());
+            }
+        } else if let Some(err) = r["error"].as_str() {
+            println!("  Error: {}", err);
+        }
+    }
+}
+
 pub async fn run(cmd: CacheCommand, cfg: &CtlConfig, client: &reqwest::Client) -> Result<()> {
     let base = &cfg.mgmt.url;
 
@@ -87,67 +170,19 @@ pub async fn run(cmd: CacheCommand, cfg: &CtlConfig, client: &reqwest::Client) -
             target,
             pattern,
             namespace,
-        } => match what.as_str() {
-            "stats" => {
+        } => match what {
+            CacheListWhat::Stats => {
                 let url = format!("{}/api/cache/{}/stats", base, enc(&target));
                 let data = mgmt_get(client, &url).await?;
                 let results = data.as_array().cloned().unwrap_or_default();
-                for r in results {
-                    println!("\n  Node: {}", r["addr"].as_str().unwrap_or("?"));
-                    if let Some(err) = r["error"].as_str() {
-                        println!("  Error: {}", err);
-                        continue;
-                    }
-                    println!("  {:<22} {}", "keys", r["key_count"].as_u64().unwrap_or(0));
-                    println!(
-                        "  {:<22} {}/{} bytes",
-                        "memory",
-                        r["memory_used_bytes"].as_u64().unwrap_or(0),
-                        r["memory_max_bytes"].as_u64().unwrap_or(0)
-                    );
-                    println!(
-                        "  {:<22} {}",
-                        "evictions",
-                        r["evictions"].as_u64().unwrap_or(0)
-                    );
-                    println!("  {:<22} {}", "hits", r["hit_count"].as_u64().unwrap_or(0));
-                    println!(
-                        "  {:<22} {}",
-                        "misses",
-                        r["miss_count"].as_u64().unwrap_or(0)
-                    );
-                    println!(
-                        "  {:<22} {}%",
-                        "hit-rate",
-                        r["hit_rate_pct"].as_u64().unwrap_or(0)
-                    );
-                }
+                render_cache_stats(&results);
             }
-            "keys" => {
-                let mut url = format!("{}/api/cache/{}/keys", base, enc(&target));
-                if let Some(pat) = pattern {
-                    url.push_str(&format!("?pattern={}", enc(&pat)));
-                }
-                append_namespace_query(&mut url, namespace);
+            CacheListWhat::Keys => {
+                let url = cache_keys_url(base, &target, pattern, namespace);
                 let data = mgmt_get(client, &url).await?;
                 let results = data.as_array().cloned().unwrap_or_default();
-                for r in results {
-                    println!("\n  Node: {}", r["addr"].as_str().unwrap_or("?"));
-                    if let Some(keys) = r["keys"].as_array() {
-                        if keys.is_empty() {
-                            println!("  (empty)");
-                        } else {
-                            for k in keys {
-                                println!("  {}", k.as_str().unwrap_or("?"));
-                            }
-                            println!("  ─── {} key(s)", keys.len());
-                        }
-                    } else if let Some(err) = r["error"].as_str() {
-                        println!("  Error: {}", err);
-                    }
-                }
+                render_cache_keys(&results);
             }
-            other => eprintln!("Unknown list target '{}'. Use: keys | stats", other),
         },
 
         CacheCommand::Get {
@@ -156,22 +191,20 @@ pub async fn run(cmd: CacheCommand, cfg: &CtlConfig, client: &reqwest::Client) -
             key,
             namespace,
         } => {
-            let mut url = format!("{}/api/cache/{}/keys/{}", base, enc(&target), enc(&key));
-            append_namespace_query(&mut url, namespace);
+            let url = cache_key_url(base, &target, &key, namespace);
             let data = mgmt_get(client, &url).await;
-            match what.as_str() {
-                "key" => match data {
+            match what {
+                CacheGetWhat::Key => match data {
                     Ok(d) => println!("{}", d["value"].as_str().unwrap_or("(empty)")),
                     Err(_) => println!("  (not found)"),
                 },
-                "ttl" => {
+                CacheGetWhat::Ttl => {
                     // TTL info is available via the admin describe; for HTTP port we just show value
                     match data {
                         Ok(d) => println!("{}", d["value"].as_str().unwrap_or("(not found)")),
                         Err(_) => println!("  (not found)"),
                     }
                 }
-                other => eprintln!("  Unknown property '{}'. Use: key | ttl", other),
             }
         }
 
@@ -182,8 +215,7 @@ pub async fn run(cmd: CacheCommand, cfg: &CtlConfig, client: &reqwest::Client) -
             ttl,
             namespace,
         } => {
-            let mut url = format!("{}/api/cache/{}/keys/{}", base, enc(&target), enc(&key));
-            append_namespace_query(&mut url, namespace);
+            let url = cache_key_url(base, &target, &key, namespace);
             let body = serde_json::json!({ "value": value, "ttl_secs": ttl });
             match mgmt_put(client, &url, body).await {
                 Ok(_) => println!("  set ok"),
@@ -196,8 +228,7 @@ pub async fn run(cmd: CacheCommand, cfg: &CtlConfig, client: &reqwest::Client) -
             key,
             namespace,
         } => {
-            let mut url = format!("{}/api/cache/{}/keys/{}", base, enc(&target), enc(&key));
-            append_namespace_query(&mut url, namespace);
+            let url = cache_key_url(base, &target, &key, namespace);
             match mgmt_delete(client, &url).await {
                 Ok(_) => println!("  deleted"),
                 Err(e) => eprintln!("  Error: {}", e),
@@ -207,7 +238,7 @@ pub async fn run(cmd: CacheCommand, cfg: &CtlConfig, client: &reqwest::Client) -
         CacheCommand::Flush { target } => {
             // Require confirmation when flushing all nodes.
             if target == "all" {
-                print!("  ⚠ This will flush cache on ALL nodes. Type \"yes\" to confirm: ");
+                print!("  WARNING: This will flush cache on ALL nodes. Type \"yes\" to confirm: ");
                 std::io::Write::flush(&mut std::io::stdout())?;
                 let mut input = String::new();
                 std::io::stdin().read_line(&mut input)?;
@@ -241,8 +272,7 @@ pub async fn run(cmd: CacheCommand, cfg: &CtlConfig, client: &reqwest::Client) -
             namespace,
         } => {
             let ttl_secs = ttl.filter(|&s| s > 0);
-            let mut url = format!("{}/api/cache/{}/ttl", base, enc(&target));
-            append_namespace_query(&mut url, namespace);
+            let url = cache_ttl_url(base, &target, namespace);
             let body = serde_json::json!({ "pattern": pattern, "ttl_secs": ttl_secs });
             match mgmt_post(client, &url, body).await {
                 Ok(data) => {
@@ -253,7 +283,7 @@ pub async fn run(cmd: CacheCommand, cfg: &CtlConfig, client: &reqwest::Client) -
                             eprintln!("  Error from {}: {}", addr, err);
                         } else {
                             let n = r["updated"].as_u64().unwrap_or(0);
-                            println!("  {} ← {} key(s) updated", addr, n);
+                            println!("  {} <- {} key(s) updated", addr, n);
                         }
                     }
                 }
@@ -267,25 +297,18 @@ pub async fn run(cmd: CacheCommand, cfg: &CtlConfig, client: &reqwest::Client) -
             value,
             namespace,
         } => {
-            let compressed = value == "true";
-            let mut url = format!(
-                "{}/api/cache/{}/keys/{}/compressed",
-                base,
-                enc(&target),
-                enc(&key)
-            );
-            append_namespace_query(&mut url, namespace);
+            let url = cache_compressed_url(base, &target, &key, namespace);
             let data = mgmt_post(
                 client,
                 &url,
-                serde_json::json!({ "compressed": compressed }),
+                serde_json::json!({ "compressed": value }),
             )
             .await?;
             let results = data.as_array().cloned().unwrap_or_default();
             for r in results {
                 let addr = r["addr"].as_str().unwrap_or("?");
                 if r["ok"].as_bool().unwrap_or(false) {
-                    println!("  {} ← compressed={}", key, value);
+                    println!("  {} <- compressed={}", key, value);
                 } else {
                     eprintln!(
                         "  Error from {}: {}",
@@ -376,7 +399,7 @@ mod tests {
 
         run(
             CacheCommand::List {
-                what: "keys".into(),
+                what: CacheListWhat::Keys,
                 target: "127.0.0.1:7779".into(),
                 pattern: Some("user:*".into()),
                 namespace: Some("tenant a".into()),
@@ -431,7 +454,7 @@ mod tests {
             CacheCommand::SetCompressed {
                 target: "local".into(),
                 key: "alpha".into(),
-                value: "false".into(),
+                value: false,
                 namespace: None,
             },
             &cfg,
@@ -503,7 +526,7 @@ mod tests {
 
         run(
             CacheCommand::List {
-                what: "stats".into(),
+                what: CacheListWhat::Stats,
                 target: "local".into(),
                 pattern: None,
                 namespace: None,
@@ -517,23 +540,5 @@ mod tests {
         let request = request.await.unwrap();
         assert!(request.starts_with("GET /api/cache/local/stats HTTP/1.1"));
     }
-
-    #[tokio::test]
-    async fn unknown_list_target_returns_without_http_request() {
-        let cfg = CtlConfig::default();
-        let client = reqwest::Client::new();
-
-        run(
-            CacheCommand::List {
-                what: "bogus".into(),
-                target: "local".into(),
-                pattern: None,
-                namespace: None,
-            },
-            &cfg,
-            &client,
-        )
-        .await
-        .unwrap();
-    }
 }
+

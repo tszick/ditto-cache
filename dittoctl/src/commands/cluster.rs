@@ -1,18 +1,31 @@
 use crate::{client::mgmt_get, config::CtlConfig};
 use anyhow::Result;
-use clap::Subcommand;
+use clap::{Subcommand, ValueEnum};
+
+#[derive(Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ClusterListWhat {
+    Nodes,
+    ActiveSet,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum ClusterGetWhat {
+    Status,
+    Primary,
+    CommittedIndex,
+}
 
 #[derive(Debug, Subcommand)]
 pub enum ClusterCommand {
     /// List cluster-level resources.
     List {
         /// "nodes" | "active-set"
-        what: String,
+        what: ClusterListWhat,
     },
     /// Get a cluster property.
     Get {
         /// "status" | "primary" | "committed-index"
-        what: String,
+        what: ClusterGetWhat,
     },
 }
 
@@ -20,44 +33,41 @@ pub async fn run(cmd: ClusterCommand, cfg: &CtlConfig, client: &reqwest::Client)
     let base = &cfg.mgmt.url;
 
     match cmd {
-        ClusterCommand::List { what } => match what.as_str() {
-            "nodes" | "active-set" => {
-                let data = mgmt_get(client, &format!("{}/api/cluster", base)).await?;
-                let nodes = data["nodes"].as_array().cloned().unwrap_or_default();
-                println!(
-                    "  {:<38} {:<12} {:<10} committed",
-                    "node-id", "status", "primary"
-                );
-                println!("  {}", "─".repeat(76));
-                for n in &nodes {
-                    let status = n["status"].as_str().unwrap_or("?");
-                    if what == "active-set" && status != "Active" {
-                        continue;
-                    }
-                    println!(
-                        "  {:<38} {:<12} {:<10} {}",
-                        n["id"].as_str().unwrap_or("?"),
-                        status,
-                        if n["is_primary"].as_bool().unwrap_or(false) {
-                            "yes"
-                        } else {
-                            "no"
-                        },
-                        n["last_applied"]
-                            .as_u64()
-                            .map(|v| v.to_string())
-                            .as_deref()
-                            .unwrap_or("?")
-                    );
+        ClusterCommand::List { what } => {
+            let data = mgmt_get(client, &format!("{}/api/cluster", base)).await?;
+            let nodes = data["nodes"].as_array().cloned().unwrap_or_default();
+            println!(
+                "  {:<38} {:<12} {:<10} committed",
+                "node-id", "status", "primary"
+            );
+            println!("  {}", "-".repeat(76));
+            for n in &nodes {
+                let status = n["status"].as_str().unwrap_or("?");
+                if what == ClusterListWhat::ActiveSet && status != "Active" {
+                    continue;
                 }
-                let total = data["total"].as_u64().unwrap_or(nodes.len() as u64);
-                println!("\n  Total: {} node(s)", total);
+                println!(
+                    "  {:<38} {:<12} {:<10} {}",
+                    n["id"].as_str().unwrap_or("?"),
+                    status,
+                    if n["is_primary"].as_bool().unwrap_or(false) {
+                        "yes"
+                    } else {
+                        "no"
+                    },
+                    n["last_applied"]
+                        .as_u64()
+                        .map(|v| v.to_string())
+                        .as_deref()
+                        .unwrap_or("?")
+                );
             }
-            other => eprintln!("Unknown list target '{}'. Use: nodes | active-set", other),
-        },
+            let total = data["total"].as_u64().unwrap_or(nodes.len() as u64);
+            println!("\n  Total: {} node(s)", total);
+        }
 
-        ClusterCommand::Get { what } => match what.as_str() {
-            "status" => {
+        ClusterCommand::Get { what } => match what {
+            ClusterGetWhat::Status => {
                 let data = mgmt_get(client, &format!("{}/api/cluster", base)).await?;
                 println!("  total:    {}", data["total"].as_u64().unwrap_or(0));
                 println!("  active:   {}", data["active"].as_u64().unwrap_or(0));
@@ -65,14 +75,14 @@ pub async fn run(cmd: ClusterCommand, cfg: &CtlConfig, client: &reqwest::Client)
                 println!("  inactive: {}", data["inactive"].as_u64().unwrap_or(0));
                 println!("  offline:  {}", data["offline"].as_u64().unwrap_or(0));
             }
-            "primary" => {
+            ClusterGetWhat::Primary => {
                 let data = mgmt_get(client, &format!("{}/api/cluster/primary", base)).await?;
                 match data["primary"].as_str() {
                     Some(id) => println!("  primary: {}", id),
                     None => println!("  (no primary elected)"),
                 }
             }
-            "committed-index" => {
+            ClusterGetWhat::CommittedIndex => {
                 let data = mgmt_get(client, &format!("{}/api/nodes", base)).await?;
                 let nodes = data["nodes"].as_array().cloned().unwrap_or_default();
                 if let Some(first) = nodes.first() {
@@ -82,10 +92,6 @@ pub async fn run(cmd: ClusterCommand, cfg: &CtlConfig, client: &reqwest::Client)
                     );
                 }
             }
-            other => eprintln!(
-                "Unknown get target '{}'. Use: status | primary | committed-index",
-                other
-            ),
         },
     }
     Ok(())
@@ -136,7 +142,7 @@ mod tests {
 
         run(
             ClusterCommand::Get {
-                what: "status".into(),
+                what: ClusterGetWhat::Status,
             },
             &cfg,
             &client,
@@ -158,7 +164,7 @@ mod tests {
 
         run(
             ClusterCommand::Get {
-                what: "primary".into(),
+                what: ClusterGetWhat::Primary,
             },
             &cfg,
             &client,
@@ -183,7 +189,7 @@ mod tests {
 
         run(
             ClusterCommand::List {
-                what: "active-set".into(),
+                what: ClusterListWhat::ActiveSet,
             },
             &cfg,
             &client,
