@@ -16,7 +16,7 @@ This document describes the current runtime architecture of the Ditto stack in t
 
 ```text
 Application clients
-  |- TCP binary protocol  -> dittod :7777
+  |- TCP/TLS binary protocol -> dittod :7777
   |- HTTP/HTTPS REST API  -> dittod :7778
 
 Management clients
@@ -51,7 +51,7 @@ Internal cluster traffic
 
 | Port | Owner | Purpose |
 |---|---|---|
-| 7777 | `dittod` | TCP binary client protocol |
+| 7777 | `dittod` | TCP binary client protocol (TLS-capable) |
 | 7778 | `dittod` | HTTP/HTTPS client API |
 | 7779 | `dittod` | Cluster replication + admin RPC |
 | 7780/udp | `dittod` | Gossip heartbeat |
@@ -72,6 +72,7 @@ that the drift gate enforces (see [admin-guide.md](admin-guide.md#validation-and
 - `Delete { key }`
 - `Ping`
 - Optional TCP auth handshake via `Auth { token }`
+- Optional scoped token ACL enforcement via `[[client_auth.tokens]]`
 
 ### Watch operations (TCP)
 
@@ -134,9 +135,13 @@ Auth/TLS:
 - Strict by default in this codebase:
   - startup is rejected if cluster/admin mTLS is disabled,
   - startup is rejected if HTTP Basic auth hash is not configured.
-  - startup is rejected if TCP port `7777` is bound on a non-loopback address without `client_auth_token`.
+  - startup is rejected if TCP port `7777` is bound on a non-loopback address without TCP client auth configured.
 - `DITTO_INSECURE=true` bypasses strict checks for local/dev only, is blocked in release builds, and should be treated as a non-production runtime.
-- TCP client token auth is mandatory for non-loopback exposure of `:7777`.
+- When `[tls].enabled=true`, client TCP `:7777` uses server-side TLS and node REST `:7778` can use HTTPS with the same cert/key material.
+- TCP client auth is mandatory for non-loopback exposure of `:7777`.
+- TCP auth can be either:
+  - legacy full-access `[node].client_auth_token`, or
+  - scoped policies under `[[client_auth.tokens]]` with namespace/prefix ACLs.
 
 ### `ditto-mgmt`
 
