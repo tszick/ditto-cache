@@ -1,5 +1,5 @@
 use super::{observability, NodeHandle, PROTOCOL_VERSION};
-use crate::{network::cluster_server::send_cluster, store::kv_store::sanitize_for_log};
+use crate::{network::cluster_server::send_cluster, store::compression::sanitize_for_log};
 use ditto_protocol::{AdminRequest, AdminResponse, ClusterMessage, NodeStatus};
 use std::{
     net::SocketAddr,
@@ -44,6 +44,66 @@ impl NodeHandle {
             actor = "admin-protocol",
             auth_scheme = "cluster-admin-tls-or-network-policy"
         );
+    }
+
+    fn backup_config_if_enabled(&self) -> Result<crate::config::BackupConfig, AdminResponse> {
+        let cfg_guard = self.config.lock().unwrap();
+        let (_, _, _, backup_enabled, _, _) = Self::persistence_states(&cfg_guard);
+        if !backup_enabled {
+            return Err(AdminResponse::Error {
+                message: "Backup is disabled by persistence policy. Require DITTO_PERSISTENCE_PLATFORM_ALLOWED=true, DITTO_PERSISTENCE_BACKUP_ALLOWED=true and runtime property persistence-runtime-enabled=true.".into(),
+            });
+        }
+        Ok(cfg_guard.backup.clone())
+    }
+
+    fn restore_config_if_enabled(&self) -> Result<crate::config::BackupConfig, AdminResponse> {
+        let cfg_guard = self.config.lock().unwrap();
+        let (_, _, _, _, _, import_enabled) = Self::persistence_states(&cfg_guard);
+        if !import_enabled {
+            self.snapshot_restore_failure_total
+                .fetch_add(1, Ordering::Relaxed);
+            self.snapshot_restore_policy_block_total
+                .fetch_add(1, Ordering::Relaxed);
+            return Err(AdminResponse::Error {
+                message: "Restore is disabled by persistence policy. Require DITTO_PERSISTENCE_PLATFORM_ALLOWED=true, DITTO_PERSISTENCE_IMPORT_ALLOWED=true and runtime property persistence-runtime-enabled=true.".into(),
+            });
+        }
+        Ok(cfg_guard.backup.clone())
+    }
+
+    fn map_restore_result(
+        &self,
+        result: anyhow::Result<Option<crate::backup::SnapshotLoadResult>>,
+    ) -> AdminResponse {
+        match result {
+            Ok(Some(loaded)) => {
+                self.record_snapshot_restore(
+                    loaded.path.clone(),
+                    loaded.entries as u64,
+                    loaded.duration_ms,
+                );
+                self.snapshot_restore_success_total
+                    .fetch_add(1, Ordering::Relaxed);
+                AdminResponse::RestoreResult {
+                    path: loaded.path,
+                    entries: loaded.entries as u64,
+                    duration_ms: loaded.duration_ms,
+                }
+            }
+            Ok(None) => {
+                self.snapshot_restore_not_found_total
+                    .fetch_add(1, Ordering::Relaxed);
+                AdminResponse::NotFound
+            }
+            Err(e) => {
+                self.snapshot_restore_failure_total
+                    .fetch_add(1, Ordering::Relaxed);
+                AdminResponse::Error {
+                    message: e.to_string(),
+                }
+            }
+        }
     }
 
     pub(super) async fn handle_admin(self: Arc<Self>, req: AdminRequest) -> AdminResponse {
@@ -123,16 +183,10 @@ impl NodeHandle {
                 AdminResponse::TtlUpdated { updated }
             }
             AdminRequest::BackupNow => {
-                let (backup_enabled, cfg) = {
-                    let cfg_guard = self.config.lock().unwrap();
-                    let (_, _, _, backup_enabled, _, _) = Self::persistence_states(&cfg_guard);
-                    (backup_enabled, cfg_guard.backup.clone())
+                let cfg = match self.backup_config_if_enabled() {
+                    Ok(cfg) => cfg,
+                    Err(response) => return response,
                 };
-                if !backup_enabled {
-                    return AdminResponse::Error {
-                        message: "Backup is disabled by persistence policy. Require DITTO_PERSISTENCE_PLATFORM_ALLOWED=true, DITTO_PERSISTENCE_BACKUP_ALLOWED=true and runtime property persistence-runtime-enabled=true.".into(),
-                    };
-                }
                 match crate::backup::run_backup(Arc::clone(&self), &cfg).await {
                     Ok(path) => AdminResponse::BackupResult { path, bytes: 0 },
                     Err(e) => AdminResponse::Error {
@@ -143,48 +197,11 @@ impl NodeHandle {
             AdminRequest::RestoreLatestSnapshot => {
                 self.snapshot_restore_attempt_total
                     .fetch_add(1, Ordering::Relaxed);
-                let (import_enabled, cfg) = {
-                    let cfg_guard = self.config.lock().unwrap();
-                    let (_, _, _, _, _, import_enabled) = Self::persistence_states(&cfg_guard);
-                    (import_enabled, cfg_guard.backup.clone())
+                let cfg = match self.restore_config_if_enabled() {
+                    Ok(cfg) => cfg,
+                    Err(response) => return response,
                 };
-                if !import_enabled {
-                    self.snapshot_restore_failure_total
-                        .fetch_add(1, Ordering::Relaxed);
-                    self.snapshot_restore_policy_block_total
-                        .fetch_add(1, Ordering::Relaxed);
-                    return AdminResponse::Error {
-                        message: "Restore is disabled by persistence policy. Require DITTO_PERSISTENCE_PLATFORM_ALLOWED=true, DITTO_PERSISTENCE_IMPORT_ALLOWED=true and runtime property persistence-runtime-enabled=true.".into(),
-                    };
-                }
-                match crate::backup::restore_latest_snapshot(&self, &cfg) {
-                    Ok(Some(loaded)) => {
-                        self.record_snapshot_restore(
-                            loaded.path.clone(),
-                            loaded.entries as u64,
-                            loaded.duration_ms,
-                        );
-                        self.snapshot_restore_success_total
-                            .fetch_add(1, Ordering::Relaxed);
-                        AdminResponse::RestoreResult {
-                            path: loaded.path,
-                            entries: loaded.entries as u64,
-                            duration_ms: loaded.duration_ms,
-                        }
-                    }
-                    Ok(None) => {
-                        self.snapshot_restore_not_found_total
-                            .fetch_add(1, Ordering::Relaxed);
-                        AdminResponse::NotFound
-                    }
-                    Err(e) => AdminResponse::Error {
-                        message: {
-                            self.snapshot_restore_failure_total
-                                .fetch_add(1, Ordering::Relaxed);
-                            e.to_string()
-                        },
-                    },
-                }
+                self.map_restore_result(crate::backup::restore_latest_snapshot(&self, &cfg))
             }
             AdminRequest::GetProperty { name } => {
                 let props = self.all_properties().await;

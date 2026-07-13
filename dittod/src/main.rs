@@ -2,6 +2,7 @@
 
 mod admin_audit;
 mod backup;
+mod backup_support;
 mod bootstrap;
 mod config;
 mod gossip;

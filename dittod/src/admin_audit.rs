@@ -1,4 +1,4 @@
-use crate::store::kv_store::sanitize_for_log;
+use crate::store::compression::sanitize_for_log;
 use ditto_protocol::AdminRequest;
 
 pub fn labels(req: &AdminRequest) -> Option<(&'static str, &'static str)> {

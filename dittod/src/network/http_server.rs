@@ -1,4 +1,9 @@
 use crate::node::NodeHandle;
+use crate::network::http_support::{
+    availability_for_stats, batch_item_value, namespace_from_headers, query_flag_enabled,
+    status_for_error, tcp_client_bind_loopback_only, tcp_production_safe,
+    tcp_supported_topology,
+};
 use axum::{
     body::Body,
     extract::{Path, Query, State},
@@ -15,35 +20,6 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tracing::info;
 const MAX_BATCH_SET_ITEMS: usize = 5_000;
-
-const NAMESPACE_HEADER: &str = "x-ditto-namespace";
-
-fn namespace_from_headers(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get(NAMESPACE_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(ToString::to_string)
-}
-
-fn tcp_client_bind_loopback_only(bind_addr: &str) -> bool {
-    ditto_config::is_loopback_bind_addr(bind_addr)
-}
-
-fn tcp_production_safe(bind_addr: &str, client_auth_enabled: bool) -> bool {
-    client_auth_enabled || tcp_client_bind_loopback_only(bind_addr)
-}
-
-fn tcp_supported_topology(bind_addr: &str, client_auth_enabled: bool) -> &'static str {
-    if client_auth_enabled {
-        "token-auth-exposed"
-    } else if tcp_client_bind_loopback_only(bind_addr) {
-        "loopback-only"
-    } else {
-        "unsupported-for-production"
-    }
-}
 
 /// Start the HTTP REST server on `bind`.
 ///
@@ -379,7 +355,7 @@ async fn handle_batch_set(
     let mut errors = Vec::new();
 
     for (idx, item) in body.items.into_iter().enumerate() {
-        let value = match batch_item_value(&item) {
+        let value = match batch_item_value(item.value.as_deref(), item.value_base64.as_deref()) {
             Ok(value) => value,
             Err(message) => {
                 errors.push(serde_json::json!({
@@ -426,19 +402,6 @@ async fn handle_batch_set(
         "errors": errors
     }))
     .into_response()
-}
-
-fn batch_item_value(item: &BatchSetItem) -> Result<Bytes, String> {
-    if let Some(value_base64) = item.value_base64.as_deref() {
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(value_base64.trim())
-            .map_err(|e| format!("value_base64 is not valid base64: {e}"))?;
-        return Ok(Bytes::from(bytes));
-    }
-    item.value
-        .as_ref()
-        .map(|value| Bytes::from(value.clone().into_bytes()))
-        .ok_or_else(|| "either value or value_base64 must be provided".to_string())
 }
 
 async fn handle_delete(
@@ -628,47 +591,10 @@ async fn handle_health_summary(State(node): State<Arc<NodeHandle>>) -> Response 
     Json(body).into_response()
 }
 
-fn availability_for_stats(
-    status: &ditto_protocol::NodeStatus,
-    circuit_breaker_state: &str,
-) -> &'static str {
-    use ditto_protocol::NodeStatus;
-    match status {
-        NodeStatus::Active => {
-            if circuit_breaker_state.eq_ignore_ascii_case("open") {
-                "degraded"
-            } else {
-                "ready"
-            }
-        }
-        NodeStatus::Syncing => "syncing",
-        NodeStatus::Offline | NodeStatus::Inactive => "unavailable",
-    }
-}
-
 fn error_response(code: ErrorCode, message: String) -> Response {
     let status = status_for_error(&code);
     let body = serde_json::json!({ "error": format!("{:?}", code), "message": message });
     (status, Json(body)).into_response()
-}
-
-fn query_flag_enabled(value: Option<&str>) -> bool {
-    matches!(value, Some("1")) || value.is_some_and(|flag| flag.eq_ignore_ascii_case("true"))
-}
-
-fn status_for_error(code: &ErrorCode) -> StatusCode {
-    match code {
-        ErrorCode::NodeInactive => StatusCode::SERVICE_UNAVAILABLE,
-        ErrorCode::NoQuorum => StatusCode::SERVICE_UNAVAILABLE,
-        ErrorCode::CircuitOpen => StatusCode::SERVICE_UNAVAILABLE,
-        ErrorCode::KeyNotFound => StatusCode::NOT_FOUND,
-        ErrorCode::WriteTimeout => StatusCode::GATEWAY_TIMEOUT,
-        ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
-        ErrorCode::NamespaceQuotaExceeded => StatusCode::TOO_MANY_REQUESTS,
-        ErrorCode::UnsupportedRequest => StatusCode::NOT_IMPLEMENTED,
-        ErrorCode::TypeMismatch | ErrorCode::Overflow => StatusCode::CONFLICT,
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
-    }
 }
 
 #[cfg(test)]

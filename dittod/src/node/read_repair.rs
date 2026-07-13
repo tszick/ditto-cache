@@ -1,5 +1,5 @@
 use super::NodeHandle;
-use crate::store::kv_store::sanitize_for_log;
+use crate::store::compression::sanitize_for_log;
 use ditto_protocol::{ClientRequest, ClientResponse, NodeStatus};
 use std::sync::{atomic::Ordering, Arc};
 

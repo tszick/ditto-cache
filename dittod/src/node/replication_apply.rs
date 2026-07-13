@@ -1,5 +1,5 @@
 use super::NodeHandle;
-use crate::store::kv_store::sanitize_for_log;
+use crate::store::compression::sanitize_for_log;
 use bytes::Bytes;
 
 impl NodeHandle {

@@ -1,34 +1,19 @@
-use crate::{config::BackupConfig, node::NodeHandle, store::kv_store::ExportEntry};
-use aes_gcm::{
-    aead::{Aead, KeyInit},
-    Aes256Gcm, Nonce,
+use crate::{
+    backup_support::{
+        decode_snapshot, decrypt_data, encode_snapshot, encrypt_data, verify_checksum_sidecar,
+        write_checksum_sidecar,
+    },
+    config::BackupConfig,
+    node::NodeHandle,
+    store::kv_store::ExportEntry,
 };
-use ditto_protocol::{pb, NodeStatus};
-use prost::Message;
-use rand::RngExt;
-use sha2::{Digest, Sha256};
+use ditto_protocol::NodeStatus;
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{atomic::Ordering, Arc},
     time::{Duration, SystemTime},
 };
-
-/// Magic header identifying an encrypted backup file.
-const MAGIC: &[u8; 4] = b"DENC";
-/// Format version byte.
-const VERSION: u8 = 0x01;
-/// AES-256-GCM nonce length (96 bits).
-const NONCE_LEN: usize = 12;
-
-/// Current `pb::Snapshot.version` written by this build.
-///
-/// Bumped whenever the on-disk snapshot payload semantics change in a
-/// non-backwards-compatible way. The decoder rejects snapshots whose
-/// `version` is not in `SUPPORTED_SNAPSHOT_VERSIONS` so a stale build
-/// cannot silently restore a payload it doesn't understand.
-const SNAPSHOT_VERSION: u32 = 1;
-const SUPPORTED_SNAPSHOT_VERSIONS: &[u32] = &[SNAPSHOT_VERSION];
 
 pub struct SnapshotLoadResult {
     pub path: String,
@@ -36,102 +21,102 @@ pub struct SnapshotLoadResult {
     pub duration_ms: u64,
 }
 
-fn checksum_sidecar_path(path: &Path) -> PathBuf {
-    let mut sidecar = path.to_path_buf();
-    let sidecar_ext = match path.extension().and_then(|e| e.to_str()) {
-        Some(ext) if !ext.is_empty() => format!("{ext}.sha256"),
-        _ => "sha256".to_string(),
-    };
-    sidecar.set_extension(sidecar_ext);
-    sidecar
-}
+fn newest_snapshot_path(dir: &PathBuf, node_id: &str) -> anyhow::Result<Option<PathBuf>> {
+    let mut newest: Option<(PathBuf, SystemTime)> = None;
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(v) => v,
+            None => continue,
+        };
+        if !name.starts_with(&format!("{}_backup_", node_id)) || name.ends_with(".sha256") {
+            continue;
+        }
 
-fn checksum_hex(data: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    hex::encode(hasher.finalize())
-}
-
-fn encode_snapshot(entries: &[(String, ExportEntry)]) -> Vec<u8> {
-    let snapshot = pb::Snapshot {
-        version: SNAPSHOT_VERSION,
-        entries: entries
-            .iter()
-            .map(|(key, entry)| pb::SnapshotEntry {
-                key: key.clone(),
-                value: entry.value.clone(),
-                version: entry.version,
-                expires_at_ms: entry
-                    .expires_at_ms
-                    .map(|value| pb::OptionalUint64 { value }),
-            })
-            .collect(),
-    };
-    snapshot.encode_to_vec()
-}
-
-fn decode_snapshot(raw: &[u8]) -> anyhow::Result<Vec<(String, ExportEntry)>> {
-    let snapshot = pb::Snapshot::decode(raw)?;
-    if !SUPPORTED_SNAPSHOT_VERSIONS.contains(&snapshot.version) {
-        anyhow::bail!(
-            "unsupported snapshot version {} (this build supports {:?})",
-            snapshot.version,
-            SUPPORTED_SNAPSHOT_VERSIONS
-        );
+        let modified = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        match &newest {
+            Some((_, ts)) if *ts >= modified => {}
+            _ => newest = Some((path.clone(), modified)),
+        }
     }
-    Ok(snapshot
-        .entries
-        .into_iter()
-        .map(|entry| {
-            (
-                entry.key,
-                ExportEntry {
-                    value: entry.value,
-                    version: entry.version,
-                    expires_at_ms: entry.expires_at_ms.map(|value| value.value),
-                },
-            )
-        })
-        .collect())
+
+    Ok(newest.map(|(path, _)| path))
 }
 
-fn write_checksum_sidecar(path: &Path, data: &[u8]) -> anyhow::Result<()> {
-    let sidecar = checksum_sidecar_path(path);
-    let digest = checksum_hex(data);
-    fs::write(&sidecar, format!("{digest}\n"))?;
-    Ok(())
-}
+fn validate_snapshot_file_size(path: &PathBuf, max_snapshot_bytes: u64) -> anyhow::Result<()> {
+    if max_snapshot_bytes == 0 {
+        return Ok(());
+    }
 
-fn verify_checksum_sidecar(path: &Path, data: &[u8]) -> anyhow::Result<()> {
-    let sidecar = checksum_sidecar_path(path);
-    if !sidecar.exists() {
+    let file_len = fs::metadata(path)?.len();
+    if file_len > max_snapshot_bytes {
         anyhow::bail!(
-            "missing backup checksum sidecar: {}",
-            sidecar.to_string_lossy()
-        );
-    }
-    let expected = fs::read_to_string(&sidecar)?
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    if expected.is_empty() {
-        anyhow::bail!(
-            "invalid backup checksum sidecar (empty digest): {}",
-            sidecar.to_string_lossy()
-        );
-    }
-    let actual = checksum_hex(data);
-    if actual != expected {
-        anyhow::bail!(
-            "backup checksum mismatch for {} (expected {}, got {})",
+            "snapshot file {} exceeds backup.max_snapshot_bytes ({} > {})",
             path.to_string_lossy(),
-            expected,
-            actual
+            file_len,
+            max_snapshot_bytes
         );
     }
     Ok(())
+}
+
+fn load_snapshot_bytes(
+    path: &PathBuf,
+    filename: &str,
+    cfg: &BackupConfig,
+) -> anyhow::Result<Vec<u8>> {
+    validate_snapshot_file_size(path, cfg.max_snapshot_bytes)?;
+
+    let data = fs::read(path)?;
+    verify_checksum_sidecar(path, &data)?;
+
+    let raw = if filename.ends_with(".enc") {
+        let key = cfg.encryption_key.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("encrypted snapshot found but backup.encryption_key is missing")
+        })?;
+        decrypt_data(key, &data)?
+    } else {
+        data
+    };
+
+    if cfg.max_snapshot_bytes > 0 && raw.len() as u64 > cfg.max_snapshot_bytes {
+        anyhow::bail!(
+            "snapshot payload exceeds backup.max_snapshot_bytes ({} > {})",
+            raw.len(),
+            cfg.max_snapshot_bytes
+        );
+    }
+
+    Ok(raw)
+}
+
+fn decode_restore_entries(
+    filename: &str,
+    raw: &[u8],
+    max_restore_entries: usize,
+) -> anyhow::Result<Vec<(String, ExportEntry)>> {
+    let entries: Vec<(String, ExportEntry)> = if filename.contains(".json") {
+        serde_json::from_slice(raw)?
+    } else {
+        decode_snapshot(raw)?
+    };
+
+    if max_restore_entries > 0 && entries.len() > max_restore_entries {
+        anyhow::bail!(
+            "snapshot entry count exceeds backup.max_restore_entries ({} > {})",
+            entries.len(),
+            max_restore_entries
+        );
+    }
+
+    Ok(entries)
 }
 
 /// Run a single backup cycle:
@@ -197,34 +182,7 @@ pub fn restore_latest_snapshot(
         return Ok(None);
     }
 
-    let mut newest: Option<(PathBuf, SystemTime)> = None;
-    for entry in fs::read_dir(&dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let name = match path.file_name().and_then(|n| n.to_str()) {
-            Some(v) => v,
-            None => continue,
-        };
-        if !name.starts_with(&format!("{}_backup_", node_id)) {
-            continue;
-        }
-        if name.ends_with(".sha256") {
-            continue;
-        }
-        let modified = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        match &newest {
-            Some((_, ts)) if *ts >= modified => {}
-            _ => newest = Some((path.clone(), modified)),
-        }
-    }
-
-    let Some((path, _)) = newest else {
+    let Some(path) = newest_snapshot_path(&dir, &node_id)? else {
         return Ok(None);
     };
     let filename = path
@@ -232,48 +190,8 @@ pub fn restore_latest_snapshot(
         .and_then(|n| n.to_str())
         .ok_or_else(|| anyhow::anyhow!("snapshot filename is not valid UTF-8"))?
         .to_string();
-    if cfg.max_snapshot_bytes > 0 {
-        let file_len = fs::metadata(&path)?.len();
-        if file_len > cfg.max_snapshot_bytes {
-            anyhow::bail!(
-                "snapshot file {} exceeds backup.max_snapshot_bytes ({} > {})",
-                path.to_string_lossy(),
-                file_len,
-                cfg.max_snapshot_bytes
-            );
-        }
-    }
-    let data = fs::read(&path)?;
-    verify_checksum_sidecar(&path, &data)?;
-
-    let raw = if filename.ends_with(".enc") {
-        let key = cfg.encryption_key.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("encrypted snapshot found but backup.encryption_key is missing")
-        })?;
-        decrypt_data(key, &data)?
-    } else {
-        data
-    };
-    if cfg.max_snapshot_bytes > 0 && raw.len() as u64 > cfg.max_snapshot_bytes {
-        anyhow::bail!(
-            "snapshot payload exceeds backup.max_snapshot_bytes ({} > {})",
-            raw.len(),
-            cfg.max_snapshot_bytes
-        );
-    }
-
-    let entries: Vec<(String, ExportEntry)> = if filename.contains(".json") {
-        serde_json::from_slice(&raw)?
-    } else {
-        decode_snapshot(&raw)?
-    };
-    if cfg.max_restore_entries > 0 && entries.len() > cfg.max_restore_entries {
-        anyhow::bail!(
-            "snapshot entry count exceeds backup.max_restore_entries ({} > {})",
-            entries.len(),
-            cfg.max_restore_entries
-        );
-    }
+    let raw = load_snapshot_bytes(&path, &filename, cfg)?;
+    let entries = decode_restore_entries(&filename, &raw, cfg.max_restore_entries)?;
     let count = entries.len();
     node.store.restore(entries);
 
@@ -328,79 +246,6 @@ async fn write_snapshot(node: &NodeHandle, cfg: &BackupConfig) -> anyhow::Result
         },
     );
     Ok(full_path.to_string_lossy().into_owned())
-}
-
-/// Encrypt `plaintext` with AES-256-GCM using a hex-encoded 32-byte key.
-///
-/// Output format:
-/// ```text
-/// [4 bytes magic "DENC"] [1 byte version 0x01] [12 bytes nonce] [ciphertext + 16 byte tag]
-/// ```
-fn encrypt_data(key_hex: &str, plaintext: &[u8]) -> anyhow::Result<Vec<u8>> {
-    let key_bytes = hex::decode(key_hex.trim())
-        .map_err(|e| anyhow::anyhow!("backup encryption key is not valid hex: {}", e))?;
-    if key_bytes.len() != 32 {
-        anyhow::bail!(
-            "backup encryption key must be 32 bytes (64 hex chars), got {}",
-            key_bytes.len()
-        );
-    }
-
-    let cipher = Aes256Gcm::new_from_slice(&key_bytes)
-        .map_err(|e| anyhow::anyhow!("AES-256-GCM key init failed: {}", e))?;
-
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::rng().fill(&mut nonce_bytes);
-    let nonce = Nonce::try_from(&nonce_bytes[..])
-        .map_err(|_| anyhow::anyhow!("AES-256-GCM nonce init failed"))?;
-
-    let ciphertext = cipher
-        .encrypt(&nonce, plaintext)
-        .map_err(|e| anyhow::anyhow!("AES-256-GCM encryption failed: {}", e))?;
-
-    let mut out = Vec::with_capacity(MAGIC.len() + 1 + NONCE_LEN + ciphertext.len());
-    out.extend_from_slice(MAGIC);
-    out.push(VERSION);
-    out.extend_from_slice(&nonce_bytes);
-    out.extend_from_slice(&ciphertext);
-    Ok(out)
-}
-
-/// Decrypt a backup file previously produced by [`encrypt_data`].
-///
-/// Returns the plaintext bytes on success.
-#[allow(dead_code)]
-pub fn decrypt_data(key_hex: &str, data: &[u8]) -> anyhow::Result<Vec<u8>> {
-    let header_len = MAGIC.len() + 1 + NONCE_LEN;
-    if data.len() < header_len {
-        anyhow::bail!("data too short to be a valid encrypted backup");
-    }
-    if &data[..4] != MAGIC {
-        anyhow::bail!("not an encrypted backup file (missing DENC magic header)");
-    }
-    if data[4] != VERSION {
-        anyhow::bail!("unsupported encrypted backup version: {}", data[4]);
-    }
-
-    let key_bytes = hex::decode(key_hex.trim())
-        .map_err(|e| anyhow::anyhow!("backup encryption key is not valid hex: {}", e))?;
-    if key_bytes.len() != 32 {
-        anyhow::bail!(
-            "backup encryption key must be 32 bytes (64 hex chars), got {}",
-            key_bytes.len()
-        );
-    }
-
-    let cipher = Aes256Gcm::new_from_slice(&key_bytes)
-        .map_err(|e| anyhow::anyhow!("AES-256-GCM key init failed: {}", e))?;
-
-    let nonce = Nonce::try_from(&data[5..5 + NONCE_LEN])
-        .map_err(|_| anyhow::anyhow!("AES-256-GCM nonce init failed"))?;
-    let plaintext = cipher
-        .decrypt(&nonce, &data[header_len..])
-        .map_err(|_| anyhow::anyhow!("AES-256-GCM decryption failed: wrong key or corrupt data"))?;
-
-    Ok(plaintext)
 }
 
 fn rotate_old_backups(path: &str, node_id: &str, retain_days: u64) {
@@ -503,8 +348,15 @@ pub async fn run_scheduler(node: Arc<NodeHandle>, cfg: BackupConfig) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backup_support::{
+        checksum_sidecar_path, decode_snapshot, decrypt_data, encode_snapshot, encrypt_data,
+        verify_checksum_sidecar, write_checksum_sidecar, MAGIC, SNAPSHOT_VERSION, VERSION,
+    };
     use crate::{config::Config, store::KvStore};
     use bytes::Bytes;
+    use ditto_protocol::pb;
+    use prost::Message;
+    use std::path::Path;
 
     fn sample_entries() -> Vec<(String, ExportEntry)> {
         vec![
