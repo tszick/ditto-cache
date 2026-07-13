@@ -5,6 +5,7 @@ use crate::policy::cache_value_redaction::{
 };
 use ditto_protocol::{AdminRequest, AdminResponse};
 use reqwest::header::HeaderValue;
+use reqwest::{RequestBuilder, Response};
 
 pub fn is_valid_cache_key(key: &str) -> bool {
     if key.is_empty() {
@@ -125,6 +126,36 @@ pub fn resolve_cache_http_authority(state: &SharedState, target: &str) -> Option
     )
 }
 
+fn invalid_target_json() -> serde_json::Value {
+    serde_json::json!({ "error": "invalid target" })
+}
+
+fn cache_key_url(state: &SharedState, authority: &str, key: &str) -> String {
+    format!(
+        "{}://{}/key/{}",
+        state.http_scheme(),
+        authority,
+        encode_key_for_url(key)
+    )
+}
+
+async fn send_cache_request(
+    req: RequestBuilder,
+    state: &SharedState,
+    namespace: Option<String>,
+) -> Result<Response, (u16, String)> {
+    node_http_request(req, state, namespace)
+        .send()
+        .await
+        .map_err(|e| (502, e.to_string()))
+}
+
+async fn text_error_body(resp: Response) -> (u16, serde_json::Value) {
+    let status = resp.status().as_u16();
+    let body = resp.text().await.unwrap_or_default();
+    (status, serde_json::json!({ "error": body }))
+}
+
 pub async fn get_key(
     state: SharedState,
     target: &str,
@@ -135,23 +166,15 @@ pub async fn get_key(
         return (400, "invalid target".to_string());
     };
 
-    let url = format!(
-        "{}://{}/key/{}",
-        state.http_scheme(),
-        authority,
-        encode_key_for_url(key)
-    );
+    let url = cache_key_url(&state, &authority, key);
 
-    match node_http_request(state.http_client.get(&url), &state, namespace)
-        .send()
-        .await
-    {
+    match send_cache_request(state.http_client.get(&url), &state, namespace).await {
         Ok(resp) => {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
             (status, body)
         }
-        Err(e) => (502, e.to_string()),
+        Err(err) => err,
     }
 }
 
@@ -189,31 +212,24 @@ pub async fn set_key(
     namespace: Option<String>,
 ) -> (u16, serde_json::Value) {
     let Some(authority) = resolve_cache_http_authority(&state, target) else {
-        return (400, serde_json::json!({ "error": "invalid target" }));
+        return (400, invalid_target_json());
     };
 
-    let mut url = format!(
-        "{}://{}/key/{}",
-        state.http_scheme(),
-        authority,
-        encode_key_for_url(key)
-    );
+    let mut url = cache_key_url(&state, &authority, key);
     if let Some(ttl) = ttl_secs {
         url.push_str(&format!("?ttl={ttl}"));
     }
 
-    match node_http_request(state.http_client.put(&url), &state, namespace)
-        .body(value.to_string())
-        .send()
-        .await
+    match send_cache_request(
+        state.http_client.put(&url).body(value.to_string()),
+        &state,
+        namespace,
+    )
+    .await
     {
         Ok(resp) if resp.status().is_success() => (200, serde_json::json!({ "ok": true })),
-        Ok(resp) => {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
-            (status, serde_json::json!({ "error": body }))
-        }
-        Err(e) => (502, serde_json::json!({ "error": e.to_string() })),
+        Ok(resp) => text_error_body(resp).await,
+        Err((status, message)) => (status, serde_json::json!({ "error": message })),
     }
 }
 
@@ -224,27 +240,15 @@ pub async fn delete_key(
     namespace: Option<String>,
 ) -> (u16, serde_json::Value) {
     let Some(authority) = resolve_cache_http_authority(&state, target) else {
-        return (400, serde_json::json!({ "error": "invalid target" }));
+        return (400, invalid_target_json());
     };
 
-    let url = format!(
-        "{}://{}/key/{}",
-        state.http_scheme(),
-        authority,
-        encode_key_for_url(key)
-    );
+    let url = cache_key_url(&state, &authority, key);
 
-    match node_http_request(state.http_client.delete(&url), &state, namespace)
-        .send()
-        .await
-    {
+    match send_cache_request(state.http_client.delete(&url), &state, namespace).await {
         Ok(resp) if resp.status().is_success() => (200, serde_json::json!({ "ok": true })),
-        Ok(resp) => {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
-            (status, serde_json::json!({ "error": body }))
-        }
-        Err(e) => (502, serde_json::json!({ "error": e.to_string() })),
+        Ok(resp) => text_error_body(resp).await,
+        Err((status, message)) => (status, serde_json::json!({ "error": message })),
     }
 }
 
