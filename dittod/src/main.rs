@@ -103,6 +103,7 @@ async fn main() -> Result<()> {
 
     let runtime = build_runtime_components(&config, &config_path, &resolved_cluster_bind)?;
     let _store = runtime.store;
+    let client_tls_acceptor = runtime.client_tls_acceptor;
     let tls_acceptor = runtime.tls_acceptor;
     let node = runtime.node;
 
@@ -120,7 +121,14 @@ async fn main() -> Result<()> {
         None
     };
 
-    run_servers(binds, node.clone(), tls_acceptor, http_tls).await?;
+    run_servers(
+        binds,
+        node.clone(),
+        client_tls_acceptor,
+        tls_acceptor,
+        http_tls,
+    )
+    .await?;
 
     Ok(())
 }

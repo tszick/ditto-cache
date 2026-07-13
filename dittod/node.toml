@@ -48,10 +48,32 @@ mixed_version_probe_enabled = true
 mixed_version_probe_interval_ms = 30000
 
 [tls]
-enabled = false
+enabled = false                       # enables TLS on client TCP 7777 and mTLS on cluster/admin 7779
 ca_cert = "/etc/ditto/certs/ca.pem"    # overridden by DITTO_TLS_CA_CERT
 cert    = "/etc/ditto/certs/node.pem"  # overridden by DITTO_TLS_CERT
 key     = "/etc/ditto/certs/node.key"  # overridden by DITTO_TLS_KEY
+
+# Optional scoped TCP client auth/ACL on port 7777.
+# Tokens are matched server-side after Auth{token}; the wire protocol stays token-based.
+#
+# [[client_auth.tokens]]
+# name = "readonly-tenant-a"
+# token_env = "DITTO_CLIENT_READONLY_TOKEN"
+# namespaces = ["tenant-a"]
+# read_prefixes = ["cache:", "session:"]
+# watch_prefixes = ["cache:", "session:"]
+#
+# [[client_auth.tokens]]
+# name = "writer-tenant-a"
+# token_file = "/run/secrets/ditto-client-writer-token"
+# namespaces = ["tenant-a"]
+# write_prefixes = ["cache:", "session:"]
+# pattern_prefixes = ["cache:", "session:"]
+#
+# [[client_auth.tokens]]
+# name = "admin-all"
+# token_env = "DITTO_CLIENT_ADMIN_TOKEN"
+# allow_all = true
 
 # Optional: HTTP Basic Auth on REST port 7778.
 # Generate hash with: dittoctl hash-password

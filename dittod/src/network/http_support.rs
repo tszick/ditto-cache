@@ -65,6 +65,8 @@ pub(crate) fn status_for_error(code: &ErrorCode) -> StatusCode {
         ErrorCode::WriteTimeout => StatusCode::GATEWAY_TIMEOUT,
         ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
         ErrorCode::NamespaceQuotaExceeded => StatusCode::TOO_MANY_REQUESTS,
+        ErrorCode::AuthFailed => StatusCode::UNAUTHORIZED,
+        ErrorCode::AccessDenied => StatusCode::FORBIDDEN,
         ErrorCode::UnsupportedRequest => StatusCode::NOT_IMPLEMENTED,
         ErrorCode::TypeMismatch | ErrorCode::Overflow => StatusCode::CONFLICT,
         _ => StatusCode::INTERNAL_SERVER_ERROR,

@@ -36,6 +36,19 @@ pub fn build_acceptor(cfg: &TlsConfig) -> Result<TlsAcceptor> {
     Ok(TlsAcceptor::from(Arc::new(server_cfg)))
 }
 
+pub fn build_server_only_acceptor(cfg: &TlsConfig) -> Result<TlsAcceptor> {
+    let certs =
+        load_certs(&cfg.cert).with_context(|| format!("loading server cert '{}'", cfg.cert))?;
+    let key = load_key(&cfg.key).with_context(|| format!("loading server key '{}'", cfg.key))?;
+
+    let server_cfg = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .context("building server-only TLS ServerConfig")?;
+
+    Ok(TlsAcceptor::from(Arc::new(server_cfg)))
+}
+
 /// Build a TLS connector for outbound cluster connections (mTLS – presents client cert).
 pub fn build_connector(cfg: &TlsConfig) -> Result<TlsConnector> {
     let ca_certs =
@@ -154,5 +167,22 @@ mod tests {
         };
         assert!(connector_err.contains("loading CA cert"));
         assert!(connector_err.contains(&cfg.ca_cert));
+    }
+
+    #[test]
+    fn build_server_only_acceptor_includes_cert_path_context() {
+        let cfg = TlsConfig {
+            enabled: true,
+            ca_cert: "unused-ca.pem".into(),
+            cert: unique_path("missing-server-cert").to_string_lossy().into_owned(),
+            key: "missing-server-key.pem".into(),
+        };
+
+        let err = match build_server_only_acceptor(&cfg) {
+            Ok(_) => panic!("server-only acceptor build unexpectedly succeeded"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("loading server cert"));
+        assert!(err.contains(&cfg.cert));
     }
 }

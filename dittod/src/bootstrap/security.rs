@@ -32,6 +32,7 @@ pub fn tcp_client_auth_required(config: &Config, resolved_bind: &str, insecure: 
         && !ditto_config::is_loopback_bind_addr(resolved_bind)
         && config.node.client_port != 0
         && config.node.client_auth_token.is_none()
+        && !config.client_auth.has_any_credential()
 }
 
 pub fn validate_backup_encryption_policy(config: &Config, insecure: bool) -> Result<()> {

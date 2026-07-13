@@ -24,6 +24,7 @@ pub fn load_startup_state() -> Result<StartupState> {
 
     apply_env_overrides(&mut config);
     config.backup.resolve_encryption_key()?;
+    config.client_auth.resolve_tokens()?;
     apply_replication_guardrails(&mut config);
 
     let insecure = std::env::var("DITTO_INSECURE")

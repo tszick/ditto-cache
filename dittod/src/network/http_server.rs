@@ -499,6 +499,7 @@ async fn handle_health_summary(State(node): State<Arc<NodeHandle>>) -> Response 
     ) = {
         let cfg = node.config.lock().unwrap();
         let auth_enabled = cfg.node.client_auth_token.is_some();
+        let auth_enabled = auth_enabled || cfg.client_auth.has_any_credential();
         let loopback_only = tcp_client_bind_loopback_only(&cfg.node.bind_addr);
         (
             auth_enabled,

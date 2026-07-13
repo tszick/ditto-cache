@@ -13,6 +13,7 @@ use tracing::{info, warn};
 
 pub struct RuntimeComponents {
     pub store: Arc<KvStore>,
+    pub client_tls_acceptor: Option<TlsAcceptor>,
     pub tls_acceptor: Option<TlsAcceptor>,
     pub node: Arc<NodeHandle>,
 }
@@ -29,7 +30,7 @@ pub fn build_runtime_components(
     resolved_cluster_bind: &str,
 ) -> Result<RuntimeComponents> {
     let store = build_store(config);
-    let (tls_acceptor, tls_connector) = build_tls_components(config)?;
+    let (client_tls_acceptor, tls_acceptor, tls_connector) = build_tls_components(config)?;
     let node = NodeHandle::new(
         config.clone(),
         config_path.to_string(),
@@ -41,6 +42,7 @@ pub fn build_runtime_components(
 
     Ok(RuntimeComponents {
         store,
+        client_tls_acceptor,
         tls_acceptor,
         node,
     })
@@ -60,14 +62,17 @@ fn build_store(config: &Config) -> Arc<KvStore> {
     store
 }
 
-fn build_tls_components(config: &Config) -> Result<(Option<TlsAcceptor>, Option<TlsConnector>)> {
+fn build_tls_components(
+    config: &Config,
+) -> Result<(Option<TlsAcceptor>, Option<TlsAcceptor>, Option<TlsConnector>)> {
     if config.tls.enabled {
+        let client_acceptor = network::tls::build_server_only_acceptor(&config.tls)?;
         let acceptor = network::tls::build_acceptor(&config.tls)?;
         let connector = network::tls::build_connector(&config.tls)?;
-        info!("mTLS enabled on cluster/admin port");
-        Ok((Some(acceptor), Some(connector)))
+        info!("TLS enabled on client TCP port; mTLS enabled on cluster/admin port");
+        Ok((Some(client_acceptor), Some(acceptor), Some(connector)))
     } else {
-        Ok((None, None))
+        Ok((None, None, None))
     }
 }
 
@@ -166,6 +171,7 @@ pub fn build_server_binds(
 pub async fn run_servers(
     binds: ServerBinds,
     node: Arc<NodeHandle>,
+    client_tls_acceptor: Option<TlsAcceptor>,
     tls_acceptor: Option<TlsAcceptor>,
     http_tls: Option<(String, String)>,
 ) -> Result<()> {
@@ -174,7 +180,7 @@ pub async fn run_servers(
     let n3 = node;
 
     tokio::try_join!(
-        network::tcp_server::start(binds.tcp_bind, n1),
+        network::tcp_server::start(binds.tcp_bind, n1, client_tls_acceptor),
         network::http_server::start(binds.http_bind, n2, http_tls),
         network::cluster_server::start(binds.cluster_bind, n3, tls_acceptor),
     )?;

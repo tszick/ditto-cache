@@ -1,12 +1,21 @@
-use crate::node::NodeHandle;
-use ditto_protocol::{decode, encode, ClientRequest, ClientResponse};
+use crate::{
+    network::client_auth::ClientAccessController,
+    node::NodeHandle,
+};
+use ditto_protocol::{decode, encode, ClientRequest, ClientResponse, ErrorCode};
 use std::{collections::HashSet, sync::Arc, time::Duration};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    net::TcpListener,
     sync::broadcast,
 };
+use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn};
+
+trait ClientStream: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T> ClientStream for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
+
+type BoxedClientStream = Box<dyn ClientStream>;
 
 fn namespaced_watch_key(node: &Arc<NodeHandle>, namespace: Option<String>, key: String) -> String {
     let cfg = node.config.lock().unwrap();
@@ -25,40 +34,58 @@ fn namespaced_watch_key(node: &Arc<NodeHandle>, namespace: Option<String>, key: 
 }
 
 /// Start the client-facing TCP server (port 7777).
-pub async fn start(bind: String, node: Arc<NodeHandle>) -> anyhow::Result<()> {
+pub async fn start(
+    bind: String,
+    node: Arc<NodeHandle>,
+    tls_acceptor: Option<TlsAcceptor>,
+) -> anyhow::Result<()> {
     let listener = TcpListener::bind(&bind).await?;
-    info!("Client TCP listening on {}", bind);
+    if tls_acceptor.is_some() {
+        info!("Client TCP listening with TLS on {}", bind);
+    } else {
+        info!("Client TCP listening on {}", bind);
+    }
     loop {
         let (stream, addr) = listener.accept().await?;
         debug!("Client connected from {}", addr);
         let node = node.clone();
+        let tls_acceptor = tls_acceptor.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_client(stream, node).await {
+            let result = if let Some(acceptor) = tls_acceptor {
+                match acceptor.accept(stream).await {
+                    Ok(stream) => handle_client(Box::new(stream), node).await,
+                    Err(err) => Err(anyhow::anyhow!("client TLS handshake failed: {}", err)),
+                }
+            } else {
+                handle_client(Box::new(stream), node).await
+            };
+            if let Err(e) = result {
                 error!("Client handler error: {}", e);
             }
         });
     }
 }
 
-async fn handle_client(mut stream: TcpStream, node: Arc<NodeHandle>) -> anyhow::Result<()> {
-    let (max_message_size, expected_token, frame_read_timeout) = {
+async fn handle_client(
+    mut stream: BoxedClientStream,
+    node: Arc<NodeHandle>,
+) -> anyhow::Result<()> {
+    let (max_message_size, access_controller, legacy_token, frame_read_timeout) = {
         let cfg = node.config.lock().unwrap();
         (
             cfg.node.max_message_size_bytes as usize,
+            ClientAccessController::from_config(&cfg),
             cfg.node.client_auth_token.clone(),
             Duration::from_millis(cfg.node.frame_read_timeout_ms.max(1)),
         )
     };
-    let mut authenticated = expected_token.is_none();
+    let mut authenticated = access_controller.default_principal();
 
-    // DITTO-02: subscribe to the node-wide watch broadcast channel.
     let mut watch_rx = node.watch_tx.subscribe();
-    // Keys this connection is watching.
     let mut watched_keys: HashSet<String> = HashSet::new();
 
     loop {
         tokio::select! {
-            // ── Incoming client request ──────────────────────────────────────
             read_result = read_frame(
                 &mut stream,
                 max_message_size,
@@ -66,23 +93,32 @@ async fn handle_client(mut stream: TcpStream, node: Arc<NodeHandle>) -> anyhow::
             ) => {
                 let payload = match read_result {
                     Ok(Some(p)) => p,
-                    Ok(None)    => break, // connection closed cleanly
-                    Err(e)      => return Err(e),
+                    Ok(None) => break,
+                    Err(e) => return Err(e),
                 };
 
                 let request: ClientRequest = decode(&payload, max_message_size as u64)?;
 
-                if !authenticated {
+                if authenticated.is_none() {
                     match request {
-                        ClientRequest::Auth { token } if Some(&token) == expected_token.as_ref() => {
-                            authenticated = true;
-                            let bytes = encode(&ClientResponse::AuthOk)?;
+                        ClientRequest::Auth { token } => {
+                            if let Some(principal) = access_controller.authenticate(&token, legacy_token.as_deref()) {
+                                authenticated = Some(principal);
+                                let bytes = encode(&ClientResponse::AuthOk)?;
+                                stream.write_all(&bytes).await?;
+                                continue;
+                            }
+                            let response = ClientResponse::Error {
+                                code: ErrorCode::AuthFailed,
+                                message: "Invalid or missing auth token".into(),
+                            };
+                            let bytes = encode(&response)?;
                             stream.write_all(&bytes).await?;
-                            continue;
+                            anyhow::bail!("Client auth failed");
                         }
                         _ => {
                             let response = ClientResponse::Error {
-                                code: ditto_protocol::ErrorCode::AuthFailed,
+                                code: ErrorCode::AuthFailed,
                                 message: "Invalid or missing auth token".into(),
                             };
                             let bytes = encode(&response)?;
@@ -92,8 +128,16 @@ async fn handle_client(mut stream: TcpStream, node: Arc<NodeHandle>) -> anyhow::
                     }
                 }
 
-                // DITTO-02: Watch / Unwatch are handled at the connection level
-                // (they mutate per-connection state, not node-wide state).
+                let principal = authenticated
+                    .as_ref()
+                    .expect("authenticated principal must exist after auth gate");
+
+                if let Err(response) = principal.authorize(&request, &access_controller.tenancy) {
+                    let bytes = encode(&response)?;
+                    stream.write_all(&bytes).await?;
+                    continue;
+                }
+
                 match request {
                     ClientRequest::Watch { key, namespace } => {
                         watched_keys.insert(namespaced_watch_key(&node, namespace, key));
@@ -113,7 +157,6 @@ async fn handle_client(mut stream: TcpStream, node: Arc<NodeHandle>) -> anyhow::
                 }
             }
 
-            // ── DITTO-02: outbound watch event push ──────────────────────────
             event = watch_rx.recv() => {
                 match event {
                     Ok((key, value, version)) => {
@@ -124,8 +167,6 @@ async fn handle_client(mut stream: TcpStream, node: Arc<NodeHandle>) -> anyhow::
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        // Subscriber was slow; some events were dropped.
-                        // For cache invalidation this is acceptable — next poll will refresh.
                         warn!("Watch subscriber lagged, missed {} events", n);
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
@@ -136,13 +177,14 @@ async fn handle_client(mut stream: TcpStream, node: Arc<NodeHandle>) -> anyhow::
     Ok(())
 }
 
-/// Read one length-prefixed frame from the stream.
-/// Returns `Ok(None)` on clean EOF, `Ok(Some(payload))` on success, `Err` on I/O errors.
-async fn read_frame(
-    stream: &mut TcpStream,
+async fn read_frame<S>(
+    stream: &mut S,
     max_size: usize,
     frame_read_timeout: Duration,
-) -> anyhow::Result<Option<Vec<u8>>> {
+) -> anyhow::Result<Option<Vec<u8>>>
+where
+    S: AsyncRead + Unpin + ?Sized,
+{
     let mut len_buf = [0u8; 4];
     match tokio::time::timeout(frame_read_timeout, stream.read_exact(&mut len_buf)).await {
         Ok(Ok(_)) => {}
@@ -216,7 +258,7 @@ mod tests {
         cfg.node.client_auth_token = Some("secret".into());
         let node = test_node(cfg);
         let (mut client, server) = stream_pair().await;
-        let task = tokio::spawn(handle_client(server, node));
+        let task = tokio::spawn(handle_client(Box::new(server), node));
 
         client
             .write_all(&encode(&ClientRequest::Ping).unwrap())
@@ -243,7 +285,7 @@ mod tests {
         cfg.node.client_auth_token = Some("secret".into());
         let node = test_node(cfg);
         let (mut client, server) = stream_pair().await;
-        let task = tokio::spawn(handle_client(server, node));
+        let task = tokio::spawn(handle_client(Box::new(server), node));
 
         client
             .write_all(
@@ -273,10 +315,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_client_applies_scoped_acl_after_authentication() {
+        let mut cfg = Config::default();
+        cfg.tenancy.enabled = true;
+        cfg.tenancy.default_namespace = "default".into();
+        cfg.client_auth.tokens.push(crate::config::ClientAuthTokenConfig {
+            name: "reader".into(),
+            token: Some("reader-secret".into()),
+            namespaces: vec!["tenant-a".into()],
+            read_prefixes: vec!["cache:".into()],
+            ..Default::default()
+        });
+        let node = test_node(cfg);
+        let (mut client, server) = stream_pair().await;
+        let task = tokio::spawn(handle_client(Box::new(server), node));
+
+        client
+            .write_all(
+                &encode(&ClientRequest::Auth {
+                    token: "reader-secret".into(),
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(read_client_response(&mut client).await, ClientResponse::AuthOk));
+
+        client
+            .write_all(
+                &encode(&ClientRequest::Get {
+                    key: "cache:item".into(),
+                    namespace: Some("tenant-b".into()),
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            read_client_response(&mut client).await,
+            ClientResponse::Error {
+                code: ErrorCode::AccessDenied,
+                ..
+            }
+        ));
+
+        drop(client);
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn handle_client_pushes_watch_events_and_accepts_unwatch() {
         let node = test_node(Config::default());
         let (mut client, server) = stream_pair().await;
-        let task = tokio::spawn(handle_client(server, Arc::clone(&node)));
+        let task = tokio::spawn(handle_client(Box::new(server), Arc::clone(&node)));
 
         client
             .write_all(

@@ -160,7 +160,7 @@ impl NodeHandle {
                 }
             }
             match code {
-                ErrorCode::AuthFailed => {
+                ErrorCode::AuthFailed | ErrorCode::AccessDenied => {
                     self.client_error_auth_total.fetch_add(1, Ordering::Relaxed);
                 }
                 ErrorCode::RateLimited

@@ -13,6 +13,8 @@ pub struct Config {
     #[serde(default)]
     pub tls: TlsConfig,
     #[serde(default)]
+    pub client_auth: ClientAuthConfig,
+    #[serde(default)]
     pub http_auth: HttpAuthConfig,
     #[serde(default)]
     pub backup: BackupConfig,
@@ -28,6 +30,35 @@ pub struct Config {
     pub hot_key: HotKeyConfig,
     #[serde(default)]
     pub log: LogConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ClientAuthConfig {
+    #[serde(default)]
+    pub tokens: Vec<ClientAuthTokenConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ClientAuthTokenConfig {
+    pub name: String,
+    #[serde(default)]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub token_env: Option<String>,
+    #[serde(default)]
+    pub token_file: Option<String>,
+    #[serde(default)]
+    pub allow_all: bool,
+    #[serde(default)]
+    pub namespaces: Vec<String>,
+    #[serde(default)]
+    pub read_prefixes: Vec<String>,
+    #[serde(default)]
+    pub write_prefixes: Vec<String>,
+    #[serde(default)]
+    pub watch_prefixes: Vec<String>,
+    #[serde(default)]
+    pub pattern_prefixes: Vec<String>,
 }
 
 /// Optional HTTP Basic Auth for the REST port (7778).
@@ -202,6 +233,66 @@ impl Default for BackupConfig {
     }
 }
 
+impl ClientAuthConfig {
+    pub fn resolve_tokens(&mut self) -> Result<()> {
+        for token in &mut self.tokens {
+            token.resolve_token()?;
+            token.normalize();
+        }
+        Ok(())
+    }
+
+    pub fn has_any_credential(&self) -> bool {
+        self.tokens
+            .iter()
+            .any(|token| token.token.as_deref().is_some_and(|value| !value.is_empty()))
+    }
+}
+
+impl ClientAuthTokenConfig {
+    pub fn resolve_token(&mut self) -> Result<()> {
+        if self.token.is_some() {
+            return Ok(());
+        }
+        self.token = self.resolve_token_with(
+            |name| std::env::var(name).ok(),
+            |path| fs::read_to_string(path),
+        )?;
+        Ok(())
+    }
+
+    fn resolve_token_with<F, R>(&self, get_env: F, read_file: R) -> Result<Option<String>>
+    where
+        F: Fn(&str) -> Option<String>,
+        R: Fn(&str) -> std::io::Result<String>,
+    {
+        let label = if self.name.trim().is_empty() {
+            "client_auth.tokens[].token".to_string()
+        } else {
+            format!("client_auth.tokens[{}].token", self.name.trim())
+        };
+        resolve_secret_source_with(
+            &label,
+            self.token_env.as_deref(),
+            self.token_file.as_deref(),
+            get_env,
+            read_file,
+        )
+    }
+
+    fn normalize(&mut self) {
+        self.name = self.name.trim().to_string();
+        if let Some(token) = self.token.as_mut() {
+            *token = token.trim_end_matches(['\r', '\n']).to_string();
+        }
+        normalize_scope_values(&mut self.namespaces);
+        normalize_scope_values(&mut self.read_prefixes);
+        normalize_scope_values(&mut self.write_prefixes);
+        normalize_scope_values(&mut self.watch_prefixes);
+        normalize_scope_values(&mut self.pattern_prefixes);
+    }
+}
+
 impl BackupConfig {
     pub fn resolve_encryption_key(&mut self) -> Result<()> {
         if self.encryption_key.is_some() {
@@ -227,6 +318,14 @@ impl BackupConfig {
             read_file,
         )
     }
+}
+
+fn normalize_scope_values(values: &mut Vec<String>) {
+    *values = values
+        .iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect();
 }
 
 fn resolve_secret_source_with<F, R>(
@@ -746,6 +845,7 @@ impl Default for Config {
             },
             compression: CompressionConfig::default(),
             tls: TlsConfig::default(),
+            client_auth: ClientAuthConfig::default(),
             http_auth: HttpAuthConfig::default(),
             backup: BackupConfig::default(),
             persistence: PersistenceConfig::default(),
@@ -760,7 +860,7 @@ impl Default for Config {
 
 #[cfg(test)]
 mod tests {
-    use super::BackupConfig;
+    use super::{BackupConfig, ClientAuthConfig, ClientAuthTokenConfig};
 
     #[test]
     fn backup_encryption_key_resolves_from_env_or_file_without_plaintext_toml() {
@@ -815,6 +915,71 @@ mod tests {
         };
         let err = empty_file
             .resolve_encryption_key_with(|_| None, |_| Ok("\n".into()))
+            .unwrap_err();
+        assert!(err.to_string().contains("is empty"));
+    }
+
+    #[test]
+    fn client_auth_token_resolves_from_env_or_file_and_normalizes_scopes() {
+        let mut env_cfg = ClientAuthConfig {
+            tokens: vec![ClientAuthTokenConfig {
+                name: "readonly".into(),
+                token_env: Some("DITTO_READ_TOKEN".into()),
+                namespaces: vec![" tenant-a ".into(), "".into()],
+                read_prefixes: vec![" cache: ".into()],
+                ..Default::default()
+            }],
+        };
+        env_cfg.tokens[0].token = env_cfg.tokens[0]
+            .resolve_token_with(
+                |name| (name == "DITTO_READ_TOKEN").then(|| "from-env".into()),
+                |_| unreachable!(),
+            )
+            .unwrap();
+        env_cfg.tokens[0].normalize();
+        assert_eq!(env_cfg.tokens[0].token.as_deref(), Some("from-env"));
+        assert_eq!(env_cfg.tokens[0].namespaces, vec!["tenant-a"]);
+        assert_eq!(env_cfg.tokens[0].read_prefixes, vec!["cache:"]);
+
+        let file_cfg = ClientAuthTokenConfig {
+            name: "writer".into(),
+            token_file: Some("/run/secrets/client-token".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            file_cfg
+                .resolve_token_with(
+                    |_| None,
+                    |path| {
+                        assert_eq!(path, "/run/secrets/client-token");
+                        Ok("from-file\n".into())
+                    },
+                )
+                .unwrap()
+                .as_deref(),
+            Some("from-file")
+        );
+    }
+
+    #[test]
+    fn client_auth_token_rejects_missing_or_empty_sources() {
+        let missing_env = ClientAuthTokenConfig {
+            name: "missing".into(),
+            token_env: Some("MISSING_CLIENT_TOKEN".into()),
+            ..Default::default()
+        };
+        let err = missing_env
+            .resolve_token_with(|_| None, |_| unreachable!())
+            .unwrap_err();
+        assert!(err.to_string().contains("is not set"));
+
+        let empty_file = ClientAuthTokenConfig {
+            name: "empty".into(),
+            token_file: Some("/run/secrets/empty-client-token".into()),
+            ..Default::default()
+        };
+        let err = empty_file
+            .resolve_token_with(|_| None, |_| Ok("\n".into()))
             .unwrap_err();
         assert!(err.to_string().contains("is empty"));
     }
