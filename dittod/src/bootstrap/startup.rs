@@ -3,6 +3,10 @@ use crate::config::Config;
 use anyhow::Result;
 use std::path::PathBuf;
 
+fn version_requested(arg: &str) -> bool {
+    matches!(arg, "--version" | "-V")
+}
+
 pub struct StartupState {
     pub config_path: String,
     pub config_missing: bool,
@@ -11,9 +15,14 @@ pub struct StartupState {
 }
 
 pub fn load_startup_state() -> Result<StartupState> {
-    let config_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "node.toml".to_string());
+    if let Some(arg) = std::env::args().nth(1) {
+        if version_requested(&arg) {
+            println!("dittod {}", env!("CARGO_PKG_VERSION"));
+            std::process::exit(0);
+        }
+    }
+
+    let config_path = std::env::args().nth(1).unwrap_or_else(|| "node.toml".to_string());
 
     let config_missing = !PathBuf::from(&config_path).exists();
     let mut config = if config_missing {

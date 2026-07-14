@@ -22,6 +22,8 @@ use bootstrap::{
 };
 use tracing::{info, warn};
 
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Install the ring crypto provider for rustls (must happen before any TLS use).
@@ -81,8 +83,8 @@ async fn main() -> Result<()> {
     validate_backup_encryption_policy(&config, insecure)?;
 
     info!(
-        "Starting dittod  node_id={}  active={}",
-        config.node.id, config.node.active
+        "Starting dittod v{}  node_id={}  active={}",
+        APP_VERSION, config.node.id, config.node.active
     );
     info!(
         "Bind addresses — client: {} (bind_addr={})  cluster: {} (cluster_bind_addr={})",

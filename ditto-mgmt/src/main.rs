@@ -31,6 +31,8 @@ use bootstrap::{
 };
 use std::sync::Arc;
 
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Install the ring crypto provider for rustls (must happen before any TLS use).
@@ -63,11 +65,11 @@ async fn main() -> Result<()> {
     // otherwise fall back to plain HTTP.
     match (&state.cfg.server.tls_cert, &state.cfg.server.tls_key) {
         (Some(cert), Some(key)) => {
-            println!("ditto-mgmt listening on https://{}", bind);
+            println!("ditto-mgmt v{} listening on https://{}", APP_VERSION, bind);
             tls::serve_tls(&bind, app, cert, key).await?;
         }
         _ => {
-            println!("ditto-mgmt listening on http://{}", bind);
+            println!("ditto-mgmt v{} listening on http://{}", APP_VERSION, bind);
             let listener = tokio::net::TcpListener::bind(&bind).await?;
             axum::serve(listener, app).await?;
         }

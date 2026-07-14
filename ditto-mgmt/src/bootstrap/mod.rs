@@ -1,6 +1,10 @@
 use crate::config::MgmtConfig;
 use anyhow::{Context, Result};
 
+fn version_requested(arg: &str) -> bool {
+    matches!(arg, "--version" | "-V")
+}
+
 pub fn apply_env_overrides(cfg: &mut MgmtConfig) -> Result<()> {
     if let Ok(v) = std::env::var("DITTO_MGMT_TLS_CERT") {
         cfg.server.tls_cert = Some(v);
@@ -93,6 +97,10 @@ pub fn management_bind_addr(cfg: &MgmtConfig) -> Result<String> {
 pub fn load_config_from_args() -> Result<MgmtConfig> {
     let cfg_path = std::env::args().nth(1);
     if let Some(path) = cfg_path {
+        if version_requested(&path) {
+            println!("ditto-mgmt {}", env!("CARGO_PKG_VERSION"));
+            std::process::exit(0);
+        }
         let raw = std::fs::read_to_string(&path)?;
         Ok(toml::from_str(&raw)?)
     } else {

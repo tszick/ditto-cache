@@ -4,6 +4,7 @@ ditto-mgmt/target/
 **/*.rs.bk
 build-out
 build-out-rel
+dist/
 **/__pycache__/
 *.pyc
 
