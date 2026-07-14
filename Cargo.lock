@@ -560,7 +560,7 @@ dependencies = [
 
 [[package]]
 name = "ditto-config"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "if-addrs",
@@ -568,7 +568,7 @@ dependencies = [
 
 [[package]]
 name = "ditto-mgmt"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -594,7 +594,7 @@ dependencies = [
 
 [[package]]
 name = "ditto-protocol"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -607,7 +607,7 @@ dependencies = [
 
 [[package]]
 name = "dittoctl"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -623,7 +623,7 @@ dependencies = [
 
 [[package]]
 name = "dittod"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
