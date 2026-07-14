@@ -26,7 +26,7 @@ axum          = { workspace = true }
 axum-server   = { workspace = true }
 bcrypt        = "0.19"
 base64        = { workspace = true }
-lz4_flex       = "0.13"
+lz4_flex       = "0.14"
 tokio-rustls   = { workspace = true }
 rustls         = { workspace = true }
 rustls-pki-types = { workspace = true }
