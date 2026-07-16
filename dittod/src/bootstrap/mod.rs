@@ -14,5 +14,6 @@ pub use runtime::{
 };
 pub use security::{
     apply_replication_guardrails, tcp_client_auth_required, validate_backup_encryption_policy,
+    gossip_auth_required,
 };
 pub use startup::load_startup_state;

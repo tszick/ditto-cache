@@ -571,6 +571,15 @@ pub struct ReplicationConfig {
     /// How many ms without a heartbeat before a node is marked offline.
     #[serde(default = "default_gossip_dead_ms")]
     pub gossip_dead_ms: u64,
+    /// Runtime-only HMAC secret used to authenticate gossip datagrams.
+    #[serde(skip)]
+    pub gossip_auth_secret: Option<String>,
+    /// Environment variable containing the gossip HMAC secret.
+    #[serde(default)]
+    pub gossip_auth_secret_env: Option<String>,
+    /// File containing the gossip HMAC secret.
+    #[serde(default)]
+    pub gossip_auth_secret_file: Option<String>,
     /// How often (ms) the version-check background task compares our log index
     /// against the primary's. 0 = disabled. Default: 30 000 ms.
     #[serde(default = "default_version_check_interval_ms")]
@@ -619,6 +628,44 @@ pub struct ReplicationConfig {
     /// Interval of mixed-version probe in milliseconds.
     #[serde(default = "default_mixed_version_probe_interval_ms")]
     pub mixed_version_probe_interval_ms: u64,
+}
+
+impl ReplicationConfig {
+    pub fn resolve_gossip_auth_secret(&mut self) -> Result<()> {
+        if self.gossip_auth_secret.is_some() {
+            return Ok(());
+        }
+        self.gossip_auth_secret = resolve_secret_source_with(
+            "replication.gossip_auth_secret",
+            self.gossip_auth_secret_env.as_deref(),
+            self.gossip_auth_secret_file.as_deref(),
+            |name| std::env::var(name).ok(),
+            |path| fs::read_to_string(path),
+        )?;
+        if let Some(secret) = self.gossip_auth_secret.as_deref() {
+            if secret.as_bytes().len() < 32 {
+                anyhow::bail!(
+                    "replication.gossip_auth_secret must contain at least 32 bytes"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn resolve_gossip_auth_secret_with<F, R>(&self, get_env: F, read_file: R) -> Result<Option<String>>
+    where
+        F: Fn(&str) -> Option<String>,
+        R: Fn(&str) -> std::io::Result<String>,
+    {
+        resolve_secret_source_with(
+            "replication.gossip_auth_secret",
+            self.gossip_auth_secret_env.as_deref(),
+            self.gossip_auth_secret_file.as_deref(),
+            get_env,
+            read_file,
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -825,6 +872,9 @@ impl Default for Config {
                 write_quorum_mode: default_write_quorum_mode(),
                 gossip_interval_ms: 200,
                 gossip_dead_ms: default_gossip_dead_ms(),
+                gossip_auth_secret: None,
+                gossip_auth_secret_env: None,
+                gossip_auth_secret_file: None,
                 version_check_interval_ms: 30_000,
                 read_repair_on_miss_enabled: false,
                 read_repair_min_interval_ms: default_read_repair_min_interval_ms(),

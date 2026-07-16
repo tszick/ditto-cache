@@ -543,8 +543,10 @@ mod tests {
     }
 
     fn auth_state(admin: AdminConfig, http_client: reqwest::Client) -> SharedState {
-        let mut cfg = MgmtConfig::default();
-        cfg.admin = admin;
+        let cfg = MgmtConfig {
+            admin,
+            ..Default::default()
+        };
         Arc::new(AppState {
             cfg: Arc::new(cfg),
             tls: None,

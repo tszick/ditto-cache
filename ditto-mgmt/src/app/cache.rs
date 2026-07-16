@@ -59,11 +59,10 @@ pub async fn collect_cache_stats(
     for addr in addrs {
         match admin_rpc(addr, AdminRequest::GetStats, state.tls.as_ref()).await {
             Ok(AdminResponse::Stats(s)) => {
-                let hit_rate = if s.hit_count + s.miss_count > 0 {
-                    s.hit_count * 100 / (s.hit_count + s.miss_count)
-                } else {
-                    0
-                };
+                let total_requests = s.hit_count.saturating_add(s.miss_count);
+                let hit_rate = s.hit_count
+                    .saturating_mul(100)
+                    .checked_div(total_requests).unwrap_or(0);
                 results.push(serde_json::json!({
                     "addr":               addr.to_string(),
                     "key_count":          s.key_count,

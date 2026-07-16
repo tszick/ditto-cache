@@ -52,7 +52,7 @@ impl ClientAccessController {
                 .client_auth
                 .tokens
                 .iter()
-                .filter_map(|token| ScopedToken::from_config(token))
+                .filter_map(ScopedToken::from_config)
                 .collect(),
             tenancy: config.tenancy.clone(),
         }

@@ -98,17 +98,18 @@ mod tests {
 
     #[test]
     fn build_connector_reports_ca_path_context() {
-        let mut cfg = TlsConfig::default();
-        cfg.enabled = true;
-        cfg.ca_cert = unique_test_file("missing-ca")
-            .to_string_lossy()
-            .into_owned();
-        cfg.cert = unique_test_file("missing-cert")
-            .to_string_lossy()
-            .into_owned();
-        cfg.key = unique_test_file("missing-key")
-            .to_string_lossy()
-            .into_owned();
+        let cfg = TlsConfig {
+            enabled: true,
+            ca_cert: unique_test_file("missing-ca")
+                .to_string_lossy()
+                .into_owned(),
+            cert: unique_test_file("missing-cert")
+                .to_string_lossy()
+                .into_owned(),
+            key: unique_test_file("missing-key")
+                .to_string_lossy()
+                .into_owned(),
+        };
 
         let err = match build_connector(&cfg) {
             Err(err) => err,

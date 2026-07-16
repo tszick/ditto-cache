@@ -18,6 +18,7 @@ use bootstrap::{apply_env_overrides_with, apply_replication_guardrails};
 use bootstrap::{
     build_runtime_components, build_server_binds, init_logging, load_startup_state,
     rotate_old_logs, run_servers, start_background_tasks, start_gossip_engine,
+    gossip_auth_required,
     tcp_client_auth_required, validate_backup_encryption_policy,
 };
 use tracing::{info, warn};
@@ -77,6 +78,12 @@ async fn main() -> Result<()> {
     if tcp_client_auth_required(&config, &resolved_bind, insecure) {
         anyhow::bail!(
             "Strict security: non-loopback TCP client exposure requires [node].client_auth_token (or DITTO_CLIENT_AUTH_TOKEN). Bind to localhost for dev-only local access, or configure TCP auth before exposing port 7777."
+        );
+    }
+
+    if gossip_auth_required(&config, &resolved_cluster_bind, insecure) {
+        anyhow::bail!(
+            "Strict security: non-loopback gossip requires replication.gossip_auth_secret_env or replication.gossip_auth_secret_file (or DITTO_GOSSIP_AUTH_SECRET)."
         );
     }
 

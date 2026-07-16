@@ -1,9 +1,17 @@
 use crate::replication::ActiveSet;
+use dashmap::DashMap;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+use std::{
+    net::SocketAddr,
+    sync::{atomic::{AtomicU64, Ordering}, Arc},
+    time::Duration,
+};
 use ditto_protocol::{decode_gossip, encode_gossip, GossipMessage, NodeInfo};
-use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{net::UdpSocket, sync::Mutex};
 use tracing::{debug, info, warn};
 
+use uuid::Uuid;
 pub struct GossipEngine {
     socket: Arc<UdpSocket>,
     active_set: Arc<Mutex<ActiveSet>>,
@@ -12,6 +20,10 @@ pub struct GossipEngine {
     /// Kept as strings so tokio can do DNS resolution at send time
     /// (SocketAddr::parse() does not accept hostnames like "node-2").
     seed_addrs: Vec<String>,
+    auth_secret: Option<Arc<[u8]>>,
+    session_id: Uuid,
+    next_sequence: AtomicU64,
+    replay_sequences: DashMap<(Uuid, Uuid), u64>,
 }
 
 impl GossipEngine {
@@ -27,10 +39,34 @@ impl GossipEngine {
             active_set,
             interval: Duration::from_millis(interval_ms),
             seed_addrs,
+            auth_secret: None,
+            session_id: Uuid::new_v4(),
+            next_sequence: AtomicU64::new(1),
+            replay_sequences: DashMap::new(),
         })
     }
 
     /// Spawn heartbeat sender + receiver + reaper tasks.
+
+    pub async fn new_with_auth(
+        bind_addr: SocketAddr,
+        active_set: Arc<Mutex<ActiveSet>>,
+        interval_ms: u64,
+        seed_addrs: Vec<String>,
+        auth_secret: String,
+    ) -> anyhow::Result<Self> {
+        let socket = UdpSocket::bind(bind_addr).await?;
+        Ok(Self {
+            socket: Arc::new(socket),
+            active_set,
+            interval: Duration::from_millis(interval_ms),
+            seed_addrs,
+            auth_secret: Some(Arc::from(auth_secret.into_bytes())),
+            session_id: Uuid::new_v4(),
+            next_sequence: AtomicU64::new(1),
+            replay_sequences: DashMap::new(),
+        })
+    }
     pub fn start(self: Arc<Self>) {
         let sender = self.clone();
         tokio::spawn(async move { sender.run_sender().await });

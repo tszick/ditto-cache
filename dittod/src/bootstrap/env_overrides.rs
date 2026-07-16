@@ -64,6 +64,11 @@ where
         }
     }
     if let Some(v) = get("DITTO_WRITE_QUORUM_MODE") {
+    if let Some(v) = get("DITTO_GOSSIP_AUTH_SECRET") {
+        if !v.is_empty() {
+            config.replication.gossip_auth_secret = Some(v);
+        }
+    }
         let normalized = v.trim().to_ascii_lowercase();
         match normalized.as_str() {
             "all-active" => config.replication.write_quorum_mode = WriteQuorumMode::AllActive,

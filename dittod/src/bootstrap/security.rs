@@ -35,6 +35,13 @@ pub fn tcp_client_auth_required(config: &Config, resolved_bind: &str, insecure: 
         && !config.client_auth.has_any_credential()
 }
 
+pub fn gossip_auth_required(config: &Config, resolved_cluster_bind: &str, insecure: bool) -> bool {
+    !insecure
+        && !ditto_config::is_loopback_bind_addr(resolved_cluster_bind)
+        && config.node.gossip_port != 0
+        && config.replication.gossip_auth_secret.is_none()
+}
+
 pub fn validate_backup_encryption_policy(config: &Config, insecure: bool) -> Result<()> {
     if insecure {
         return Ok(());

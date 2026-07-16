@@ -180,8 +180,10 @@ mod tests {
 
     #[test]
     fn cache_value_response_reveals_only_when_policy_allows() {
-        let mut policy = CacheValuePolicy::default();
-        policy.allow_value_reveal = true;
+        let policy = CacheValuePolicy {
+            allow_value_reveal: true,
+            ..Default::default()
+        };
 
         let body = build_cache_value_response("profile", None, "plain-value", true, None, &policy);
 
@@ -192,8 +194,10 @@ mod tests {
 
     #[test]
     fn cache_value_response_blocks_sensitive_reveal_without_sensitive_policy() {
-        let mut policy = CacheValuePolicy::default();
-        policy.allow_value_reveal = true;
+        let policy = CacheValuePolicy {
+            allow_value_reveal: true,
+            ..Default::default()
+        };
         let jwt_like_value = test_jwt_like_value();
 
         let body = build_cache_value_response(

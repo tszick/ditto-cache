@@ -10,8 +10,8 @@ pub(crate) fn hash_password_value(password: &str) -> Result<String> {
     if password.is_empty() {
         anyhow::bail!("password must not be empty");
     }
-    Ok(bcrypt::hash(password, bcrypt::DEFAULT_COST)
-        .map_err(|e| anyhow::anyhow!("bcrypt hash failed: {}", e))?)
+    bcrypt::hash(password, bcrypt::DEFAULT_COST)
+        .map_err(|e| anyhow::anyhow!("bcrypt hash failed: {}", e))
 }
 
 fn rpassword_read() -> Result<String> {
